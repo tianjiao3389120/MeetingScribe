@@ -169,19 +169,39 @@ private struct ResultView: View {
     let runner: PipelineRunner
     @Binding var savedPath: String?
 
+    @State private var mode: Mode = .rendered
+    @State private var savedURL: URL?
+
+    private enum Mode: String, CaseIterable {
+        case rendered = "预览"
+        case source = "源码"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                Text(runner.summary)
-                    .font(.system(.body, design: .default))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(24)
+            switch mode {
+            case .rendered:
+                MarkdownView(markdown: runner.summary)
+            case .source:
+                ScrollView {
+                    Text(runner.summary)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(24)
+                }
             }
 
             Divider()
 
             HStack(spacing: 12) {
+                Picker("", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 140)
+
                 if let assets = runner.assets {
                     Label("\(assets.transcript.segments.count) 段语音", systemImage: "waveform")
                         .font(.caption)
@@ -208,13 +228,24 @@ private struct ResultView: View {
                     NSPasteboard.general.setString(runner.summary, forType: .string)
                 }
 
-                Button("保存到文件旁") {
+                Button("保存") {
                     if let url = try? runner.saveOutputs() {
+                        savedURL = url
                         savedPath = url.deletingLastPathComponent().lastPathComponent
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
                 }
                 .keyboardShortcut("s")
+
+                // Hands the file to whatever the user's default .md app is —
+                // Typora, Obsidian, MacDown, VS Code…
+                Button("用其他应用打开") {
+                    let url = savedURL ?? (try? runner.saveOutputs())
+                    guard let url else { return }
+                    savedURL = url
+                    savedPath = url.deletingLastPathComponent().lastPathComponent
+                    NSWorkspace.shared.open(url)
+                }
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
