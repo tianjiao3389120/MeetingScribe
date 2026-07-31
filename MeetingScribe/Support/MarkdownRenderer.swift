@@ -226,8 +226,13 @@ enum MarkdownRenderer {
         out = replace(out, #"~~([^~]+)~~"#, "<del>$1</del>")
         out = replace(out, #"\[([^\]]+)\]\(([^)]+)\)"#, "<a href=\"$2\">$1</a>")
 
-        // Bracketed status labels get a pill, e.g. [已闭环]
-        out = replace(out, #"\[([^\]\[]{2,6})\](?!\()"#, "<span class=\"tag\">$1</span>")
+        // Bracketed status labels get a pill. The model qualifies them freely
+        // ("[进行中 — 待生产更新]"), so allow a phrase, not just a keyword —
+        // but require a known status word so ordinary bracketed prose is left
+        // alone. Links are already consumed above; `(?!\()` guards the rest.
+        out = replace(out,
+                      #"\[((?:已闭环|待更新|进行中|等待中|已完成|待确认|待明确|待议)[^\]\[]{0,24})\](?!\()"#,
+                      "<span class=\"tag\">$1</span>")
 
         return out
     }
