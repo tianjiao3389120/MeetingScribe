@@ -1,0 +1,223 @@
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct ContentView: View {
+    @State private var runner = PipelineRunner()
+    @State private var showSettings = false
+    @State private var isTargeted = false
+    @State private var savedPath: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            switch runner.stage {
+            case .idle, .failed:
+                DropZone(isTargeted: $isTargeted,
+                         error: runner.error,
+                         onPick: runner.run(url:))
+            case .done:
+                ResultView(runner: runner, savedPath: $savedPath)
+            default:
+                ProgressPanel(runner: runner)
+            }
+        }
+        .frame(minWidth: 720, minHeight: 520)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showSettings = true } label: {
+                    Label("设置", systemImage: "gearshape")
+                }
+                .disabled(runner.isRunning)
+            }
+        }
+        .sheet(isPresented: $showSettings) { SettingsView() }
+    }
+}
+
+// MARK: - Drop zone
+
+private struct DropZone: View {
+    @Binding var isTargeted: Bool
+    let error: String?
+    let onPick: (URL) -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            Image(systemName: "wave.3.right.circle")
+                .font(.system(size: 56, weight: .thin))
+                .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
+
+            VStack(spacing: 6) {
+                Text("把会议录像或录音拖到这里")
+                    .font(.title3.weight(.medium))
+                Text("支持 mov / mp4 / m4a / mp3 / wav —— 视频会自动提取音轨与屏幕画面")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("选择文件…") { pick() }
+                .controlSize(.large)
+
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 40)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+            }
+
+            Spacer()
+
+            Text("音频与画面全程在本机处理；仅生成纪要这一步会调用模型。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [7, 5]))
+                .foregroundStyle(isTargeted ? Color.accentColor : Color.secondary.opacity(0.35))
+                .padding(20)
+        )
+        .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in onPick(url) }
+            }
+            return true
+        }
+    }
+
+    private func pick() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.movie, .audio, .mpeg4Movie, .quickTimeMovie, .mp3, .wav]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url { onPick(url) }
+    }
+}
+
+// MARK: - Progress
+
+private struct ProgressPanel: View {
+    let runner: PipelineRunner
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            VStack(spacing: 14) {
+                Text(runner.stage.label)
+                    .font(.title2.weight(.medium))
+
+                if runner.progress > 0 {
+                    ProgressView(value: runner.progress)
+                        .frame(width: 320)
+                } else {
+                    ProgressView()
+                        .frame(width: 320)
+                }
+
+                Text(runner.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            StageTrack(current: runner.stage)
+
+            Button("取消", role: .cancel) { runner.cancel() }
+                .controlSize(.large)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct StageTrack: View {
+    let current: PipelineRunner.Stage
+
+    private let ordered: [PipelineRunner.Stage] = [
+        .probing, .extractingAudio, .transcribing, .extractingFrames, .readingScreen, .analyzing,
+    ]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(ordered, id: \.self) { stage in
+                let index = ordered.firstIndex(of: stage) ?? 0
+                let currentIndex = ordered.firstIndex(of: current) ?? -1
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(index <= currentIndex ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .frame(width: 7, height: 7)
+                    Text(stage.label)
+                        .font(.caption)
+                        .foregroundStyle(index <= currentIndex ? .primary : .tertiary)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Result
+
+private struct ResultView: View {
+    let runner: PipelineRunner
+    @Binding var savedPath: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                Text(runner.summary)
+                    .font(.system(.body, design: .default))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(24)
+            }
+
+            Divider()
+
+            HStack(spacing: 12) {
+                if let assets = runner.assets {
+                    Label("\(assets.transcript.segments.count) 段语音", systemImage: "waveform")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if !assets.captures.isEmpty {
+                        Label("\(assets.captures.count) 个画面", systemImage: "photo.on.rectangle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                if let savedPath {
+                    Text("已保存到 \(savedPath)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+
+                Button("复制") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(runner.summary, forType: .string)
+                }
+
+                Button("保存到文件旁") {
+                    if let url = try? runner.saveOutputs() {
+                        savedPath = url.deletingLastPathComponent().lastPathComponent
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                }
+                .keyboardShortcut("s")
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+        }
+    }
+}
