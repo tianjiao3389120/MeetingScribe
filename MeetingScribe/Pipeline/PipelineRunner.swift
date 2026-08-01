@@ -33,6 +33,7 @@ final class PipelineRunner {
     private(set) var summary: String = ""
     private(set) var structuredSummary: StructuredMinutes?
     private(set) var usedSummaryFallback = false
+    private(set) var historyWarning: String?
     private(set) var error: String?
     private(set) var isRunning = false
 
@@ -70,6 +71,7 @@ final class PipelineRunner {
         assets = nil
         isRunning = true
         speakerWarning = nil
+        historyWarning = nil
         self.forceRetranscribe = forceRetranscribe
         self.forceSpeakerSeparation = forceSpeakerSeparation
 
@@ -290,6 +292,31 @@ final class PipelineRunner {
         summary = result.markdown
         structuredSummary = result.structured
         usedSummaryFallback = result.usedFallback
+
+        let settings = Settings.shared
+        let model: String
+        switch settings.backend {
+        case .claudeCLI: model = "claude CLI"
+        case .anthropicAPI: model = settings.apiModel
+        case .openAICompatible: model = settings.providerModel
+        }
+        let record = MeetingRecord(
+            title: bundle.title,
+            sourcePath: bundle.sourceURL.path,
+            duration: bundle.duration,
+            backend: settings.backend.displayName,
+            model: model,
+            summaryMarkdown: result.markdown,
+            structuredSummary: result.structured,
+            transcript: bundle.transcript,
+            speakerNames: bundle.diarization?.names ?? [:],
+            usedSummaryFallback: result.usedFallback)
+        do {
+            try MeetingHistoryStore.save(record)
+        } catch {
+            // History is a convenience; a valid summary remains successful.
+            historyWarning = "历史记录保存失败：\(error.localizedDescription)"
+        }
 
         stage = .done
         progress = 1

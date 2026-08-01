@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @State private var runner = PipelineRunner()
     @State private var showSettings = false
+    @State private var showHistory = false
     @State private var isTargeted = false
     @State private var savedPath: String?
 
@@ -26,6 +27,12 @@ struct ContentView: View {
         .frame(minWidth: 720, minHeight: 520)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button { showHistory = true } label: {
+                    Label("历史会议", systemImage: "clock.arrow.circlepath")
+                }
+                .disabled(runner.isRunning)
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button { showSettings = true } label: {
                     Label("设置", systemImage: "gearshape")
                 }
@@ -33,6 +40,12 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showHistory) {
+            MeetingHistoryView { url in
+                showHistory = false
+                runner.run(url: url)
+            }
+        }
     }
 }
 
@@ -370,6 +383,11 @@ private struct ResultView: View {
                         .foregroundStyle(.red)
                         .lineLimit(2)
                         .textSelection(.enabled)
+                } else if let historyWarning = runner.historyWarning {
+                    Label(historyWarning, systemImage: "clock.badge.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
                 } else if let savedPath {
                     Text("已保存到 \(savedPath)")
                         .font(.caption)

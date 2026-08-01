@@ -60,6 +60,23 @@ CLI 后端只能接收文本（`claude -p` 走 stdin），所以图表类画面�
 渲染为 Markdown。若某个兼容模型没有返回合法 JSON，会自动保留其原始输出，不让本次生成失败。
 保存结果时会同时写出 `纪要.md`、`纪要.json` 和 `逐字稿.txt`。
 
+## 历史会议
+
+每次成功生成纪要后，应用会自动在本机保存一个历史版本。工具栏的“历史会议”支持：
+
+- 按标题、纪要内容或说话人搜索
+- 查看过去的 Markdown 纪要
+- 打开仍然存在的原始媒体，或重新处理
+- 导出纪要、结构化 JSON 和逐字稿
+- 删除历史副本（不影响原始媒体和此前导出的文件）
+
+历史库不会复制原始媒体或保存屏幕截图；同一会议重新生成会保留为独立版本。源文件被移动后，
+已有纪要仍可正常查看。数据位于：
+
+```text
+~/Library/Application Support/MeetingScribe/Meetings/
+```
+
 几个设计选择：
 
 - **抽帧用固定间隔 + 感知哈希过滤，而不是 ffmpeg 的场景切变检测。** 录屏里鼠标移动和
@@ -135,11 +152,12 @@ App 自带 headless 模式，传文件路径即可（纪要走 stdout，进度�
 ```
 MeetingScribe/
   Models/       Transcript, ScreenCapture, Settings, SpeakerSegment,
-                VoiceProfile, StructuredMinutes
+                VoiceProfile, StructuredMinutes, MeetingRecord
   Pipeline/     MediaExtractor, Transcriber, TextRecognizer,
                 Diarizer, PromptBuilder, Analyzer, PipelineRunner
-  Views/        ContentView, SettingsView, SpeakerNamingView
-  Support/      Shell, Keychain, MarkdownRenderer, StructuredMinutesRenderer
+  Views/        ContentView, SettingsView, SpeakerNamingView, MeetingHistoryView
+  Support/      Shell, Keychain, MarkdownRenderer, StructuredMinutesRenderer,
+                MeetingHistoryStore
 Tests/          转录、说话人、渲染和子进程回归测试
 .github/        GitHub Actions 测试与 Release 构建
 ```
