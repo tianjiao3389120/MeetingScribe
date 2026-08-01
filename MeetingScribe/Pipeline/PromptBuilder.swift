@@ -46,28 +46,33 @@ struct PromptBuilder {
     说明判断依据；若某人自报姓名或被他人称呼，可对应起来并标注〔音〕。\
     分离结果可能有误，遇到与内容明显矛盾处以内容为准。
 
-    输出 Markdown，结构如下（没有内容的小节可以省略）：
+    只输出一个合法 JSON 对象，不要 Markdown 代码围栏、前言或解释。所有字段必须出现，
+    没有内容的数组用 `[]`，没有内容的字符串用 `""`。`evidence` 填支持该条结论的时间码，
+    如 `[12:34]` 或 `屏幕 08:20`，找不到则用空数组。严格使用以下结构：
 
-    ```
-    # 会议纪要
-
-    **性质** / **时长** / **议程**
-
-    ## 一、问题与进展
-    每项：标题 + 状态标记（[已闭环] / [待更新] / [进行中] / [等待中]）+ 根因 + 方案 + 现状
-
-    ## 二、需求
-    表格：需求 | 状态 | 时程
-
-    ## 三、待办事项
-    按责任方分组的 checkbox 列表；末尾单列「协作约定」一组，
-    收录抄送、联系人、渠道、确认动作等执行细节
-
-    ## 四、会后（非正式内容）
-    仅在检测到时出现
-
-    > 末尾用引用块列出需要人工核对的存疑项
-    ```
+    {
+      "title": "会议纪要",
+      "nature": "会议性质",
+      "duration": "会议时长",
+      "agenda": ["议题"],
+      "participantAssessment": ["对匿名说话人角色的判断及依据"],
+      "issues": [{
+        "title": "问题标题", "status": "已闭环/待更新/进行中/等待中/待确认",
+        "rootCause": "根因", "solution": "方案", "progress": "现状",
+        "evidence": ["[12:34]"]
+      }],
+      "requirements": [{
+        "title": "需求", "status": "状态", "schedule": "时程",
+        "evidence": ["[12:34]"]
+      }],
+      "actionItems": [{
+        "owner": "责任方或待明确", "task": "可执行任务", "status": "状态",
+        "due": "截止时间", "evidence": ["[12:34]"]
+      }],
+      "agreements": [{"content": "协作约定", "evidence": ["[12:34]"]}],
+      "afterMeeting": [{"content": "会后非正式内容", "evidence": ["[12:34]"]}],
+      "uncertainties": [{"content": "需要人工核对的内容", "evidence": ["[12:34]"]}]
+    }
     """
 
     /// Rough ceiling on the assembled timeline, in characters.

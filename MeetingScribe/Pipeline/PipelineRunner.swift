@@ -31,6 +31,8 @@ final class PipelineRunner {
     private(set) var detail: String = ""
     private(set) var assets: MeetingAssets?
     private(set) var summary: String = ""
+    private(set) var structuredSummary: StructuredMinutes?
+    private(set) var usedSummaryFallback = false
     private(set) var error: String?
     private(set) var isRunning = false
 
@@ -63,6 +65,8 @@ final class PipelineRunner {
         task?.cancel()
         error = nil
         summary = ""
+        structuredSummary = nil
+        usedSummaryFallback = false
         assets = nil
         isRunning = true
         speakerWarning = nil
@@ -280,9 +284,12 @@ final class PipelineRunner {
         detail = ""
 
         let analyzer = Analyzer(assets: bundle, settings: Settings.shared)
-        summary = try await analyzer.run { [weak self] message in
+        let result = try await analyzer.run { [weak self] message in
             Task { @MainActor in self?.detail = message }
         }
+        summary = result.markdown
+        structuredSummary = result.structured
+        usedSummaryFallback = result.usedFallback
 
         stage = .done
         progress = 1
@@ -313,6 +320,20 @@ final class PipelineRunner {
         let transcriptURL = destination.appendingPathComponent("\(base) 逐字稿.txt")
         try assets.transcript.timecodedText.write(to: transcriptURL, atomically: true, encoding: .utf8)
 
+        if let structuredSummary {
+            let data = try JSONEncoder.pretty.encode(structuredSummary)
+            try data.write(to: destination.appendingPathComponent("\(base) 纪要.json"),
+                           options: .atomic)
+        }
+
         return summaryURL
+    }
+}
+
+private extension JSONEncoder {
+    static var pretty: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return encoder
     }
 }

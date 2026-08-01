@@ -349,6 +349,17 @@ private struct ResultView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if runner.structuredSummary != nil {
+                        Label("结构化", systemImage: "checkmark.seal")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help("已生成可供历史和跨会议分析使用的结构化 JSON")
+                    } else if runner.usedSummaryFallback {
+                        Label("格式回退", systemImage: "arrow.uturn.backward")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .help("模型未返回合法 JSON，已保留其原始输出")
+                    }
                 }
 
                 Spacer()

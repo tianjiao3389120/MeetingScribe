@@ -10,10 +10,18 @@ import UniformTypeIdentifiers
 /// Same prompt either way, so output is comparable.
 struct Analyzer {
 
+    struct Result: Sendable {
+        let markdown: String
+        let structured: StructuredMinutes?
+        /// Raw model output is retained when JSON parsing failed, so a useful
+        /// legacy Markdown response is never discarded.
+        let usedFallback: Bool
+    }
+
     let assets: MeetingAssets
     let settings: Settings
 
-    func run(progress: @escaping @Sendable (String) -> Void) async throws -> String {
+    func run(progress: @escaping @Sendable (String) -> Void) async throws -> Result {
         // Only offer images to a backend that can actually take them; otherwise
         // every capture goes in as OCR text and nothing is silently dropped.
         let canSendImages: Bool
@@ -31,20 +39,44 @@ struct Analyzer {
                                     imageCaptureIDs: imageIDs)
         let timeline = builder.buildTimeline()
 
+        let raw: String
         switch settings.backend {
         case .claudeCLI:
             progress("正在通过本机 Claude Code 生成纪要…")
-            return try await runCLI(timeline: timeline)
+            raw = try await runCLI(timeline: timeline)
         case .anthropicAPI:
             progress("正在调用 Anthropic API 生成纪要…")
-            return try await runAPI(timeline: timeline, imageIDs: imageIDs)
+            raw = try await runAPI(timeline: timeline, imageIDs: imageIDs)
         case .openAICompatible:
             let preset = settings.provider
             progress("正在调用 \(preset.name)（\(settings.providerModel)）生成纪要…")
-            return try await runOpenAICompatible(timeline: timeline,
-                                                 imageIDs: imageIDs,
-                                                 progress: progress)
+            raw = try await runOpenAICompatible(timeline: timeline,
+                                                imageIDs: imageIDs,
+                                                progress: progress)
         }
+
+        if let structured = Self.parseStructured(raw) {
+            return Result(markdown: StructuredMinutesRenderer.markdown(from: structured),
+                          structured: structured, usedFallback: false)
+        }
+        return Result(markdown: raw, structured: nil, usedFallback: true)
+    }
+
+    static func parseStructured(_ raw: String) -> StructuredMinutes? {
+        var candidate = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.hasPrefix("```") {
+            let lines = candidate.components(separatedBy: .newlines)
+            candidate = lines.dropFirst().dropLast(lines.last?.hasPrefix("```") == true ? 1 : 0)
+                .joined(separator: "\n")
+        }
+        if let first = candidate.firstIndex(of: "{"),
+           let last = candidate.lastIndex(of: "}") {
+            candidate = String(candidate[first...last])
+        }
+        guard let data = candidate.data(using: .utf8),
+              let value = try? JSONDecoder().decode(StructuredMinutes.self, from: data),
+              value.isMeaningful else { return nil }
+        return value
     }
 
     // MARK: - OpenAI-compatible providers
@@ -89,8 +121,7 @@ struct Analyzer {
 
         ---
 
-        以下是会议材料，请按上述要求输出会议纪要。只输出 Markdown 纪要本身，\
-        不要有任何前言、说明或追问。
+        以下是会议材料，请按上述要求输出结构化 JSON。不要有任何前言、说明或追问。
 
         \(timeline)
         """

@@ -56,6 +56,10 @@ CLI 后端只能接收文本（`claude -p` 走 stdin），所以图表类画面�
        └─► 抽帧 ─► 感知哈希去重 ─► Vision OCR ─► 带时间轴屏幕内容 ─────┘
 ```
 
+模型优先输出结构化 JSON（问题、需求、待办、责任人、期限和证据时间码），应用在本地校验后
+渲染为 Markdown。若某个兼容模型没有返回合法 JSON，会自动保留其原始输出，不让本次生成失败。
+保存结果时会同时写出 `纪要.md`、`纪要.json` 和 `逐字稿.txt`。
+
 几个设计选择：
 
 - **抽帧用固定间隔 + 感知哈希过滤，而不是 ffmpeg 的场景切变检测。** 录屏里鼠标移动和
@@ -130,11 +134,12 @@ App 自带 headless 模式，传文件路径即可（纪要走 stdout，进度�
 
 ```
 MeetingScribe/
-  Models/       Transcript, ScreenCapture, Settings, SpeakerSegment, VoiceProfile
+  Models/       Transcript, ScreenCapture, Settings, SpeakerSegment,
+                VoiceProfile, StructuredMinutes
   Pipeline/     MediaExtractor, Transcriber, TextRecognizer,
                 Diarizer, PromptBuilder, Analyzer, PipelineRunner
   Views/        ContentView, SettingsView, SpeakerNamingView
-  Support/      Shell, Keychain, MarkdownRenderer
+  Support/      Shell, Keychain, MarkdownRenderer, StructuredMinutesRenderer
 Tests/          转录、说话人、渲染和子进程回归测试
 .github/        GitHub Actions 测试与 Release 构建
 ```
