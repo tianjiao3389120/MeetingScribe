@@ -101,3 +101,37 @@ enum TranscriptCache {
         return (entries.count, bytes)
     }
 }
+
+/// Same storage strategy as `TranscriptCache`, for speaker timelines.
+/// Diarization costs about as much as transcription, so re-running a file with
+/// speaker separation on must not pay for it twice.
+enum DiarizationCache {
+
+    private static let directory: URL = {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MeetingScribe/speakers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }()
+
+    static func load(key: String) -> Diarization? {
+        let url = directory.appendingPathComponent("\(key).json")
+        guard let data = try? Data(contentsOf: url),
+              let value = try? JSONDecoder().decode(Diarization.self, from: data),
+              !value.segments.isEmpty else { return nil }
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        return value
+    }
+
+    static func save(_ value: Diarization, key: String) {
+        guard !value.segments.isEmpty,
+              let data = try? JSONEncoder().encode(value) else { return }
+        try? data.write(to: directory.appendingPathComponent("\(key).json"))
+    }
+
+    static func clear() {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil) else { return }
+        for url in entries { try? FileManager.default.removeItem(at: url) }
+    }
+}

@@ -103,6 +103,17 @@ final class Settings {
         didSet { defaults.set(keepIntermediates, forKey: Keys.keepIntermediates) }
     }
 
+    /// Off by default: it roughly doubles processing time, and is only worth it
+    /// when the summary needs to say who committed to what.
+    var separateSpeakers: Bool {
+        didSet { defaults.set(separateSpeakers, forKey: Keys.separateSpeakers) }
+    }
+    /// 0 lets clustering decide. On compressed conference audio an explicit
+    /// headcount is markedly more reliable — automatic clustering over-splits.
+    var expectedSpeakerCount: Int {
+        didSet { defaults.set(expectedSpeakerCount, forKey: Keys.speakerCount) }
+    }
+
     // MARK: OpenAI-compatible providers
 
     var providerID: String {
@@ -163,6 +174,8 @@ final class Settings {
         static let glossary = "glossary"
         static let contextHint = "contextHint"
         static let keepIntermediates = "keepIntermediates"
+        static let separateSpeakers = "separateSpeakers"
+        static let speakerCount = "expectedSpeakerCount"
         static let providerID = "providerID"
         static let providerBaseURL = "providerBaseURL"
         static let providerModel = "providerModel"
@@ -188,6 +201,8 @@ final class Settings {
         glossary = defaults.string(forKey: Keys.glossary) ?? Settings.defaultGlossary
         contextHint = defaults.string(forKey: Keys.contextHint) ?? ""
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
+        separateSpeakers = defaults.object(forKey: Keys.separateSpeakers) as? Bool ?? false
+        expectedSpeakerCount = defaults.object(forKey: Keys.speakerCount) as? Int ?? 0
 
         let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.deepseek.id
         providerID = storedProvider

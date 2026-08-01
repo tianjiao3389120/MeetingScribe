@@ -35,6 +35,8 @@ struct MeetingAssets: Sendable {
     var transcript: Transcript
     var captures: [ScreenCapture]
     var hasVideo: Bool
+    /// Present only when speaker separation ran for this recording.
+    var diarization: Diarization?
 
     var title: String { sourceURL.deletingPathExtension().lastPathComponent }
 }

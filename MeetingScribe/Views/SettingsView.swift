@@ -77,6 +77,10 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("说话人分离") {
+                    SpeakerSection(settings: $settings)
+                }
+
                 Section("画面分析") {
                     Picker("采样密度", selection: $settings.frameDensity) {
                         ForEach(FrameDensity.allCases) { Text($0.displayName).tag($0) }
@@ -143,6 +147,100 @@ struct SettingsView: View {
             .padding(14)
         }
         .frame(width: 560, height: 640)
+    }
+}
+
+/// Install, enable and tune speaker separation.
+private struct SpeakerSection: View {
+    @Binding var settings: Settings
+    @State private var readiness = Diarizer.readiness()
+    @State private var installing = false
+    @State private var installDetail = ""
+    @State private var installError: String?
+
+    var body: some View {
+        Toggle("为纪要区分说话人", isOn: $settings.separateSpeakers)
+            .disabled(!readiness.isReady)
+
+        Text("会额外增加约一倍处理时间（40 分钟会议约 4 分钟），换来纪要里「谁汇报、谁提要求、谁承诺」的归属信息。结果会缓存，重复处理同一文件不再重算。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        if settings.separateSpeakers, readiness.isReady {
+            Picker("参会人数", selection: $settings.expectedSpeakerCount) {
+                Text("自动判断").tag(0)
+                ForEach(2...12, id: \.self) { Text("\($0) 人").tag($0) }
+            }
+            Text("会议音频经过压缩时，自动判断容易把同一个人拆成多个。知道人数就填，明显更准。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        switch readiness {
+        case .ready:
+            HStack {
+                Label("已安装（\(ByteCountFormatter.string(fromByteCount: Diarizer.installedSize, countStyle: .file))）",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                Spacer()
+                Button("卸载") {
+                    Diarizer.uninstall()
+                    DiarizationCache.clear()
+                    settings.separateSpeakers = false
+                    readiness = Diarizer.readiness()
+                }
+                .font(.caption)
+            }
+
+        case .noPython:
+            Label("需要 python3，可通过 brew install python 安装",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+
+        case .needsRuntime, .needsModels:
+            VStack(alignment: .leading, spacing: 6) {
+                if installing {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(installDetail).font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button(readiness == .needsModels ? "下载模型（约 28MB）" : "安装（约 100MB）") {
+                        install()
+                    }
+                    Text(readiness == .needsModels
+                         ? "运行环境已就绪，还需下载声纹与分段模型。"
+                         : "将在应用支持目录建立独立 Python 环境并下载模型，不影响系统 Python。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let installError {
+                    Text(installError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    private func install() {
+        installing = true
+        installError = nil
+        Task {
+            do {
+                if readiness == .needsRuntime {
+                    try await Diarizer.installRuntime { installDetail = $0 }
+                }
+                try await Diarizer.downloadModels { installDetail = $0 }
+            } catch {
+                installError = error.localizedDescription
+            }
+            installing = false
+            readiness = Diarizer.readiness()
+        }
     }
 }
 

@@ -39,6 +39,11 @@ struct PromptBuilder {
     8. 不确定的人名、术语，在其后标注〔音〕。
     9. **全文不要使用 emoji 或任何图标符号。** 状态一律用方括号文字标注，\
     提醒用「注意：」开头的普通句子，不要用 ⚠️ ✅ 🔴 等符号。
+    10. **若材料带有【说话人X】标记**，用它来判断责任归属：谁在汇报、谁在提要求、\
+    谁做出承诺。标记只表示「不同的人」，不含身份信息 —— 请结合发言内容推断各自\
+    角色（如「厂商工程师」「客户方」），并在纪要开头用一两句说明你的判断依据。\
+    若某人自报姓名或被他人称呼，可将姓名与说话人对应起来并标注〔音〕。\
+    分离结果可能有误，遇到与内容明显矛盾处以内容为准。
 
     输出 Markdown，结构如下（没有内容的小节可以省略）：
 
@@ -130,6 +135,15 @@ struct PromptBuilder {
         if assets.hasVideo {
             lines.append("含屏幕录像，已提取 \(assets.captures.count) 个画面。")
         }
+        if let diarization = assets.diarization {
+            let shares = diarization.ranking.prefix(6).map { entry -> String in
+                let label = diarization.labels[entry.speaker] ?? "\(entry.speaker)"
+                let total = diarization.segments.reduce(0.0) { $0 + ($1.end - $1.start) }
+                return "说话人\(label) \(Int(entry.seconds / max(total, 1) * 100))%"
+            }
+            lines.append("已做说话人分离，识别出 \(diarization.speakerCount) 位说话人"
+                         + "（发言占比：\(shares.joined(separator: "、"))）。")
+        }
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -151,10 +165,26 @@ struct PromptBuilder {
         entries += assets.captures.map(Entry.screen)
         entries.sort { $0.time < $1.time }
 
+        var lastSpeaker: Int?
+
         for entry in entries {
             switch entry {
             case .speech(let segment):
-                lines.append("[\(segment.timecode)] \(segment.text)")
+                // Only mark the line when the speaker changes — repeating the
+                // tag on every line buries the transcript in labels.
+                if let diarization = assets.diarization,
+                   let speaker = diarization.speaker(from: segment.start, to: segment.end) {
+                    let label = diarization.labels[speaker] ?? "\(speaker)"
+                    if speaker != lastSpeaker {
+                        lines.append("")
+                        lines.append("[\(segment.timecode)] 【说话人\(label)】\(segment.text)")
+                        lastSpeaker = speaker
+                    } else {
+                        lines.append("[\(segment.timecode)] \(segment.text)")
+                    }
+                } else {
+                    lines.append("[\(segment.timecode)] \(segment.text)")
+                }
 
             case .screen(let capture):
                 let held = capture.duration >= 20

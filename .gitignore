@@ -7,3 +7,8 @@ xcuserdata/
 # 本地实测记录，含真实会议数据，不入库
 TUNING.md
 glossary.local.txt
+
+# 密钥文件，绝不入库
+*key*.txt
+*.key
+.env

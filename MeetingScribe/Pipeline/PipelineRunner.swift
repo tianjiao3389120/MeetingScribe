@@ -7,19 +7,21 @@ import Observation
 final class PipelineRunner {
 
     enum Stage: String, CaseIterable {
-        case idle, probing, extractingAudio, transcribing, extractingFrames, readingScreen, analyzing, done, failed
+        case idle, probing, extractingAudio, transcribing, separatingSpeakers,
+             extractingFrames, readingScreen, analyzing, done, failed
 
         var label: String {
             switch self {
-            case .idle:             return "待机"
-            case .probing:          return "读取文件"
-            case .extractingAudio:  return "提取音轨"
-            case .transcribing:     return "语音转录"
-            case .extractingFrames: return "提取画面"
-            case .readingScreen:    return "识别屏幕文字"
-            case .analyzing:        return "生成纪要"
-            case .done:             return "完成"
-            case .failed:           return "失败"
+            case .idle:               return "待机"
+            case .probing:            return "读取文件"
+            case .extractingAudio:    return "提取音轨"
+            case .transcribing:       return "语音转录"
+            case .separatingSpeakers: return "分离说话人"
+            case .extractingFrames:   return "提取画面"
+            case .readingScreen:      return "识别屏幕文字"
+            case .analyzing:          return "生成纪要"
+            case .done:               return "完成"
+            case .failed:             return "失败"
             }
         }
     }
@@ -40,6 +42,10 @@ final class PipelineRunner {
     /// Whether this run skipped transcription by reusing a cached transcript.
     private(set) var usedCachedTranscript = false
 
+    /// Set when speaker separation was requested but failed — surfaced as a
+    /// notice rather than an error, since the summary is still usable.
+    private(set) var speakerWarning: String?
+
     private var task: Task<Void, Never>?
     private var forceRetranscribe = false
 
@@ -57,6 +63,7 @@ final class PipelineRunner {
         summary = ""
         assets = nil
         isRunning = true
+        speakerWarning = nil
         self.forceRetranscribe = forceRetranscribe
 
         task = Task { [weak self] in
@@ -106,12 +113,19 @@ final class PipelineRunner {
         guard info.hasAudio else { throw MediaExtractor.Failure.noAudioTrack }
         detail = "时长 \(TranscriptSegment.humanDuration(info.duration))" + (info.hasVideo ? "，含画面" : "")
 
-        // --- transcription (cached) ----------------------------------------
-        let cacheKey = TranscriptCache.key(for: url,
-                                           language: settings.language,
-                                           glossary: settings.glossary)
+        // --- transcription and diarization ---------------------------------
+        let transcriptKey = TranscriptCache.key(for: url,
+                                                language: settings.language,
+                                                glossary: settings.glossary)
+        let wantsSpeakers = settings.separateSpeakers && Diarizer.readiness().isReady
+        let speakerKey = wantsSpeakers
+            ? TranscriptCache.key(for: url,
+                                  language: "spk-\(settings.expectedSpeakerCount)",
+                                  glossary: "")
+            : nil
+
         var transcript: Transcript?
-        if !forceRetranscribe, let cacheKey, let cached = TranscriptCache.load(key: cacheKey) {
+        if !forceRetranscribe, let transcriptKey, let cached = TranscriptCache.load(key: transcriptKey) {
             transcript = cached
             stage = .transcribing
             progress = 1
@@ -119,21 +133,33 @@ final class PipelineRunner {
             usedCachedTranscript = true
         }
 
-        if transcript == nil {
-            usedCachedTranscript = false
+        var diarization: Diarization?
+        if wantsSpeakers, !forceRetranscribe, let speakerKey,
+           let cached = DiarizationCache.load(key: speakerKey) {
+            diarization = cached
+        }
 
+        // Audio is only needed for work that isn't already cached.
+        let needsAudio = transcript == nil || (wantsSpeakers && diarization == nil)
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-\(UUID().uuidString)")
+        defer {
+            if !settings.keepIntermediates { try? FileManager.default.removeItem(at: work) }
+        }
+
+        var audioURL: URL?
+        if needsAudio {
+            usedCachedTranscript = transcript != nil
             stage = .extractingAudio
-            let work = FileManager.default.temporaryDirectory
-                .appendingPathComponent("meetingscribe-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
-            defer {
-                if !settings.keepIntermediates { try? FileManager.default.removeItem(at: work) }
-            }
-
-            let audioURL = work.appendingPathComponent("audio.wav")
-            try await extractor.extractAudio(to: audioURL)
+            let wav = work.appendingPathComponent("audio.wav")
+            try await extractor.extractAudio(to: wav)
             try Task.checkCancellation()
+            audioURL = wav
+        }
 
+        if transcript == nil, let audioURL {
+            usedCachedTranscript = false
             stage = .transcribing
             progress = 0
             let transcriber = Transcriber(audioURL: audioURL,
@@ -147,14 +173,37 @@ final class PipelineRunner {
                 }
             }
             try Task.checkCancellation()
-
-            if let cacheKey { TranscriptCache.save(fresh, key: cacheKey) }
+            if let transcriptKey { TranscriptCache.save(fresh, key: transcriptKey) }
             transcript = fresh
         }
 
         // Silent or music-only input yields nothing to summarise; fail here
         // instead of spending a model call on an empty timeline.
         guard let transcript, !transcript.segments.isEmpty else { throw Failure.noSpeech }
+
+        if wantsSpeakers, diarization == nil, let audioURL {
+            stage = .separatingSpeakers
+            progress = 0
+            detail = "分析声纹特征…"
+            do {
+                let result = try await Diarizer.run(
+                    audioURL: audioURL,
+                    speakerCount: settings.expectedSpeakerCount
+                ) { [weak self] fraction in
+                    Task { @MainActor in
+                        self?.progress = fraction
+                        self?.detail = String(format: "分离说话人 %.0f%%", fraction * 100)
+                    }
+                }
+                if let speakerKey { DiarizationCache.save(result, key: speakerKey) }
+                diarization = result
+            } catch {
+                // Speaker labels are an enhancement; losing them should not
+                // cost the user the transcript they already paid for.
+                speakerWarning = "说话人分离失败，纪要将不含说话人信息：\(error.localizedDescription)"
+            }
+            try Task.checkCancellation()
+        }
 
         // --- screen -------------------------------------------------------
         var captures: [ScreenCapture] = []
@@ -190,7 +239,8 @@ final class PipelineRunner {
                                    duration: info.duration,
                                    transcript: transcript,
                                    captures: captures,
-                                   hasVideo: info.hasVideo)
+                                   hasVideo: info.hasVideo,
+                                   diarization: diarization)
         // Publish before analysing: if the model call fails, the transcript and
         // captures survive and `retryAnalysis()` can reuse them.
         assets = bundle
