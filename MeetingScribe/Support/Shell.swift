@@ -44,6 +44,7 @@ enum Shell {
     ) async throws -> Result {
 
         let process = Process()
+        let controller = ProcessController(process)
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         if let environment {
@@ -90,20 +91,23 @@ enum Shell {
         // exit path collect whatever it produced.
         let watchdog: Task<Void, Never>? = timeout.map { seconds in
             Task {
-                try? await Task.sleep(for: .seconds(seconds))
-                guard !Task.isCancelled, process.isRunning else { return }
-                process.terminate()
-                try? await Task.sleep(for: .seconds(2))
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                do {
+                    try await Task.sleep(for: .seconds(seconds))
+                } catch {
+                    return
+                }
+                controller.terminate(reason: .timedOut)
             }
         }
 
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in continuation.resume() }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                process.terminationHandler = { _ in continuation.resume() }
+            }
+        } onCancel: {
+            controller.terminate(reason: .cancelled)
         }
         watchdog?.cancel()
-
-        let timedOut = timeout.map { _ in process.terminationReason == .uncaughtSignal } ?? false
 
         outPipe.fileHandleForReading.readabilityHandler = nil
         errPipe.fileHandleForReading.readabilityHandler = nil
@@ -114,8 +118,13 @@ enum Shell {
             collector.appendErr(rest)
         }
 
-        if timedOut {
+        switch controller.stopReason {
+        case .cancelled:
+            throw CancellationError()
+        case .timedOut:
             throw Failure.timedOut((executable as NSString).lastPathComponent, timeout ?? 0)
+        case nil:
+            break
         }
 
         return Result(status: process.terminationStatus,
@@ -139,6 +148,40 @@ enum Shell {
                                result.status, result.stderr)
         }
         return result
+    }
+}
+
+/// `Process` is not Sendable, but all termination decisions are serialized by
+/// this lock-backed owner. It also records why we stopped the child, so a crash
+/// signal is not mistaken for a timeout.
+private final class ProcessController: @unchecked Sendable {
+    enum StopReason { case cancelled, timedOut }
+
+    private let process: Process
+    private let lock = NSLock()
+    private var reason: StopReason?
+
+    init(_ process: Process) { self.process = process }
+
+    var stopReason: StopReason? {
+        lock.lock(); defer { lock.unlock() }
+        return reason
+    }
+
+    func terminate(reason: StopReason) {
+        lock.lock()
+        guard self.reason == nil else { lock.unlock(); return }
+        self.reason = reason
+        let isRunning = process.isRunning
+        lock.unlock()
+
+        if isRunning { process.terminate() }
+
+        // A child may ignore SIGTERM. Do not leave cancellation or timeout
+        // waiting forever for its termination handler.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [process] in
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
     }
 }
 

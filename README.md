@@ -14,11 +14,15 @@ macOS 应用：把会议录像/录音变成会议纪要。语音转录与画面�
 
 首次打开后进设置：
 
-1. **生成纪要后端** —— 本机 Claude Code（用现有订阅，零额外成本）或 Anthropic API（需 key，按量计费）
+1. **生成纪要后端** —— 本机 Claude Code、Anthropic API，或 DeepSeek、智谱、Kimi、通义等 OpenAI 兼容服务
 2. **下载识别模型** —— 约 1.5GB，只需一次
 3. **填会议背景和词表** —— 两分钟的事，纪要质量提升明显
 
 然后把 `.mov` / `.mp4` / `.m4a` / `.mp3` 拖进窗口即可。
+
+说话人分离设置中的人数指**实际开口人数**，不是参会名单人数。30 人在线但只有约 5 人发言，
+就填 5；无法判断时选“自动判断”。自动结果不理想时可修改人数并在结果页点“重新分离”，
+逐字稿会从缓存复用，不会重新转录。
 
 ## 依赖
 
@@ -31,11 +35,11 @@ macOS 应用：把会议录像/录音变成会议纪要。语音转录与画面�
 
 ## 两个后端的取舍
 
-| | 本机 Claude Code | Anthropic API |
-|---|---|---|
-| 成本 | 零额外成本 | 按量计费 |
-| 架构图等图片 | ❌ 只传 OCR 文字 | ✅ 作为图片传入 |
-| 换台机器 | 需装 Claude Code | 填个 key 就能用 |
+| | 本机 Claude Code | Anthropic API | OpenAI 兼容服务 |
+|---|---|---|---|
+| 成本 | 零额外成本 | 按量计费 | 取决于服务商，也支持本地 Ollama |
+| 架构图等图片 | 只传 OCR 文字 | 作为图片传入 | 取决于所选模型的视觉能力 |
+| 配置 | 需安装 Claude Code | 填写 API key | 选择预设或填写自定义地址、模型和 key |
 
 CLI 后端只能接收文本（`claude -p` 走 stdin），所以图表类画面会退化成 OCR 文字。
 需要图片理解能力就选 API 后端。API key 存在 keychain，不落 UserDefaults。
@@ -99,22 +103,23 @@ App 自带 headless 模式，传文件路径即可（纪要走 stdout，进度�
 
 ```
 MeetingScribe/
-  Models/       Transcript, ScreenCapture, Settings
+  Models/       Transcript, ScreenCapture, Settings, SpeakerSegment, VoiceProfile
   Pipeline/     MediaExtractor, Transcriber, TextRecognizer,
-                PromptBuilder, Analyzer, PipelineRunner
-  Views/        ContentView, SettingsView
-  Support/      Shell, Keychain
+                Diarizer, PromptBuilder, Analyzer, PipelineRunner
+  Views/        ContentView, SettingsView, SpeakerNamingView
+  Support/      Shell, Keychain, MarkdownRenderer
+Tests/          转录、说话人、渲染和子进程回归测试
 ```
 
 ## 隐私
 
 - 音频、画面、OCR 全在本机，不出网
+- 可选的声纹档案属于敏感生物特征，仅保存在本机应用支持目录，文件权限限制为当前用户可读写；可在设置中查看、改名或删除
 - **只有最后生成纪要这一步**会把逐字稿和选中的截图发给模型
 - 如果会议内容涉及客户生产环境（IP、主机名、架构），发送前请确认合规要求
 
 ## 未做
 
-- 说话人区分（纪要里"谁负责什么"目前靠上下文推断）
 - 录屏内置（先用系统自带）
 - 跨会议台账 diff
 

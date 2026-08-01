@@ -16,7 +16,15 @@ DEST="build/$APP_NAME.app"
 info() { printf '\033[36m▸\033[0m %s\n' "$*"; }
 
 info "编译（release）…"
-swift build -c release --arch arm64 2>&1 | grep -vE '^\[|warning:|^ *\||^ *`|note:|^$' || true
+BUILD_LOG="$(mktemp -t meetingscribe-build.XXXXXX)"
+trap 'rm -f "$BUILD_LOG"' EXIT
+if ! swift build -c release --arch arm64 >"$BUILD_LOG" 2>&1; then
+    grep -vE '^\[|^ *\||^ *`|note:|^$' "$BUILD_LOG" >&2 || true
+    echo "编译失败，完整日志：$BUILD_LOG" >&2
+    trap - EXIT
+    exit 1
+fi
+grep -vE '^\[|warning:|^ *\||^ *`|note:|^$' "$BUILD_LOG" || true
 
 BINARY="$(swift build -c release --arch arm64 --show-bin-path)/$APP_NAME"
 [ -f "$BINARY" ] || { echo "编译失败：找不到 $BINARY" >&2; exit 1; }

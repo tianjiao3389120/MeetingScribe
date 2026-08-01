@@ -153,9 +153,11 @@ struct Diarizer {
                     speakerCount: Int,
                     progress: @escaping @Sendable (Double) -> Void) async throws -> Diarization {
         guard readiness().isReady else { throw Failure.notReady }
-        if !FileManager.default.fileExists(atPath: scriptPath.path) {
-            try script.write(to: scriptPath, atomically: true, encoding: .utf8)
-        }
+        // The Python helper is bundled as source in the executable. Always
+        // refresh it before a run: keeping an old on-disk copy across app
+        // upgrades silently preserves old output schemas (notably, builds
+        // before voice embeddings were added).
+        try script.write(to: scriptPath, atomically: true, encoding: .utf8)
 
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("diarize-\(UUID().uuidString).json")
@@ -180,9 +182,13 @@ struct Diarizer {
         }
 
         let data = try Data(contentsOf: output)
-        let segments = try JSONDecoder().decode([SpeakerSegment].self, from: data)
-        guard !segments.isEmpty else { throw Failure.noSpeakers }
-        return Diarization(segments: segments)
+        let payload = try JSONDecoder().decode(Payload.self, from: data)
+        guard !payload.segments.isEmpty else { throw Failure.noSpeakers }
+
+        var diarization = Diarization(segments: payload.segments,
+                                      embeddings: payload.embeddings)
+        diarization.names = VoiceProfileStore.match(embeddings: payload.embeddings)
+        return diarization
     }
 
     static func uninstall() {
@@ -202,6 +208,11 @@ struct Diarizer {
                 return sum + Int64(size)
             }
         }
+    }
+
+    private struct Payload: Decodable {
+        let segments: [SpeakerSegment]
+        let embeddings: [String: [Float]]
     }
 
     enum Failure: LocalizedError {
@@ -259,7 +270,40 @@ struct Diarizer {
     result = sherpa_onnx.OfflineSpeakerDiarization(config).process(
         audio, callback=report).sort_by_start_time()
 
-    json.dump([{"start": r.start, "end": r.end, "speaker": r.speaker} for r in result],
-              open(out, "w"))
+    segments = [{"start": r.start, "end": r.end, "speaker": r.speaker} for r in result]
+
+    # A representative voiceprint per speaker, so callers can match this
+    # meeting's clusters against previously enrolled people. Built from the
+    # longest turns — short interjections carry too little signal.
+    extractor = sherpa_onnx.SpeakerEmbeddingExtractor(
+        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=spk_model, num_threads=6))
+
+    by_speaker = {}
+    for s in segments:
+        by_speaker.setdefault(s["speaker"], []).append(s)
+
+    embeddings = {}
+    for speaker, items in by_speaker.items():
+        items.sort(key=lambda x: x["end"] - x["start"], reverse=True)
+        vectors, used = [], 0.0
+        for item in items:
+            if used >= 30.0 or len(vectors) >= 8:
+                break
+            a, b = int(item["start"] * 16000), int(item["end"] * 16000)
+            chunk = audio[a:b]
+            if len(chunk) < 16000:        # under a second is not worth embedding
+                continue
+            stream = extractor.create_stream()
+            stream.accept_waveform(sample_rate=16000, waveform=chunk)
+            stream.input_finished()
+            vectors.append(np.array(extractor.compute(stream), dtype=np.float32))
+            used += item["end"] - item["start"]
+        if vectors:
+            mean = np.mean(vectors, axis=0)
+            norm = np.linalg.norm(mean)
+            if norm > 0:
+                embeddings[str(speaker)] = (mean / norm).tolist()
+
+    json.dump({"segments": segments, "embeddings": embeddings}, open(out, "w"))
     """#
 }

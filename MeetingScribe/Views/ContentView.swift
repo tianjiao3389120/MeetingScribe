@@ -277,6 +277,7 @@ private struct ResultView: View {
     @State private var mode: Mode = .rendered
     @State private var savedURL: URL?
     @State private var saveError: String?
+    @State private var showNaming = false
 
     private enum Mode: String, CaseIterable {
         case rendered = "预览"
@@ -366,6 +367,26 @@ private struct ResultView: View {
                         .truncationMode(.head)
                 }
 
+                if let diarization = runner.assets?.diarization {
+                    if !diarization.embeddings.isEmpty {
+                        Button {
+                            showNaming = true
+                        } label: {
+                            Label("\(diarization.speakerCount) 位说话人", systemImage: "person.2")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.link)
+                        .help("给说话人命名，之后的会议自动识别")
+                    }
+
+                    Button("重新分离") {
+                        runner.rerunSpeakerSeparation()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                    .help("按设置中的实际发言人数重新分离；复用转录缓存")
+                }
+
                 Button("复制") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(runner.summary, forType: .string)
@@ -388,6 +409,16 @@ private struct ResultView: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
+        }
+        .sheet(isPresented: $showNaming) {
+            if let assets = runner.assets {
+                SpeakerNamingView(assets: assets) { names in
+                    showNaming = false
+                    runner.applySpeakerNamesAndRegenerate(names)
+                } onCancel: {
+                    showNaming = false
+                }
+            }
         }
     }
 }

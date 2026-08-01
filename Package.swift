@@ -9,6 +9,11 @@ let package = Package(
             name: "MeetingScribe",
             path: "MeetingScribe",
             swiftSettings: [.swiftLanguageMode(.v5)]
-        )
+        ),
+        .testTarget(
+            name: "MeetingScribeTests",
+            dependencies: ["MeetingScribe"],
+            path: "Tests/MeetingScribeTests"
+        ),
     ]
 )

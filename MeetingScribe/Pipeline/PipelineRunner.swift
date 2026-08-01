@@ -48,6 +48,7 @@ final class PipelineRunner {
 
     private var task: Task<Void, Never>?
     private var forceRetranscribe = false
+    private var forceSpeakerSeparation = false
 
     func cancel() {
         task?.cancel()
@@ -57,7 +58,8 @@ final class PipelineRunner {
         detail = "已取消"
     }
 
-    func run(url: URL, forceRetranscribe: Bool = false) {
+    func run(url: URL, forceRetranscribe: Bool = false,
+             forceSpeakerSeparation: Bool = false) {
         task?.cancel()
         error = nil
         summary = ""
@@ -65,6 +67,7 @@ final class PipelineRunner {
         isRunning = true
         speakerWarning = nil
         self.forceRetranscribe = forceRetranscribe
+        self.forceSpeakerSeparation = forceSpeakerSeparation
 
         task = Task { [weak self] in
             guard let self else { return }
@@ -79,6 +82,14 @@ final class PipelineRunner {
             }
             self.isRunning = false
         }
+    }
+
+    /// Re-runs diarization with the current speaker-count setting while still
+    /// reusing the cached transcript. Useful when automatic clustering guessed
+    /// poorly; transcription is not paid for again.
+    func rerunSpeakerSeparation() {
+        guard let sourceURL = assets?.sourceURL, !isRunning else { return }
+        run(url: sourceURL, forceSpeakerSeparation: true)
     }
 
     /// Re-runs only the model call, reusing the existing transcript and captures.
@@ -103,6 +114,17 @@ final class PipelineRunner {
         }
     }
 
+    /// Applies names enrolled from this meeting before regenerating the
+    /// summary, so the current result benefits immediately rather than only
+    /// future recordings.
+    func applySpeakerNamesAndRegenerate(_ names: [Int: String]) {
+        guard var bundle = assets, var diarization = bundle.diarization else { return }
+        diarization.names.merge(names) { _, new in new }
+        bundle.diarization = diarization
+        assets = bundle
+        retryAnalysis()
+    }
+
     private func execute(url: URL) async throws {
         let settings = Settings.shared
         let extractor = MediaExtractor(url: url)
@@ -120,7 +142,7 @@ final class PipelineRunner {
         let wantsSpeakers = settings.separateSpeakers && Diarizer.readiness().isReady
         let speakerKey = wantsSpeakers
             ? TranscriptCache.key(for: url,
-                                  language: "spk-\(settings.expectedSpeakerCount)",
+                                  language: "spk-v2-\(settings.expectedSpeakerCount)",
                                   glossary: "")
             : nil
 
@@ -134,8 +156,11 @@ final class PipelineRunner {
         }
 
         var diarization: Diarization?
-        if wantsSpeakers, !forceRetranscribe, let speakerKey,
-           let cached = DiarizationCache.load(key: speakerKey) {
+        if wantsSpeakers, !forceRetranscribe, !forceSpeakerSeparation, let speakerKey,
+           var cached = DiarizationCache.load(key: speakerKey) {
+            // Names are derived state. Re-match on every cache read so profile
+            // enrolment, rename and deletion take effect without re-diarizing.
+            cached.names = VoiceProfileStore.match(embeddings: cached.embeddings)
             diarization = cached
         }
 

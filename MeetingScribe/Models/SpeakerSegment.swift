@@ -10,8 +10,36 @@ struct SpeakerSegment: Codable, Sendable {
 /// Speaker timeline for a recording, with the lookup the transcript needs.
 struct Diarization: Codable, Sendable {
     var segments: [SpeakerSegment]
+    /// Unit-length voiceprint per cluster, keyed by speaker id. Present when
+    /// the recording was processed by a build that extracts them.
+    var embeddings: [String: [Float]] = [:]
+    /// Cluster id → enrolled person, filled in by voiceprint matching.
+    var names: [Int: String] = [:]
+
+    init(segments: [SpeakerSegment], embeddings: [String: [Float]] = [:],
+         names: [Int: String] = [:]) {
+        self.segments = segments
+        self.embeddings = embeddings
+        self.names = names
+    }
+
+    /// Older caches contain only `segments`; decode optional additions with
+    /// defaults so an app update does not force expensive diarization again.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        segments = try values.decode([SpeakerSegment].self, forKey: .segments)
+        embeddings = try values.decodeIfPresent([String: [Float]].self, forKey: .embeddings) ?? [:]
+        names = try values.decodeIfPresent([Int: String].self, forKey: .names) ?? [:]
+    }
 
     var speakerCount: Int { Set(segments.map(\.speaker)).count }
+
+    /// What to call a speaker: their enrolled name if recognised, else the
+    /// prominence-ordered letter.
+    func displayName(for speaker: Int) -> String {
+        if let name = names[speaker] { return name }
+        return "说话人\(labels[speaker] ?? "\(speaker)")"
+    }
 
     /// Speaker owning the largest share of `[start, end)`.
     ///

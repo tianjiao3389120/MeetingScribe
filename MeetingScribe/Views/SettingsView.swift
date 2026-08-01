@@ -7,12 +7,15 @@ struct SettingsView: View {
     @State private var modelStatus = ModelStatus.check()
     @State private var download: ModelDownloader?
     @State private var cacheSummary = SettingsView.describeCache()
+    @State private var showVoiceProfiles = false
+    @State private var voiceProfileCount = VoiceProfileStore.load().count
 
     static func describeCache() -> String {
         let (count, bytes) = TranscriptCache.summary
-        guard count > 0 else { return "无" }
+        let speakerCount = DiarizationCache.count
+        guard count > 0 || speakerCount > 0 else { return "无" }
         let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-        return "\(count) 份，\(size)"
+        return "转录 \(count) 份（\(size)），说话人 \(speakerCount) 份"
     }
 
     var body: some View {
@@ -79,6 +82,17 @@ struct SettingsView: View {
 
                 Section("说话人分离") {
                     SpeakerSection(settings: $settings)
+                    LabeledContent("已登记声纹") {
+                        HStack(spacing: 10) {
+                            Text("\(voiceProfileCount) 人")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button("管理…") { showVoiceProfiles = true }
+                        }
+                    }
+                    Text("声纹只保存在本机应用支持目录，用于后续会议自动识别姓名，可随时删除。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("画面分析") {
@@ -121,12 +135,13 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                             Button("清除") {
                                 TranscriptCache.clear()
+                                DiarizationCache.clear()
                                 cacheSummary = Self.describeCache()
                             }
-                            .disabled(TranscriptCache.summary.count == 0)
+                            .disabled(TranscriptCache.summary.count == 0 && DiarizationCache.count == 0)
                         }
                     }
-                    Text("同一个文件重复处理时会跳过转录，直接复用结果。修改识别语言或词表会自动重新转录。")
+                    Text("同一个文件重复处理时会复用转录和说话人结果。清除会同时删除两类缓存，不会删除已登记声纹。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -147,6 +162,11 @@ struct SettingsView: View {
             .padding(14)
         }
         .frame(width: 560, height: 640)
+        .sheet(isPresented: $showVoiceProfiles, onDismiss: {
+            voiceProfileCount = VoiceProfileStore.load().count
+        }) {
+            VoiceProfileManagementView()
+        }
     }
 }
 
@@ -167,11 +187,11 @@ private struct SpeakerSection: View {
             .foregroundStyle(.secondary)
 
         if settings.separateSpeakers, readiness.isReady {
-            Picker("参会人数", selection: $settings.expectedSpeakerCount) {
-                Text("自动判断").tag(0)
-                ForEach(2...12, id: \.self) { Text("\($0) 人").tag($0) }
+            Picker("实际发言人数", selection: $settings.expectedSpeakerCount) {
+                Text("不知道，自动判断").tag(0)
+                ForEach(2...20, id: \.self) { Text("\($0) 人").tag($0) }
             }
-            Text("会议音频经过压缩时，自动判断容易把同一个人拆成多个。知道人数就填，明显更准。")
+            Text("只计算真正开口的人，不是参会名单人数。30 人参会但约 5 人发言，就填 5；无法判断时选自动。压缩音频下自动结果可能偏多，可在结果页调整后重新分离。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -232,9 +252,13 @@ private struct SpeakerSection: View {
         Task {
             do {
                 if readiness == .needsRuntime {
-                    try await Diarizer.installRuntime { installDetail = $0 }
+                    try await Diarizer.installRuntime { detail in
+                        Task { @MainActor in installDetail = detail }
+                    }
                 }
-                try await Diarizer.downloadModels { installDetail = $0 }
+                try await Diarizer.downloadModels { detail in
+                    Task { @MainActor in installDetail = detail }
+                }
             } catch {
                 installError = error.localizedDescription
             }

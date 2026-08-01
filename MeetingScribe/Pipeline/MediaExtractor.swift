@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import CoreImage
 import Foundation
 
@@ -64,6 +64,11 @@ struct MediaExtractor {
         input.expectsMediaDataInRealTime = false
         writer.add(input)
 
+        // AVFoundation marks these reference types non-Sendable even though
+        // this method confines all streaming access to one serial queue.
+        let stream = AudioExportStream(reader: reader, output: output,
+                                       writer: writer, input: input)
+
         guard reader.startReading(), writer.startWriting() else {
             throw Failure.exportFailed(reader.error?.localizedDescription
                                        ?? writer.error?.localizedDescription ?? "未知错误")
@@ -76,22 +81,22 @@ struct MediaExtractor {
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 input.requestMediaDataWhenReady(on: queue) {
-                    while input.isReadyForMoreMediaData {
+                    while stream.input.isReadyForMoreMediaData {
                         // Long files spend real time here; honour cancellation
                         // rather than running the export to completion.
                         if cancelled.isSet {
-                            reader.cancelReading()
-                            input.markAsFinished()
-                            writer.cancelWriting()
+                            stream.reader.cancelReading()
+                            stream.input.markAsFinished()
+                            stream.writer.cancelWriting()
                             continuation.resume()
                             return
                         }
-                        guard let buffer = output.copyNextSampleBuffer() else {
-                            input.markAsFinished()
-                            writer.finishWriting { continuation.resume() }
+                        guard let buffer = stream.output.copyNextSampleBuffer() else {
+                            stream.input.markAsFinished()
+                            stream.writer.finishWriting { continuation.resume() }
                             return
                         }
-                        input.append(buffer)
+                        stream.input.append(buffer)
                     }
                 }
             }
@@ -103,6 +108,27 @@ struct MediaExtractor {
 
         if writer.status == .failed {
             throw Failure.exportFailed(writer.error?.localizedDescription ?? "未知错误")
+        }
+    }
+
+    /// Exports a short excerpt, used to play back a speaker's voice while the
+    /// user puts a name to them.
+    func exportClip(from start: TimeInterval, duration: TimeInterval, to destination: URL) async throws {
+        let asset = AVURLAsset(url: url)
+        guard let session = AVAssetExportSession(asset: asset,
+                                                 presetName: AVAssetExportPresetAppleM4A)
+        else { throw Failure.exportFailed("无法创建导出会话") }
+
+        try? FileManager.default.removeItem(at: destination)
+        session.outputURL = destination
+        session.outputFileType = .m4a
+        session.timeRange = CMTimeRange(
+            start: CMTime(seconds: start, preferredTimescale: 600),
+            duration: CMTime(seconds: duration, preferredTimescale: 600))
+
+        await session.export()
+        if session.status != .completed {
+            throw Failure.exportFailed(session.error?.localizedDescription ?? "导出未完成")
         }
     }
 
@@ -174,6 +200,22 @@ struct MediaExtractor {
         guard captures.count > limit else { return captures }
         let kept = captures.sorted { $0.duration > $1.duration }.prefix(limit)
         return kept.sorted { $0.time < $1.time }
+    }
+}
+
+/// Accessed only by MediaExtractor's serial export queue.
+private final class AudioExportStream: @unchecked Sendable {
+    let reader: AVAssetReader
+    let output: AVAssetReaderTrackOutput
+    let writer: AVAssetWriter
+    let input: AVAssetWriterInput
+
+    init(reader: AVAssetReader, output: AVAssetReaderTrackOutput,
+         writer: AVAssetWriter, input: AVAssetWriterInput) {
+        self.reader = reader
+        self.output = output
+        self.writer = writer
+        self.input = input
     }
 }
 

@@ -118,7 +118,10 @@ enum DiarizationCache {
         let url = directory.appendingPathComponent("\(key).json")
         guard let data = try? Data(contentsOf: url),
               let value = try? JSONDecoder().decode(Diarization.self, from: data),
-              !value.segments.isEmpty else { return nil }
+              !value.segments.isEmpty,
+              // Pre-voiceprint caches cannot support naming. Treat them as a
+              // miss so the next run extracts embeddings once.
+              !value.embeddings.isEmpty else { return nil }
         try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
         return value
     }
@@ -133,5 +136,10 @@ enum DiarizationCache {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil) else { return }
         for url in entries { try? FileManager.default.removeItem(at: url) }
+    }
+
+    static var count: Int {
+        (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil).count) ?? 0
     }
 }
