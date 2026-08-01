@@ -12,6 +12,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 APP_NAME="MeetingScribe"
 BUNDLE_ID="com.meetingscribe.app"
 VERSION="1.0"
+ICON_FILE="Assets/AppIcon.icns"
 DEST="build/$APP_NAME.app"
 SIGN_IDENTITY="${MEETINGSCRIBE_SIGN_IDENTITY:--}"
 
@@ -36,6 +37,8 @@ rm -rf "$DEST"
 mkdir -p "$DEST/Contents/MacOS" "$DEST/Contents/Resources"
 cp "$BINARY" "$DEST/Contents/MacOS/$APP_NAME"
 [ -x "$DEST/Contents/MacOS/$APP_NAME" ] || { echo "打包失败：二进制未就位" >&2; exit 1; }
+[ -f "$ICON_FILE" ] || { echo "打包失败：找不到应用图标 $ICON_FILE" >&2; exit 1; }
+cp "$ICON_FILE" "$DEST/Contents/Resources/AppIcon.icns"
 
 cat > "$DEST/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -49,6 +52,7 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>$APP_NAME</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>本地处理会议录音与录像</string>
