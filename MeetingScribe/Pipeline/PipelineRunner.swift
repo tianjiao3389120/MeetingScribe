@@ -52,9 +52,11 @@ final class PipelineRunner {
     private var task: Task<Void, Never>?
     private var forceRetranscribe = false
     private var forceSpeakerSeparation = false
+    private var pendingJobID: UUID?
 
     func cancel() {
         task?.cancel()
+        PendingJobStore.clear(id: pendingJobID)
         task = nil
         isRunning = false
         stage = .idle
@@ -76,6 +78,11 @@ final class PipelineRunner {
         historyWarning = nil
         self.forceRetranscribe = forceRetranscribe
         self.forceSpeakerSeparation = forceSpeakerSeparation
+        let pendingJob = PendingMeetingJob(
+            sourcePath: url.path, workspaceID: workspace?.id, tags: tags,
+            materialPaths: materials.map { $0.sourceURL.path })
+        pendingJobID = pendingJob.id
+        try? PendingJobStore.save(pendingJob)
 
         task = Task { [weak self] in
             guard let self else { return }
@@ -89,6 +96,7 @@ final class PipelineRunner {
                 self.stage = .failed
                 self.error = error.localizedDescription
             }
+            PendingJobStore.clear(id: pendingJob.id)
             self.isRunning = false
         }
     }
@@ -120,6 +128,27 @@ final class PipelineRunner {
                 self.stage = .failed
                 self.error = error.localizedDescription
             }
+            self.isRunning = false
+        }
+    }
+
+    func analyzeEditedTranscript(record: MeetingRecord, transcript: Transcript,
+                                 workspace: MeetingWorkspace?,
+                                 materials: [SupportingMaterial]) {
+        task?.cancel()
+        error = nil; summary = ""; structuredSummary = nil
+        usedSummaryFallback = false; isRunning = true
+        let bundle = MeetingAssets(
+            sourceURL: record.sourceURL, duration: record.duration,
+            transcript: transcript, captures: [], hasVideo: false,
+            diarization: nil, materials: materials, workspace: workspace,
+            tags: record.tags ?? [])
+        assets = bundle
+        task = Task { [weak self] in
+            guard let self else { return }
+            do { try await self.analyze(bundle) }
+            catch is CancellationError { self.stage = .idle; self.detail = "已取消" }
+            catch { self.stage = .failed; self.error = error.localizedDescription }
             self.isRunning = false
         }
     }

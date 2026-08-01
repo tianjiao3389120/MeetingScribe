@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var cacheSummary = SettingsView.describeCache()
     @State private var showVoiceProfiles = false
     @State private var voiceProfileCount = VoiceProfileStore.load().count
+    @State private var showStorageManagement = false
 
     static func describeCache() -> String {
         let (count, bytes) = TranscriptCache.summary
@@ -78,9 +79,7 @@ struct SettingsView: View {
                             Text(scenario.displayName).tag(scenario)
                         }
                     }
-                    Text(settings.recognitionScenario == .hongKongMixed
-                         ? "自动识别香港粤语、普通话及句中英语；纪要转换为简体书面中文并保留英文术语。"
-                         : "自动多语言适合无法预先确定会议语言的情况。")
+                    Text(settings.recognitionScenario.explanation)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -109,11 +108,11 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("会议背景") {
+                Section("默认会议背景") {
                     TextEditor(text: $settings.contextHint)
                         .frame(height: 52)
                         .font(.callout)
-                    Text("例如：与银行客户的双周例会，我方是安全产品厂商。填了能明显提升纪要质量。")
+                    Text("适用于所有会议。具体客户或项目的信息请填写在会议空间背景中，两者会合并使用。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -132,27 +131,15 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("缓存") {
-                    LabeledContent("已缓存的转录结果") {
-                        HStack(spacing: 10) {
-                            Text(cacheSummary)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Button("清除") {
-                                TranscriptCache.clear()
-                                DiarizationCache.clear()
-                                cacheSummary = Self.describeCache()
-                            }
-                            .disabled(TranscriptCache.summary.count == 0 && DiarizationCache.count == 0)
-                        }
-                    }
-                    Text("同一个文件重复处理时会复用转录和说话人结果。清除会同时删除两类缓存，不会删除已登记声纹。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Section("存储") {
+                    LabeledContent("处理缓存") { Text(cacheSummary).foregroundStyle(.secondary) }
+                    Button("管理存储…") { showStorageManagement = true }
                 }
 
-                Section {
-                    Toggle("保留中间文件（音轨、截图）", isOn: $settings.keepIntermediates)
+                Section("调试") {
+                    Toggle("保留临时音轨", isOn: $settings.keepIntermediates)
+                    Text("仅用于排查转录问题，会持续占用临时目录空间；正常使用建议关闭。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -172,6 +159,9 @@ struct SettingsView: View {
         }) {
             VoiceProfileManagementView()
         }
+        .sheet(isPresented: $showStorageManagement, onDismiss: {
+            cacheSummary = Self.describeCache()
+        }) { StorageManagementView() }
     }
 }
 
@@ -194,7 +184,7 @@ private struct SpeakerSection: View {
         if settings.separateSpeakers, readiness.isReady {
             Picker("实际发言人数", selection: $settings.expectedSpeakerCount) {
                 Text("不知道，自动判断").tag(0)
-                ForEach(2...20, id: \.self) { Text("\($0) 人").tag($0) }
+                ForEach(2...30, id: \.self) { Text("\($0) 人").tag($0) }
             }
             Text("只计算真正开口的人，不是参会名单人数。30 人参会但约 5 人发言，就填 5；无法判断时选自动。压缩音频下自动结果可能偏多，可在结果页调整后重新分离。")
                 .font(.caption)

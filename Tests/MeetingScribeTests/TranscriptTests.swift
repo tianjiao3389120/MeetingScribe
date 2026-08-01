@@ -2,6 +2,29 @@ import XCTest
 @testable import MeetingScribe
 
 final class TranscriptTests: XCTestCase {
+    func testEditedTranscriptPreservesTimingAndRejectsChangedLineCount() {
+        let original = Transcript(segments: [
+            TranscriptSegment(id: 0, start: 1, end: 2, text: "旧内容"),
+            TranscriptSegment(id: 1, start: 3, end: 4, text: "第二句"),
+        ])
+        let edited = original.replacingTexts(from: "[00:01] 新内容\n[00:03] 修正版")
+        XCTAssertEqual(edited?.segments.map(\.text), ["新内容", "修正版"])
+        XCTAssertEqual(edited?.segments[0].start, 1)
+        XCTAssertNil(original.replacingTexts(from: "只有一行"))
+    }
+
+    func testTranslationResponseParsesFencedJSONAndPreservesIDs() throws {
+        let raw = """
+        ```json
+        [{"id":0,"text":"这个功能需要客户确认。"},{"id":1,"text":"明天更新 timeline。"}]
+        ```
+        """
+        let values = try TranscriptTranslator.parseResponse(raw)
+        XCTAssertEqual(values.map(\.segmentID), [0, 1])
+        XCTAssertEqual(values[0].text, "这个功能需要客户确认。")
+        XCTAssertThrowsError(try TranscriptTranslator.parseResponse("不是 JSON"))
+    }
+
     func testParsesMultilineSRTAndSkipsMalformedBlocks() {
         let transcript = Transcript.parse(srt: """
         1

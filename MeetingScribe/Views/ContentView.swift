@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var savedPath: String?
     @State private var pendingMedia: URL?
     @State private var systemRecordingMonitor = SystemRecordingMonitor()
+    @State private var interruptedJob: PendingMeetingJob?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,22 +45,13 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showHistory) {
-            MeetingHistoryView { record in
+            MeetingHistoryView(onReprocess: { record in
                 showHistory = false
-                Task {
-                    let workspace = (try? MeetingWorkspaceStore.load())?
-                        .first { $0.id == record.workspaceID }
-                    var materials: [SupportingMaterial] = []
-                    for reference in record.materials ?? [] {
-                        let url = URL(fileURLWithPath: reference.sourcePath)
-                        if let value = try? await Task.detached(operation: {
-                            try MaterialExtractor.extract(from: url)
-                        }).value { materials.append(value) }
-                    }
-                    runner.run(url: record.sourceURL, workspace: workspace,
-                               tags: record.tags ?? [], materials: materials)
-                }
-            }
+                reprocess(record)
+            }, onAnalyzeTranscript: { record, transcript in
+                showHistory = false
+                reprocess(record, editedTranscript: transcript)
+            })
         }
         .sheet(isPresented: Binding(
             get: { pendingMedia != nil },
@@ -73,6 +65,64 @@ struct ContentView: View {
                     pendingMedia = nil
                 }
             }
+        }
+        .onAppear {
+            if interruptedJob == nil { interruptedJob = PendingJobStore.load() }
+        }
+        .alert("发现未完成的会议处理", isPresented: Binding(
+            get: { interruptedJob != nil },
+            set: { if !$0 { interruptedJob = nil } }
+        )) {
+            Button("放弃", role: .destructive) {
+                if let job = interruptedJob { PendingJobStore.clear(id: job.id) }
+                interruptedJob = nil
+            }
+            Button("继续处理") {
+                if let job = interruptedJob { resume(job) }
+                interruptedJob = nil
+            }
+        } message: {
+            Text("上次可能在转录或生成纪要期间退出。继续时会复用已经完成的转录缓存。")
+        }
+    }
+
+    private func reprocess(_ record: MeetingRecord, editedTranscript: Transcript? = nil) {
+        Task {
+            let workspace = (try? MeetingWorkspaceStore.load())?
+                .first { $0.id == record.workspaceID }
+            var materials: [SupportingMaterial] = []
+            for reference in record.materials ?? [] {
+                let url = URL(fileURLWithPath: reference.sourcePath)
+                if let value = try? await Task.detached(operation: {
+                    try MaterialExtractor.extract(from: url)
+                }).value { materials.append(value) }
+            }
+            if let editedTranscript {
+                runner.analyzeEditedTranscript(record: record, transcript: editedTranscript,
+                                               workspace: workspace, materials: materials)
+            } else {
+                runner.run(url: record.sourceURL, workspace: workspace,
+                           tags: record.tags ?? [], materials: materials)
+            }
+        }
+    }
+
+    private func resume(_ job: PendingMeetingJob) {
+        let source = URL(fileURLWithPath: job.sourcePath)
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            PendingJobStore.clear(id: job.id)
+            return
+        }
+        Task {
+            let workspace = (try? MeetingWorkspaceStore.load())?
+                .first { $0.id == job.workspaceID }
+            var materials: [SupportingMaterial] = []
+            for path in job.materialPaths {
+                if let value = try? await Task.detached(operation: {
+                    try MaterialExtractor.extract(from: URL(fileURLWithPath: path))
+                }).value { materials.append(value) }
+            }
+            runner.run(url: source, workspace: workspace, tags: job.tags, materials: materials)
         }
     }
 }

@@ -3,6 +3,7 @@ import SwiftUI
 struct MeetingHistoryView: View {
     @Environment(\.dismiss) private var dismiss
     let onReprocess: (MeetingRecord) -> Void
+    let onAnalyzeTranscript: (MeetingRecord, Transcript) -> Void
 
     @State private var records: [MeetingRecord] = []
     @State private var selection: UUID?
@@ -14,6 +15,9 @@ struct MeetingHistoryView: View {
     @State private var workspaceFilter: WorkspaceFilter = .all
     @State private var showWorkspaceManager = false
     @State private var editingClassification: MeetingRecord?
+    @State private var dashboardWorkspace: MeetingWorkspace?
+    @State private var editingTranscript: MeetingRecord?
+    @State private var translatingTranscript: MeetingRecord?
 
     private enum WorkspaceFilter: Hashable { case all, ungrouped, workspace(UUID) }
 
@@ -29,6 +33,7 @@ struct MeetingHistoryView: View {
         return scoped.filter {
             $0.title.localizedCaseInsensitiveContains(query)
                 || $0.summaryMarkdown.localizedCaseInsensitiveContains(query)
+                || ($0.tags ?? []).contains { $0.localizedCaseInsensitiveContains(query) }
                 || $0.speakerNames.values.contains {
                     $0.localizedCaseInsensitiveContains(query)
                 }
@@ -54,6 +59,11 @@ struct MeetingHistoryView: View {
                         Button { showWorkspaceManager = true } label: {
                             Image(systemName: "folder.badge.gearshape")
                         }.help("管理会议空间")
+                        Button {
+                            dashboardWorkspace = selectedFilterWorkspace
+                        } label: { Image(systemName: "chart.bar.doc.horizontal") }
+                            .disabled(selectedFilterWorkspace == nil)
+                            .help("查看空间总览与待办台账")
                     }.padding(8)
                     Divider()
                     if filtered.isEmpty {
@@ -110,7 +120,7 @@ struct MeetingHistoryView: View {
             .padding(12)
         }
         .frame(width: 920, height: 620)
-        .searchable(text: $query, prompt: "搜索标题、纪要或说话人")
+        .searchable(text: $query, prompt: "搜索标题、纪要、标签或说话人")
         .onAppear(perform: load)
         .sheet(isPresented: $showWorkspaceManager, onDismiss: loadWorkspaces) {
             WorkspaceManagementView()
@@ -122,6 +132,24 @@ struct MeetingHistoryView: View {
                 }
                 editingClassification = nil
             } onCancel: { editingClassification = nil }
+        }
+        .sheet(item: $dashboardWorkspace) { workspace in
+            WorkspaceDashboardView(
+                workspace: workspace,
+                records: records.filter { $0.workspaceID == workspace.id })
+        }
+        .sheet(item: $editingTranscript) { record in
+            TranscriptEditorView(record: record) { transcript in
+                editingTranscript = nil
+                onAnalyzeTranscript(record, transcript)
+            }
+        }
+        .sheet(item: $translatingTranscript) { record in
+            TranscriptTranslationView(record: record) { updated in
+                if let index = records.firstIndex(where: { $0.id == updated.id }) {
+                    records[index] = updated
+                }
+            }
         }
         .onChange(of: filtered.map(\.id)) { _, ids in
             if selection == nil || !ids.contains(selection!) { selection = ids.first }
@@ -159,8 +187,14 @@ struct MeetingHistoryView: View {
                     Label("源文件已移动", systemImage: "questionmark.folder")
                         .font(.caption).foregroundStyle(.orange)
                 }
-                Button("归组与标签…") { editingClassification = record }
-                Button("导出…") { export(record) }
+                Menu("更多操作") {
+                    Button("归组与标签…") { editingClassification = record }
+                    Divider()
+                    Button("校正逐字稿并重新生成…") { editingTranscript = record }
+                    Button("生成双栏释义…") { translatingTranscript = record }
+                    Divider()
+                    Button("导出…") { export(record) }
+                }
                 Button(role: .destructive) { pendingDelete = record } label: {
                     Image(systemName: "trash")
                 }
@@ -189,6 +223,11 @@ struct MeetingHistoryView: View {
 
     private func workspace(for record: MeetingRecord) -> MeetingWorkspace? {
         workspaces.first { $0.id == record.workspaceID }
+    }
+
+    private var selectedFilterWorkspace: MeetingWorkspace? {
+        guard case .workspace(let id) = workspaceFilter else { return nil }
+        return workspaces.first { $0.id == id }
     }
 
     private func removePending() {

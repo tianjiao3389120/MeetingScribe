@@ -49,4 +49,28 @@ final class WorkspaceMaterialTests: XCTestCase {
         XCTAssertTrue(trimmed.contains("Falcon Gateway"))
         XCTAssertTrue(RecognitionScenario.hongKongMixed.analysisGuidance.contains("简体书面中文"))
     }
+
+    func testWorkspaceInsightsAggregatesOpenAndClosedActions() {
+        func record(status: String, task: String) -> MeetingRecord {
+            let minutes = StructuredMinutes(
+                title: "周会", nature: "", duration: "", agenda: ["进展"],
+                participantAssessment: [], issues: [], requirements: [],
+                actionItems: [.init(owner: "张三", task: task, status: status,
+                                    due: "周五", evidence: ["[01:00]"])],
+                agreements: [], afterMeeting: [], uncertainties: [])
+            return MeetingRecord(
+                title: "项目周会", sourcePath: "/meeting.mov", duration: 60,
+                backend: "测试", model: "mock", summaryMarkdown: "纪要",
+                structuredSummary: minutes, transcript: Transcript(segments: []),
+                speakerNames: [:], usedSummaryFallback: false)
+        }
+
+        let insights = WorkspaceInsights(records: [
+            record(status: "进行中", task: "提交方案"),
+            record(status: "已完成", task: "确认名单"),
+        ])
+        XCTAssertEqual(insights.actions.count, 2)
+        XCTAssertEqual(insights.openActions.map(\.task), ["提交方案"])
+        XCTAssertEqual(insights.closedActions.map(\.task), ["确认名单"])
+    }
 }

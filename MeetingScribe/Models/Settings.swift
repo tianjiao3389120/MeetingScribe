@@ -119,6 +119,15 @@ enum RecognitionScenario: String, CaseIterable, Identifiable, Codable {
             return ""
         }
     }
+
+    var explanation: String {
+        switch self {
+        case .mandarin: return "适合主要使用普通话的会议，能减少语言误判。"
+        case .english: return "适合主要使用英语的会议，逐字稿保留英文。"
+        case .autoMultilingual: return "不预设单一语言，适合语言无法提前确定的会议。"
+        case .hongKongMixed: return "自动识别香港粤语、普通话及句中英语；纪要转换为简体书面中文并保留英文术语。"
+        }
+    }
 }
 
 @Observable

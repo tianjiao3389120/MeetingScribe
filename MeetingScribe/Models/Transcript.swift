@@ -49,6 +49,27 @@ struct Transcript: Codable, Sendable {
 
     var duration: TimeInterval { segments.last?.end ?? 0 }
 
+    /// Applies one edited text line to each existing timed segment. Timecodes
+    /// shown in the editor are labels only; original timing remains authoritative.
+    func replacingTexts(from edited: String) -> Transcript? {
+        let lines = edited.components(separatedBy: .newlines)
+        guard lines.count == segments.count else { return nil }
+        var values: [TranscriptSegment] = []
+        for (segment, line) in zip(segments, lines) {
+            let value: String
+            if let close = line.firstIndex(of: "]"), line.first == "[" {
+                value = String(line[line.index(after: close)...])
+                    .trimmingCharacters(in: .whitespaces)
+            } else {
+                value = line.trimmingCharacters(in: .whitespaces)
+            }
+            guard !value.isEmpty else { return nil }
+            values.append(TranscriptSegment(id: segment.id, start: segment.start,
+                                            end: segment.end, text: value))
+        }
+        return Transcript(segments: values)
+    }
+
     /// Parses whisper.cpp's SRT output.
     static func parse(srt: String) -> Transcript {
         var segments: [TranscriptSegment] = []

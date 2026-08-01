@@ -146,4 +146,12 @@ enum DiarizationCache {
         (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil).count) ?? 0
     }
+
+    static var bytes: Int64 {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        return entries.reduce(0) {
+            $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+    }
 }

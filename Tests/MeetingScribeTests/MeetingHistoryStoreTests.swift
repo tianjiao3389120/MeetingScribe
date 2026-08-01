@@ -102,4 +102,36 @@ final class MeetingHistoryStoreTests: XCTestCase {
         try MeetingHistoryStore.clearWorkspaceReferences([workspaceID], root: root)
         XCTAssertNil(try MeetingHistoryStore.loadAll(root: root)[0].workspaceID)
     }
+
+    func testPendingJobRoundTripAndConditionalClear() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-job-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let job = PendingMeetingJob(sourcePath: "/meeting.mov", workspaceID: UUID(),
+                                    tags: ["双周会"], materialPaths: ["/agenda.pdf"])
+        try PendingJobStore.save(job, to: url)
+        XCTAssertEqual(PendingJobStore.load(from: url)?.tags, ["双周会"])
+
+        PendingJobStore.clear(id: UUID(), at: url)
+        XCTAssertNotNil(PendingJobStore.load(from: url))
+        PendingJobStore.clear(id: job.id, at: url)
+        XCTAssertNil(PendingJobStore.load(from: url))
+    }
+
+    func testStorageOverviewReportsHistoryAndMissingSources() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-storage-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = MeetingRecord(
+            title: "存储测试", sourcePath: "/missing.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要内容",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        try MeetingHistoryStore.save(record, root: root)
+
+        let overview = StorageOverview.load(historyRoot: root)
+        XCTAssertEqual(overview.meetingCount, 1)
+        XCTAssertEqual(overview.missingSourceCount, 1)
+        XCTAssertGreaterThan(overview.historyBytes, 0)
+    }
 }

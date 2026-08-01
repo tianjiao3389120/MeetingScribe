@@ -20,6 +20,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var workspaceID: UUID?
     var tags: [String]?
     var materials: [MaterialReference]?
+    var transcriptTranslations: [TranscriptTranslation]?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
@@ -27,7 +28,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
          structuredSummary: StructuredMinutes?, transcript: Transcript,
          speakerNames: [Int: String], usedSummaryFallback: Bool,
          workspaceID: UUID? = nil, tags: [String] = [],
-         materials: [MaterialReference] = []) {
+         materials: [MaterialReference] = [],
+         transcriptTranslations: [TranscriptTranslation] = []) {
         self.id = id
         schemaVersion = Self.currentSchemaVersion
         self.createdAt = createdAt
@@ -44,7 +46,13 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.workspaceID = workspaceID
         self.tags = tags
         self.materials = materials
+        self.transcriptTranslations = transcriptTranslations
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }
+}
+
+struct TranscriptTranslation: Codable, Sendable, Equatable {
+    let segmentID: Int
+    let text: String
 }
