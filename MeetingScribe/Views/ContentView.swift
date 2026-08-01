@@ -10,6 +10,9 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             switch runner.stage {
+            case .failed where runner.canRetryAnalysis:
+                // Transcription succeeded; only the model call failed.
+                RetryPanel(runner: runner, showSettings: $showSettings)
             case .idle, .failed:
                 DropZone(isTargeted: $isTargeted,
                          error: runner.error,
@@ -100,6 +103,82 @@ private struct DropZone: View {
     }
 }
 
+// MARK: - Analysis failed, transcript intact
+
+/// Shown when the model call fails after transcription succeeded. The costly
+/// work is already done, so the fix (key, provider, network) is a settings
+/// change away and the retry is seconds rather than minutes.
+private struct RetryPanel: View {
+    let runner: PipelineRunner
+    @Binding var showSettings: Bool
+    @State private var exportedTranscript: String?
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Spacer()
+
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 40, weight: .thin))
+                .foregroundStyle(.orange)
+
+            Text("生成纪要失败")
+                .font(.title3.weight(.medium))
+
+            if let error = runner.error {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: 460)
+            }
+
+            if let assets = runner.assets {
+                Label("转录与画面已保留（\(assets.transcript.segments.count) 段语音"
+                      + (assets.captures.isEmpty ? "" : "，\(assets.captures.count) 个画面")
+                      + "），修好后可直接重试，无需重新转录",
+                      systemImage: "checkmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 460)
+            }
+
+            HStack(spacing: 12) {
+                Button("打开设置") { showSettings = true }
+                Button("重试生成纪要") { runner.retryAnalysis() }
+                    .keyboardShortcut(.defaultAction)
+                Button("导出逐字稿") { exportTranscript() }
+            }
+            .controlSize(.large)
+
+            if let exportedTranscript {
+                Text("逐字稿已保存到 \(exportedTranscript)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(32)
+    }
+
+    /// Escape hatch: keep the transcript even if the model never cooperates.
+    private func exportTranscript() {
+        guard let assets = runner.assets else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(assets.title) 逐字稿.txt"
+        panel.allowedContentTypes = [.plainText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try assets.transcript.timecodedText.write(to: url, atomically: true, encoding: .utf8)
+            exportedTranscript = url.lastPathComponent
+        } catch {
+            exportedTranscript = "保存失败：\(error.localizedDescription)"
+        }
+    }
+}
+
 // MARK: - Progress
 
 private struct ProgressPanel: View {
@@ -171,10 +250,42 @@ private struct ResultView: View {
 
     @State private var mode: Mode = .rendered
     @State private var savedURL: URL?
+    @State private var saveError: String?
 
     private enum Mode: String, CaseIterable {
         case rendered = "预览"
         case source = "源码"
+    }
+
+    /// Writing next to the source fails on read-only locations (disk images,
+    /// some synced folders). Fall back to a save panel rather than doing
+    /// nothing — a dead button gives the user no way forward.
+    private func save() -> URL? {
+        saveError = nil
+        do {
+            let url = try runner.saveOutputs()
+            savedURL = url
+            savedPath = url.deletingLastPathComponent().lastPathComponent
+            return url
+        } catch {
+            guard let assets = runner.assets else {
+                saveError = error.localizedDescription
+                return nil
+            }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = "\(assets.title) 纪要.md"
+            panel.message = "无法写入原文件所在目录，请另选位置"
+            guard panel.runModal() == .OK, let picked = panel.url else { return nil }
+            do {
+                let url = try runner.saveOutputs(to: picked.deletingLastPathComponent())
+                savedURL = url
+                savedPath = url.deletingLastPathComponent().lastPathComponent
+                return url
+            } catch {
+                saveError = "保存失败：\(error.localizedDescription)"
+                return nil
+            }
+        }
     }
 
     var body: some View {
@@ -215,7 +326,13 @@ private struct ResultView: View {
 
                 Spacer()
 
-                if let savedPath {
+                if let saveError {
+                    Label(saveError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                } else if let savedPath {
                     Text("已保存到 \(savedPath)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -229,9 +346,7 @@ private struct ResultView: View {
                 }
 
                 Button("保存") {
-                    if let url = try? runner.saveOutputs() {
-                        savedURL = url
-                        savedPath = url.deletingLastPathComponent().lastPathComponent
+                    if let url = save() {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
                 }
@@ -240,11 +355,9 @@ private struct ResultView: View {
                 // Hands the file to whatever the user's default .md app is —
                 // Typora, Obsidian, MacDown, VS Code…
                 Button("用其他应用打开") {
-                    let url = savedURL ?? (try? runner.saveOutputs())
-                    guard let url else { return }
-                    savedURL = url
-                    savedPath = url.deletingLastPathComponent().lastPathComponent
-                    NSWorkspace.shared.open(url)
+                    if let url = savedURL ?? save() {
+                        NSWorkspace.shared.open(url)
+                    }
                 }
             }
             .padding(.horizontal, 20)

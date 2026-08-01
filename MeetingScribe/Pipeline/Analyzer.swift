@@ -98,9 +98,12 @@ struct Analyzer {
         let result = try await Shell.check(
             claude,
             ["-p", "--output-format", "text"],
-            stdin: prompt
+            stdin: prompt,
+            timeout: 900
         )
-        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw Failure.emptyResponse }
+        return text
     }
 
     // MARK: - Anthropic API
@@ -199,6 +202,17 @@ struct Analyzer {
                                    [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
+    }
+
+    enum Failure: LocalizedError {
+        case emptyResponse
+
+        var errorDescription: String? {
+            switch self {
+            case .emptyResponse:
+                return "模型没有返回内容。可能是内容过长或被拒绝，可尝试关闭画面分析后重试。"
+            }
+        }
     }
 
     enum APIError: LocalizedError {

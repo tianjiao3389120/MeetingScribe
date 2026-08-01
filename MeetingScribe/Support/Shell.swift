@@ -13,6 +13,7 @@ enum Shell {
     enum Failure: LocalizedError {
         case launch(String, Error)
         case exit(String, Int32, String)
+        case timedOut(String, TimeInterval)
 
         var errorDescription: String? {
             switch self {
@@ -21,18 +22,24 @@ enum Shell {
             case .exit(let tool, let code, let stderr):
                 let tail = stderr.split(separator: "\n").suffix(6).joined(separator: "\n")
                 return "\(tool) 退出码 \(code)\n\(tail)"
+            case .timedOut(let tool, let seconds):
+                return "\(tool) 超过 \(TranscriptSegment.humanDuration(seconds)) 未返回，已终止。"
             }
         }
     }
 
     /// `onStderrLine` receives stderr as it arrives — whisper reports progress
     /// there, which is what drives the progress bar.
+    ///
+    /// `timeout` guards against a child that never exits: without it a wedged
+    /// `claude` process leaves the UI stuck on "生成纪要" forever.
     @discardableResult
     static func run(
         _ executable: String,
         _ arguments: [String],
         environment: [String: String]? = nil,
         stdin: String? = nil,
+        timeout: TimeInterval? = nil,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Result {
 
@@ -79,9 +86,24 @@ enum Shell {
         }
         try? inPipe.fileHandleForWriting.close()
 
+        // Terminate a child that outstays the deadline, then let the normal
+        // exit path collect whatever it produced.
+        let watchdog: Task<Void, Never>? = timeout.map { seconds in
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled, process.isRunning else { return }
+                process.terminate()
+                try? await Task.sleep(for: .seconds(2))
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+        }
+
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             process.terminationHandler = { _ in continuation.resume() }
         }
+        watchdog?.cancel()
+
+        let timedOut = timeout.map { _ in process.terminationReason == .uncaughtSignal } ?? false
 
         outPipe.fileHandleForReading.readabilityHandler = nil
         errPipe.fileHandleForReading.readabilityHandler = nil
@@ -90,6 +112,10 @@ enum Shell {
         }
         if let rest = try? errPipe.fileHandleForReading.readToEnd(), !rest.isEmpty {
             collector.appendErr(rest)
+        }
+
+        if timedOut {
+            throw Failure.timedOut((executable as NSString).lastPathComponent, timeout ?? 0)
         }
 
         return Result(status: process.terminationStatus,
@@ -103,10 +129,11 @@ enum Shell {
         _ arguments: [String],
         environment: [String: String]? = nil,
         stdin: String? = nil,
+        timeout: TimeInterval? = nil,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Result {
         let result = try await run(executable, arguments, environment: environment,
-                                   stdin: stdin, onStderrLine: onStderrLine)
+                                   stdin: stdin, timeout: timeout, onStderrLine: onStderrLine)
         guard result.ok else {
             throw Failure.exit((executable as NSString).lastPathComponent,
                                result.status, result.stderr)

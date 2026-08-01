@@ -275,27 +275,91 @@ final class ModelDownloader {
         try? FileManager.default.createDirectory(at: ToolLocator.modelDirectory,
                                                  withIntermediateDirectories: true)
 
-        detail = "下载识别模型…"
+        // The transcription model is ~1.5GB and the VAD model under 1MB, so
+        // treat the former as the whole progress bar.
         await fetch(ToolLocator.transcriptionModelURL,
-                    to: ToolLocator.modelDirectory.appendingPathComponent(ToolLocator.transcriptionModel))
+                    to: ToolLocator.modelDirectory.appendingPathComponent(ToolLocator.transcriptionModel),
+                    label: "识别模型")
+        guard !failed else { return }
 
         detail = "下载 VAD 模型…"
         await fetch(ToolLocator.vadModelURL,
-                    to: ToolLocator.modelDirectory.appendingPathComponent(ToolLocator.vadModel))
+                    to: ToolLocator.modelDirectory.appendingPathComponent(ToolLocator.vadModel),
+                    label: "VAD 模型", tracksProgress: false)
+        guard !failed else { return }
 
         detail = "完成"
         progress = 1
     }
 
-    private func fetch(_ urlString: String, to destination: URL) async {
+    private var failed = false
+
+    /// Streams the body so the bar actually moves — `URLSession.download`
+    /// reports nothing until it finishes, which on a 1.5GB file looks frozen.
+    private func fetch(_ urlString: String,
+                       to destination: URL,
+                       label: String,
+                       tracksProgress: Bool = true) async {
         guard !FileManager.default.fileExists(atPath: destination.path),
               let url = URL(string: urlString) else { return }
+
+        let partial = destination.appendingPathExtension("partial")
+        try? FileManager.default.removeItem(at: partial)
+
         do {
-            let (temp, _) = try await URLSession.shared.download(from: url)
+            let (bytes, response) = try await URLSession.shared.bytes(from: url)
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                throw URLError(.badServerResponse)
+            }
+            let expected = response.expectedContentLength   // -1 when unknown
+
+            FileManager.default.createFile(atPath: partial.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: partial)
+            defer { try? handle.close() }
+
+            var buffer = Data()
+            buffer.reserveCapacity(1 << 20)
+            var written: Int64 = 0
+            var lastReport = Date.distantPast
+
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count >= (1 << 20) {
+                    try handle.write(contentsOf: buffer)
+                    written += Int64(buffer.count)
+                    buffer.removeAll(keepingCapacity: true)
+
+                    if tracksProgress, Date().timeIntervalSince(lastReport) > 0.2 {
+                        lastReport = Date()
+                        let mb = Double(written) / 1_048_576
+                        if expected > 0 {
+                            progress = Double(written) / Double(expected)
+                            detail = String(format: "%@ %.0f / %.0f MB", label,
+                                            mb, Double(expected) / 1_048_576)
+                        } else {
+                            detail = String(format: "%@ 已下载 %.0f MB", label, mb)
+                        }
+                    }
+                }
+            }
+            if !buffer.isEmpty {
+                try handle.write(contentsOf: buffer)
+                written += Int64(buffer.count)
+            }
+            try handle.close()
+
+            // A truncated download is worse than none — whisper would fail with
+            // an opaque error later instead of here.
+            if expected > 0, written < expected {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+
             try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: temp, to: destination)
+            try FileManager.default.moveItem(at: partial, to: destination)
         } catch {
-            detail = "下载失败：\(error.localizedDescription)"
+            try? FileManager.default.removeItem(at: partial)
+            failed = true
+            detail = "\(label)下载失败：\(error.localizedDescription)"
         }
     }
 }

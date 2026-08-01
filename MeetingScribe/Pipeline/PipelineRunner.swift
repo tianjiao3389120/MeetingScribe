@@ -32,6 +32,11 @@ final class PipelineRunner {
     private(set) var error: String?
     private(set) var isRunning = false
 
+    /// True when transcription and screen extraction succeeded but the model
+    /// call failed. The expensive work is still in `assets`, so the user can
+    /// fix their key or switch provider and retry without redoing it.
+    var canRetryAnalysis: Bool { assets != nil && summary.isEmpty }
+
     private var task: Task<Void, Never>?
 
     func cancel() {
@@ -55,6 +60,28 @@ final class PipelineRunner {
                 try await self.execute(url: url)
             } catch is CancellationError {
                 self.stage = .idle
+                self.detail = "已取消"
+            } catch {
+                self.stage = .failed
+                self.error = error.localizedDescription
+            }
+            self.isRunning = false
+        }
+    }
+
+    /// Re-runs only the model call, reusing the existing transcript and captures.
+    func retryAnalysis() {
+        guard let bundle = assets, !isRunning else { return }
+        task?.cancel()
+        error = nil
+        isRunning = true
+
+        task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.analyze(bundle)
+            } catch is CancellationError {
+                self.stage = .failed
                 self.detail = "已取消"
             } catch {
                 self.stage = .failed
@@ -102,6 +129,10 @@ final class PipelineRunner {
         }
         try Task.checkCancellation()
 
+        // Silent or music-only input yields nothing to summarise; fail here
+        // instead of spending a model call on an empty timeline.
+        guard !transcript.segments.isEmpty else { throw Failure.noSpeech }
+
         // --- screen -------------------------------------------------------
         var captures: [ScreenCapture] = []
         if info.hasVideo, settings.frameDensity != .off {
@@ -137,12 +168,19 @@ final class PipelineRunner {
                                    transcript: transcript,
                                    captures: captures,
                                    hasVideo: info.hasVideo)
+        // Publish before analysing: if the model call fails, the transcript and
+        // captures survive and `retryAnalysis()` can reuse them.
         assets = bundle
 
-        // --- analysis -----------------------------------------------------
+        try await analyze(bundle)
+    }
+
+    private func analyze(_ bundle: MeetingAssets) async throws {
         stage = .analyzing
         progress = 0
-        let analyzer = Analyzer(assets: bundle, settings: settings)
+        detail = ""
+
+        let analyzer = Analyzer(assets: bundle, settings: Settings.shared)
         summary = try await analyzer.run { [weak self] message in
             Task { @MainActor in self?.detail = message }
         }
@@ -150,6 +188,17 @@ final class PipelineRunner {
         stage = .done
         progress = 1
         detail = "完成"
+    }
+
+    enum Failure: LocalizedError {
+        case noSpeech
+
+        var errorDescription: String? {
+            switch self {
+            case .noSpeech:
+                return "没有识别到任何语音内容。请确认文件包含说话声，且设置里的识别语言正确。"
+            }
+        }
     }
 
     /// Writes the summary and transcript next to the source file.
