@@ -73,11 +73,16 @@ struct SettingsView: View {
                         }
                     }
 
-                    Picker("语言", selection: $settings.language) {
-                        Text("中文").tag("zh")
-                        Text("英文").tag("en")
-                        Text("自动检测").tag("auto")
+                    Picker("识别场景", selection: $settings.recognitionScenario) {
+                        ForEach(RecognitionScenario.allCases) { scenario in
+                            Text(scenario.displayName).tag(scenario)
+                        }
                     }
+                    Text(settings.recognitionScenario == .hongKongMixed
+                         ? "自动识别香港粤语、普通话及句中英语；纪要转换为简体书面中文并保留英文术语。"
+                         : "自动多语言适合无法预先确定会议语言的情况。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("说话人分离") {

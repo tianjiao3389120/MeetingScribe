@@ -48,7 +48,7 @@ struct PromptBuilder {
 
     只输出一个合法 JSON 对象，不要 Markdown 代码围栏、前言或解释。所有字段必须出现，
     没有内容的数组用 `[]`，没有内容的字符串用 `""`。`evidence` 填支持该条结论的时间码，
-    如 `[12:34]` 或 `屏幕 08:20`，找不到则用空数组。严格使用以下结构：
+    如 `[12:34]`、`屏幕 08:20` 或 `材料：问题清单.pdf`，找不到则用空数组。严格使用以下结构：
 
     {
       "title": "会议纪要",
@@ -138,6 +138,10 @@ struct PromptBuilder {
         if !contextHint.isEmpty {
             lines.append("背景信息：\(contextHint)")
         }
+        if let workspace = assets.workspace {
+            lines.append("会议空间：\(workspace.kind.label) / \(workspace.name)")
+        }
+        if !assets.tags.isEmpty { lines.append("标签：\(assets.tags.joined(separator: "、"))") }
         if assets.hasVideo {
             lines.append("含屏幕录像，已提取 \(assets.captures.count) 个画面。")
         }
@@ -150,6 +154,15 @@ struct PromptBuilder {
                          + "（发言占比：\(shares.joined(separator: "、"))）。")
         }
         lines.append("")
+        if !assets.materials.isEmpty {
+            lines.append("=== 会前/会议材料（独立于逐字稿的事实来源） ===")
+            for material in assets.materials {
+                lines.append("")
+                lines.append("【材料：\(material.name)】")
+                lines.append(material.extractedText.isEmpty ? "（图片原件已随请求附上）" : material.extractedText)
+            }
+            lines.append("")
+        }
         lines.append("---")
         lines.append("")
 

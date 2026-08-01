@@ -28,7 +28,14 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertEqual(loaded[0].id, record.id)
         XCTAssertEqual(loaded[0].speakerNames[0], "张三")
 
-        try MeetingHistoryStore.export(loaded[0], to: export)
+        let workspaceID = UUID()
+        let updated = try MeetingHistoryStore.updateClassification(
+            id: record.id, workspaceID: workspaceID, tags: ["双周会", "客户"], root: root)
+        XCTAssertEqual(updated.workspaceID, workspaceID)
+        XCTAssertEqual(updated.tags ?? [], ["双周会", "客户"])
+        XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root)[0].workspaceID, workspaceID)
+
+        try MeetingHistoryStore.export(updated, to: export)
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: export.appendingPathComponent("项目周会 纪要.md").path))
         XCTAssertTrue(FileManager.default.fileExists(
@@ -51,5 +58,48 @@ final class MeetingHistoryStoreTests: XCTestCase {
                 speakerNames: [:], usedSummaryFallback: true), root: root)
         }
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).count, 2)
+    }
+
+    func testMaterialsAreCopiedIntoManagedHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-history-\(UUID().uuidString)")
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("客户材料-\(UUID().uuidString).md")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: source)
+        }
+        try "Falcon Gateway 项目计划".write(to: source, atomically: true, encoding: .utf8)
+        let material = SupportingMaterial(sourceURL: source, kind: .text,
+                                          extractedText: "Falcon Gateway 项目计划")
+        let record = MeetingRecord(
+            title: "材料会议", sourcePath: "/meeting.mov", duration: 30,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+
+        try MeetingHistoryStore.save(record, root: root, materialSources: [material])
+        try FileManager.default.removeItem(at: source)
+        let reference = try XCTUnwrap(MeetingHistoryStore.loadAll(root: root)[0].materials?.first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: reference.sourcePath))
+        XCTAssertTrue(reference.sourcePath.hasPrefix(root.path))
+        XCTAssertEqual(try MaterialExtractor.extract(from: URL(fileURLWithPath: reference.sourcePath))
+            .extractedText, "Falcon Gateway 项目计划")
+    }
+
+    func testDeletingWorkspaceUngroupsExistingRecords() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-history-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspaceID = UUID()
+        let record = MeetingRecord(
+            title: "客户周会", sourcePath: "/meeting.mov", duration: 30,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
+        try MeetingHistoryStore.save(record, root: root)
+
+        try MeetingHistoryStore.clearWorkspaceReferences([workspaceID], root: root)
+        XCTAssertNil(try MeetingHistoryStore.loadAll(root: root)[0].workspaceID)
     }
 }

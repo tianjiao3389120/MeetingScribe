@@ -2,7 +2,7 @@ import SwiftUI
 
 struct MeetingHistoryView: View {
     @Environment(\.dismiss) private var dismiss
-    let onReprocess: (URL) -> Void
+    let onReprocess: (MeetingRecord) -> Void
 
     @State private var records: [MeetingRecord] = []
     @State private var selection: UUID?
@@ -10,10 +10,23 @@ struct MeetingHistoryView: View {
     @State private var error: String?
     @State private var pendingDelete: MeetingRecord?
     @State private var exportMessage: String?
+    @State private var workspaces: [MeetingWorkspace] = []
+    @State private var workspaceFilter: WorkspaceFilter = .all
+    @State private var showWorkspaceManager = false
+    @State private var editingClassification: MeetingRecord?
+
+    private enum WorkspaceFilter: Hashable { case all, ungrouped, workspace(UUID) }
 
     private var filtered: [MeetingRecord] {
-        guard !query.isEmpty else { return records }
-        return records.filter {
+        let scoped = records.filter { record in
+            switch workspaceFilter {
+            case .all: return true
+            case .ungrouped: return record.workspaceID == nil
+            case .workspace(let id): return record.workspaceID == id
+            }
+        }
+        guard !query.isEmpty else { return scoped }
+        return scoped.filter {
             $0.title.localizedCaseInsensitiveContains(query)
                 || $0.summaryMarkdown.localizedCaseInsensitiveContains(query)
                 || $0.speakerNames.values.contains {
@@ -30,6 +43,19 @@ struct MeetingHistoryView: View {
         VStack(spacing: 0) {
             HSplitView {
                 VStack(spacing: 0) {
+                    HStack {
+                        Picker("", selection: $workspaceFilter) {
+                            Text("全部空间").tag(WorkspaceFilter.all)
+                            Text("未归组").tag(WorkspaceFilter.ungrouped)
+                            ForEach(workspaces) { workspace in
+                                Text(workspace.name).tag(WorkspaceFilter.workspace(workspace.id))
+                            }
+                        }.labelsHidden()
+                        Button { showWorkspaceManager = true } label: {
+                            Image(systemName: "folder.badge.gearshape")
+                        }.help("管理会议空间")
+                    }.padding(8)
+                    Divider()
                     if filtered.isEmpty {
                         ContentUnavailableView(
                             query.isEmpty ? "还没有历史会议" : "没有搜索结果",
@@ -45,6 +71,16 @@ struct MeetingHistoryView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                                 Text("\(record.backend) · \(record.model)")
                                     .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                                if let workspace = workspace(for: record) {
+                                    Label(workspace.name, systemImage: "folder")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                if let tags = record.tags, !tags.isEmpty {
+                                    Text(tags.map { "#\($0)" }.joined(separator: "  "))
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.accentColor)
+                                        .lineLimit(1)
+                                }
                             }
                             .padding(.vertical, 4)
                             .tag(record.id)
@@ -76,6 +112,17 @@ struct MeetingHistoryView: View {
         .frame(width: 920, height: 620)
         .searchable(text: $query, prompt: "搜索标题、纪要或说话人")
         .onAppear(perform: load)
+        .sheet(isPresented: $showWorkspaceManager, onDismiss: loadWorkspaces) {
+            WorkspaceManagementView()
+        }
+        .sheet(item: $editingClassification) { record in
+            MeetingClassificationView(record: record, workspaces: workspaces) { updated in
+                if let index = records.firstIndex(where: { $0.id == updated.id }) {
+                    records[index] = updated
+                }
+                editingClassification = nil
+            } onCancel: { editingClassification = nil }
+        }
         .onChange(of: filtered.map(\.id)) { _, ids in
             if selection == nil || !ids.contains(selection!) { selection = ids.first }
         }
@@ -98,15 +145,21 @@ struct MeetingHistoryView: View {
                     Text(record.title).font(.headline)
                     Text("\(TranscriptSegment.humanDuration(record.duration)) · \(record.createdAt.formatted())")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let tags = record.tags, !tags.isEmpty {
+                        Text(tags.map { "#\($0)" }.joined(separator: "  "))
+                            .font(.caption)
+                            .foregroundStyle(Color.accentColor)
+                    }
                 }
                 Spacer()
                 if FileManager.default.fileExists(atPath: record.sourcePath) {
                     Button("打开源文件") { NSWorkspace.shared.open(record.sourceURL) }
-                    Button("重新处理") { onReprocess(record.sourceURL) }
+                    Button("重新处理") { onReprocess(record) }
                 } else {
                     Label("源文件已移动", systemImage: "questionmark.folder")
                         .font(.caption).foregroundStyle(.orange)
                 }
+                Button("归组与标签…") { editingClassification = record }
                 Button("导出…") { export(record) }
                 Button(role: .destructive) { pendingDelete = record } label: {
                     Image(systemName: "trash")
@@ -122,11 +175,20 @@ struct MeetingHistoryView: View {
     private func load() {
         do {
             records = try MeetingHistoryStore.loadAll()
+            loadWorkspaces()
             selection = records.first?.id
             error = nil
         } catch {
             self.error = "读取历史失败：\(error.localizedDescription)"
         }
+    }
+
+    private func loadWorkspaces() {
+        workspaces = (try? MeetingWorkspaceStore.load()) ?? []
+    }
+
+    private func workspace(for record: MeetingRecord) -> MeetingWorkspace? {
+        workspaces.first { $0.id == record.workspaceID }
     }
 
     private func removePending() {

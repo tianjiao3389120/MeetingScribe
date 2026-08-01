@@ -3,6 +3,7 @@
 #
 #   ./build.sh            构建到 ./build/MeetingScribe.app
 #   ./build.sh --install  构建并安装到 /Applications
+#   MEETINGSCRIBE_SIGN_IDENTITY="Developer ID Application: ..." ./build.sh
 
 set -euo pipefail
 
@@ -12,6 +13,7 @@ APP_NAME="MeetingScribe"
 BUNDLE_ID="com.meetingscribe.app"
 VERSION="1.0"
 DEST="build/$APP_NAME.app"
+SIGN_IDENTITY="${MEETINGSCRIBE_SIGN_IDENTITY:--}"
 
 info() { printf '\033[36m▸\033[0m %s\n' "$*"; }
 
@@ -66,10 +68,14 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature: enough for local use and for the keychain to scope
-# credentials to this app. Distribution would need a Developer ID.
 info "签名…"
-codesign --force --deep --sign - "$DEST" 2>/dev/null
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    # Ad-hoc signature is sufficient for local use.
+    codesign --force --deep --sign - "$DEST" 2>/dev/null
+else
+    # A Developer ID build is ready to submit to Apple's notary service.
+    codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$DEST"
+fi
 
 if [ "${1:-}" = "--install" ]; then
     TARGET="/Applications/$APP_NAME.app"

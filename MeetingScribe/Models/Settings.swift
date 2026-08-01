@@ -75,6 +75,52 @@ enum FrameDensity: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+enum RecognitionScenario: String, CaseIterable, Identifiable, Codable {
+    case mandarin
+    case english
+    case autoMultilingual
+    case hongKongMixed
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .mandarin: return "普通话会议"
+        case .english: return "英文会议"
+        case .autoMultilingual: return "自动多语言"
+        case .hongKongMixed: return "香港粤语 / 普通话 / 英语"
+        }
+    }
+
+    var whisperLanguage: String {
+        switch self {
+        case .mandarin: return "zh"
+        case .english: return "en"
+        case .autoMultilingual, .hongKongMixed: return "auto"
+        }
+    }
+
+    var transcriptionHint: String {
+        switch self {
+        case .hongKongMixed:
+            return "香港商务会议，发言会混合香港粤语、普通话和英语。呢个 project 要同 client confirm，再 update timeline。"
+        default:
+            return ""
+        }
+    }
+
+    var analysisGuidance: String {
+        switch self {
+        case .hongKongMixed:
+            return "本次会议可能混合香港粤语、普通话和英语。理解粤语原意后，用简体书面中文生成纪要；产品名、公司名、缩写及常用英文业务术语保留英文原文。不要把粤语或英语音译成不通顺的普通话。"
+        case .autoMultilingual:
+            return "本次会议可能使用多种语言。纪要统一使用简体中文，专有名词和英文业务术语保留原文。"
+        case .mandarin, .english:
+            return ""
+        }
+    }
+}
+
 @Observable
 final class Settings {
     static let shared = Settings()
@@ -87,6 +133,12 @@ final class Settings {
     }
     var language: String {
         didSet { defaults.set(language, forKey: Keys.language) }
+    }
+    var recognitionScenario: RecognitionScenario {
+        didSet {
+            defaults.set(recognitionScenario.rawValue, forKey: Keys.recognitionScenario)
+            language = recognitionScenario.whisperLanguage
+        }
     }
     var frameDensity: FrameDensity {
         didSet { defaults.set(frameDensity.rawValue, forKey: Keys.frameDensity) }
@@ -170,6 +222,7 @@ final class Settings {
         static let backend = "backend"
         static let apiModel = "apiModel"
         static let language = "language"
+        static let recognitionScenario = "recognitionScenario"
         static let frameDensity = "frameDensity"
         static let glossary = "glossary"
         static let contextHint = "contextHint"
@@ -196,7 +249,17 @@ final class Settings {
     private init() {
         backend = BackendKind(rawValue: defaults.string(forKey: Keys.backend) ?? "") ?? .claudeCLI
         apiModel = defaults.string(forKey: Keys.apiModel) ?? "claude-opus-5"
-        language = defaults.string(forKey: Keys.language) ?? "zh"
+        let storedLanguage = defaults.string(forKey: Keys.language) ?? "zh"
+        let migratedScenario: RecognitionScenario = switch storedLanguage {
+        case "en": .english
+        case "auto": .autoMultilingual
+        default: .mandarin
+        }
+        let selectedScenario = RecognitionScenario(
+            rawValue: defaults.string(forKey: Keys.recognitionScenario) ?? ""
+        ) ?? migratedScenario
+        recognitionScenario = selectedScenario
+        language = selectedScenario.whisperLanguage
         frameDensity = FrameDensity(rawValue: defaults.string(forKey: Keys.frameDensity) ?? "") ?? .normal
         glossary = defaults.string(forKey: Keys.glossary) ?? Settings.defaultGlossary
         contextHint = defaults.string(forKey: Keys.contextHint) ?? ""

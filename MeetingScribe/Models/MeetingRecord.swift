@@ -1,7 +1,7 @@
 import Foundation
 
 struct MeetingRecord: Codable, Identifiable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let id: UUID
     let schemaVersion: Int
@@ -16,12 +16,18 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     let transcript: Transcript
     let speakerNames: [Int: String]
     let usedSummaryFallback: Bool
+    /// Optional for backward compatibility with records created before spaces.
+    var workspaceID: UUID?
+    var tags: [String]?
+    var materials: [MaterialReference]?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
          model: String, summaryMarkdown: String,
          structuredSummary: StructuredMinutes?, transcript: Transcript,
-         speakerNames: [Int: String], usedSummaryFallback: Bool) {
+         speakerNames: [Int: String], usedSummaryFallback: Bool,
+         workspaceID: UUID? = nil, tags: [String] = [],
+         materials: [MaterialReference] = []) {
         self.id = id
         schemaVersion = Self.currentSchemaVersion
         self.createdAt = createdAt
@@ -35,6 +41,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.transcript = transcript
         self.speakerNames = speakerNames
         self.usedSummaryFallback = usedSummaryFallback
+        self.workspaceID = workspaceID
+        self.tags = tags
+        self.materials = materials
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }

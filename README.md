@@ -21,7 +21,12 @@ macOS 应用：把会议录像/录音变成会议纪要。语音转录与画面�
 3. **填会议背景和词表** —— 两分钟的事，纪要质量提升明显
 4. **可选：安装说话人分离** —— 约 100MB 运行环境与 28MB 模型
 
+“识别场景”可选择普通话、英文、自动多语言或“香港粤语 / 普通话 / 英语”。香港混合场景会自动检测语言，保留英文业务术语，并把纪要整理为简体书面中文。
+
 然后把 `.mov` / `.mp4` / `.m4a` / `.mp3` 拖进窗口即可。
+
+也可以在首页点击“使用系统截屏录制”，直接打开 macOS 自带的截屏与录屏工具（等同于
+`Shift–Command–5`）。录制完成后，把系统生成的 MOV 拖回 MeetingScribe，或点击“选择文件”导入分析。
 
 说话人分离设置中的人数指**实际开口人数**，不是参会名单人数。30 人在线但只有约 5 人发言，
 就填 5；无法判断时选“自动判断”。自动结果不理想时可修改人数并在结果页点“重新分离”，
@@ -65,6 +70,7 @@ CLI 后端只能接收文本（`claude -p` 走 stdin），所以图表类画面�
 每次成功生成纪要后，应用会自动在本机保存一个历史版本。工具栏的“历史会议”支持：
 
 - 按标题、纪要内容或说话人搜索
+- 为已有历史记录设置或修改主要空间和标签
 - 查看过去的 Markdown 纪要
 - 打开仍然存在的原始媒体，或重新处理
 - 导出纪要、结构化 JSON 和逐字稿
@@ -76,6 +82,26 @@ CLI 后端只能接收文本（`claude -p` 走 stdin），所以图表类画面�
 ```text
 ~/Library/Application Support/MeetingScribe/Meetings/
 ```
+
+这里是应用的权威内部记录。结果页保存到原媒体旁边、或历史页“导出”产生的文件都是独立副本；
+移动或删除导出副本不会影响历史库，修改历史归组也不会重写外部副本。
+
+## 会议空间与会前材料
+
+会议可以归入一个主要空间（客户、项目、任务或固定会议），并附加多个标签。例如主要空间是
+“某银行客户”，标签是“双周会、日志治理”。空间的长期背景会自动用于后续会议，历史页面可按
+空间筛选，并提供空间名称、类型和背景管理。
+
+选择音视频后会先进入“准备会议分析”，可附加本次材料：
+
+- PDF
+- TXT、Markdown、CSV、JSON
+- PNG、JPEG
+
+PDF 和文本在本机提取文字，图片在本机 OCR；支持视觉的模型还会收到图片原件。材料会以
+`材料：文件名` 标记为独立事实来源。单次最多 12 份、提取文字总计 2.4 万字，防止挤占逐字稿
+上下文。成功生成纪要后，材料原件会复制到该会议的内部历史目录；外部原件移动或删除后，
+历史重新处理仍然可用。删除会议历史时，其托管材料也会一并删除。
 
 几个设计选择：
 
@@ -152,12 +178,13 @@ App 自带 headless 模式，传文件路径即可（纪要走 stdout，进度�
 ```
 MeetingScribe/
   Models/       Transcript, ScreenCapture, Settings, SpeakerSegment,
-                VoiceProfile, StructuredMinutes, MeetingRecord
-  Pipeline/     MediaExtractor, Transcriber, TextRecognizer,
+                VoiceProfile, StructuredMinutes, MeetingRecord, MeetingWorkspace
+  Pipeline/     MediaExtractor, MaterialExtractor, Transcriber, TextRecognizer,
                 Diarizer, PromptBuilder, Analyzer, PipelineRunner
-  Views/        ContentView, SettingsView, SpeakerNamingView, MeetingHistoryView
+  Views/        ContentView, SettingsView, SpeakerNamingView, MeetingHistoryView,
+                MeetingPreparationView, WorkspaceManagementView
   Support/      Shell, Keychain, MarkdownRenderer, StructuredMinutesRenderer,
-                MeetingHistoryStore
+                MeetingHistoryStore, MeetingWorkspaceStore
 Tests/          转录、说话人、渲染和子进程回归测试
 .github/        GitHub Actions 测试与 Release 构建
 ```
@@ -170,6 +197,14 @@ swift build -c release     # Release 编译
 ./build.sh                 # 打包到 build/MeetingScribe.app
 ./build.sh --install       # 打包并安装到 /Applications
 ```
+
+本机默认使用 ad-hoc 签名。分发构建可设置 Developer ID：
+
+```bash
+MEETINGSCRIBE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
+```
+
+脚本会启用 Hardened Runtime 和可信时间戳；正式对外分发还需使用 Apple notary service 公证。
 
 CI 会在每次 push 和 pull request 上运行测试及 Release 构建。
 

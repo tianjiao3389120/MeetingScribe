@@ -6,13 +6,40 @@ enum MeetingHistoryStore {
             .appendingPathComponent("MeetingScribe/Meetings", isDirectory: true)
     }()
 
-    static func save(_ record: MeetingRecord, root: URL = defaultDirectory) throws {
+    static func save(_ sourceRecord: MeetingRecord, root: URL = defaultDirectory,
+                     materialSources: [SupportingMaterial] = []) throws {
+        var record = sourceRecord
         let directory = root.appendingPathComponent(record.id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700],
                                               ofItemAtPath: root.path)
         try FileManager.default.setAttributes([.posixPermissions: 0o700],
                                               ofItemAtPath: directory.path)
+
+        if !materialSources.isEmpty {
+            let materialsDirectory = directory.appendingPathComponent("materials", isDirectory: true)
+            try FileManager.default.createDirectory(at: materialsDirectory,
+                                                    withIntermediateDirectories: true)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                                  ofItemAtPath: materialsDirectory.path)
+            var references: [MaterialReference] = []
+            for (index, material) in materialSources.enumerated() {
+                let safeName = material.name.replacingOccurrences(
+                    of: #"[^\p{L}\p{N}._-]"#,
+                    with: "_", options: .regularExpression)
+                let destination = materialsDirectory.appendingPathComponent(
+                    String(format: "%02d-%@", index + 1, safeName))
+                if material.sourceURL.standardizedFileURL != destination.standardizedFileURL {
+                    try? FileManager.default.removeItem(at: destination)
+                    try FileManager.default.copyItem(at: material.sourceURL, to: destination)
+                }
+                try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                      ofItemAtPath: destination.path)
+                references.append(MaterialReference(name: material.name, kind: material.kind,
+                                                    sourcePath: destination.path))
+            }
+            record.materials = references
+        }
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -49,6 +76,29 @@ enum MeetingHistoryStore {
         let directory = root.appendingPathComponent(id.uuidString, isDirectory: true)
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
         try FileManager.default.removeItem(at: directory)
+    }
+
+    static func updateClassification(id: UUID, workspaceID: UUID?, tags: [String],
+                                     root: URL = defaultDirectory) throws -> MeetingRecord {
+        let url = root.appendingPathComponent(id.uuidString)
+            .appendingPathComponent("metadata.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        record.workspaceID = workspaceID
+        record.tags = tags
+        try save(record, root: root)
+        return record
+    }
+
+    static func clearWorkspaceReferences(_ workspaceIDs: Set<UUID>,
+                                         root: URL = defaultDirectory) throws {
+        guard !workspaceIDs.isEmpty else { return }
+        for var record in try loadAll(root: root) where
+            record.workspaceID.map(workspaceIDs.contains) == true {
+            record.workspaceID = nil
+            try save(record, root: root)
+        }
     }
 
     static func export(_ record: MeetingRecord, to directory: URL) throws {

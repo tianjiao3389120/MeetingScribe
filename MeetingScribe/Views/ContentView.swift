@@ -7,6 +7,8 @@ struct ContentView: View {
     @State private var showHistory = false
     @State private var isTargeted = false
     @State private var savedPath: String?
+    @State private var pendingMedia: URL?
+    @State private var systemRecordingMonitor = SystemRecordingMonitor()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +19,8 @@ struct ContentView: View {
             case .idle, .failed:
                 DropZone(isTargeted: $isTargeted,
                          error: runner.error,
-                         onPick: { runner.run(url: $0) })
+                         recordingMonitor: systemRecordingMonitor,
+                         onPick: { pendingMedia = $0 })
             case .done:
                 ResultView(runner: runner, savedPath: $savedPath)
             default:
@@ -41,9 +44,34 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showHistory) {
-            MeetingHistoryView { url in
+            MeetingHistoryView { record in
                 showHistory = false
-                runner.run(url: url)
+                Task {
+                    let workspace = (try? MeetingWorkspaceStore.load())?
+                        .first { $0.id == record.workspaceID }
+                    var materials: [SupportingMaterial] = []
+                    for reference in record.materials ?? [] {
+                        let url = URL(fileURLWithPath: reference.sourcePath)
+                        if let value = try? await Task.detached(operation: {
+                            try MaterialExtractor.extract(from: url)
+                        }).value { materials.append(value) }
+                    }
+                    runner.run(url: record.sourceURL, workspace: workspace,
+                               tags: record.tags ?? [], materials: materials)
+                }
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { pendingMedia != nil },
+            set: { if !$0 { pendingMedia = nil } }
+        )) {
+            if let url = pendingMedia {
+                MeetingPreparationView(mediaURL: url) { workspace, tags, materials in
+                    pendingMedia = nil
+                    runner.run(url: url, workspace: workspace, tags: tags, materials: materials)
+                } onCancel: {
+                    pendingMedia = nil
+                }
             }
         }
     }
@@ -54,6 +82,7 @@ struct ContentView: View {
 private struct DropZone: View {
     @Binding var isTargeted: Bool
     let error: String?
+    let recordingMonitor: SystemRecordingMonitor
     let onPick: (URL) -> Void
 
     @State private var rejection: String?
@@ -74,8 +103,29 @@ private struct DropZone: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button("选择文件…") { pick() }
-                .controlSize(.large)
+            HStack {
+                Button { openSystemScreenshot() } label: {
+                    Label("使用系统截屏录制", systemImage: "record.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                Button("选择文件…") { pick() }
+            }
+            .controlSize(.large)
+
+            if let recording = recordingMonitor.detectedURL {
+                Button {
+                    if let url = recordingMonitor.consume() { accept(url) }
+                } label: {
+                    Label("导入刚录制的 \(recording.lastPathComponent)",
+                          systemImage: "square.and.arrow.down")
+                }
+            } else if recordingMonitor.isWatching {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("等待系统录制完成，将自动发现保存到 \(recordingMonitor.folder.path) 的视频…")
+                        .lineLimit(1)
+                }.font(.caption).foregroundStyle(.secondary)
+            }
 
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -139,6 +189,17 @@ private struct DropZone: View {
         panel.allowedContentTypes = [.audiovisualContent]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url { accept(url) }
+    }
+
+    private func openSystemScreenshot() {
+        recordingMonitor.begin()
+        let workspace = NSWorkspace.shared
+        let url = workspace.urlForApplication(withBundleIdentifier: "com.apple.screenshot.launcher")
+            ?? URL(fileURLWithPath: "/System/Applications/Utilities/Screenshot.app")
+        if !workspace.open(url) {
+            recordingMonitor.stop()
+            rejection = "无法启动 macOS 系统截屏工具。也可以按 Shift–Command–5 打开。"
+        }
     }
 }
 
@@ -372,6 +433,12 @@ private struct ResultView: View {
                             .font(.caption)
                             .foregroundStyle(.orange)
                             .help("模型未返回合法 JSON，已保留其原始输出")
+                    }
+                    if !assets.tags.isEmpty {
+                        Text(assets.tags.map { "#\($0)" }.joined(separator: "  "))
+                            .font(.caption)
+                            .foregroundStyle(Color.accentColor)
+                            .lineLimit(1)
                     }
                 }
 

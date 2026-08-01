@@ -34,8 +34,12 @@ struct Analyzer {
         let imageIDs = canSendImages
             ? PromptBuilder.selectImageCaptures(from: assets.captures, limit: 12)
             : []
+        let combinedContext = [settings.recognitionScenario.analysisGuidance,
+                               settings.contextHint, assets.workspace?.context ?? ""]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n")
         let builder = PromptBuilder(assets: assets,
-                                    contextHint: settings.contextHint,
+                                    contextHint: combinedContext,
                                     imageCaptureIDs: imageIDs)
         let timeline = builder.buildTimeline()
 
@@ -101,10 +105,15 @@ struct Analyzer {
                              jpeg: jpeg)
             }
 
+        let materialAttachments = assets.materials.compactMap { material -> OpenAICompatibleClient.Attachment? in
+            guard let jpeg = material.imageJPEG else { return nil }
+            return .init(caption: "会议材料图片《\(material.name)》：", jpeg: jpeg)
+        }
+
         return try await client.complete(
             system: PromptBuilder.systemPrompt,
             user: timeline,
-            images: attachments,
+            images: materialAttachments + attachments,
             onProgress: progress
         )
     }
@@ -143,6 +152,16 @@ struct Analyzer {
         guard let key = settings.apiKey, !key.isEmpty else { throw ToolError.noAPIKey }
 
         var content: [[String: Any]] = []
+
+        for material in assets.materials {
+            guard let data = material.imageJPEG else { continue }
+            content.append(["type": "text", "text": "会议材料图片《\(material.name)》："])
+            content.append([
+                "type": "image",
+                "source": ["type": "base64", "media_type": "image/jpeg",
+                           "data": data.base64EncodedString()],
+            ])
+        }
 
         // Diagrams first so the model has them in view while reading the timeline.
         for capture in assets.captures where imageIDs.contains(capture.id) {

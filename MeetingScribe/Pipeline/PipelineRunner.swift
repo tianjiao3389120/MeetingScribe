@@ -62,7 +62,9 @@ final class PipelineRunner {
     }
 
     func run(url: URL, forceRetranscribe: Bool = false,
-             forceSpeakerSeparation: Bool = false) {
+             forceSpeakerSeparation: Bool = false,
+             workspace: MeetingWorkspace? = nil,
+             tags: [String] = [], materials: [SupportingMaterial] = []) {
         task?.cancel()
         error = nil
         summary = ""
@@ -78,7 +80,8 @@ final class PipelineRunner {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.execute(url: url)
+                try await self.execute(url: url, workspace: workspace,
+                                       tags: tags, materials: materials)
             } catch is CancellationError {
                 self.stage = .idle
                 self.detail = "已取消"
@@ -94,8 +97,9 @@ final class PipelineRunner {
     /// reusing the cached transcript. Useful when automatic clustering guessed
     /// poorly; transcription is not paid for again.
     func rerunSpeakerSeparation() {
-        guard let sourceURL = assets?.sourceURL, !isRunning else { return }
-        run(url: sourceURL, forceSpeakerSeparation: true)
+        guard let bundle = assets, !isRunning else { return }
+        run(url: bundle.sourceURL, forceSpeakerSeparation: true,
+            workspace: bundle.workspace, tags: bundle.tags, materials: bundle.materials)
     }
 
     /// Re-runs only the model call, reusing the existing transcript and captures.
@@ -131,9 +135,14 @@ final class PipelineRunner {
         retryAnalysis()
     }
 
-    private func execute(url: URL) async throws {
+    private func execute(url: URL, workspace: MeetingWorkspace?,
+                         tags: [String], materials: [SupportingMaterial]) async throws {
         let settings = Settings.shared
         let extractor = MediaExtractor(url: url)
+        let transcriptionPrompt = Self.transcriptionPrompt(
+            scenario: settings.recognitionScenario,
+            glossary: settings.glossary,
+            materials: materials)
 
         stage = .probing
         progress = 0
@@ -144,7 +153,7 @@ final class PipelineRunner {
         // --- transcription and diarization ---------------------------------
         let transcriptKey = TranscriptCache.key(for: url,
                                                 language: settings.language,
-                                                glossary: settings.glossary)
+                                                glossary: transcriptionPrompt)
         let wantsSpeakers = settings.separateSpeakers && Diarizer.readiness().isReady
         let speakerKey = wantsSpeakers
             ? TranscriptCache.key(for: url,
@@ -196,7 +205,7 @@ final class PipelineRunner {
             progress = 0
             let transcriber = Transcriber(audioURL: audioURL,
                                           language: settings.language,
-                                          glossary: settings.glossary)
+                                          glossary: transcriptionPrompt)
             let fresh = try await transcriber.run { [weak self] seconds, _ in
                 Task { @MainActor in
                     guard let self else { return }
@@ -272,12 +281,27 @@ final class PipelineRunner {
                                    transcript: transcript,
                                    captures: captures,
                                    hasVideo: info.hasVideo,
-                                   diarization: diarization)
+                                   diarization: diarization,
+                                   materials: materials,
+                                   workspace: workspace,
+                                   tags: tags)
         // Publish before analysing: if the model call fails, the transcript and
         // captures survive and `retryAnalysis()` can reuse them.
         assets = bundle
 
         try await analyze(bundle)
+    }
+
+    static func transcriptionPrompt(scenario: RecognitionScenario, glossary: String,
+                                    materials: [SupportingMaterial]) -> String {
+        let materialContext = materials.prefix(3).map {
+            "\($0.name)：\($0.extractedText.replacingOccurrences(of: "\n", with: " ").prefix(60))"
+        }.joined(separator: "；")
+        // Scenario and meeting-specific material come first because whisper's
+        // initial prompt is capped; generic glossary terms use the remainder.
+        return [scenario.transcriptionHint, materialContext, glossary]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: " ")
     }
 
     private func analyze(_ bundle: MeetingAssets) async throws {
@@ -310,9 +334,15 @@ final class PipelineRunner {
             structuredSummary: result.structured,
             transcript: bundle.transcript,
             speakerNames: bundle.diarization?.names ?? [:],
-            usedSummaryFallback: result.usedFallback)
+            usedSummaryFallback: result.usedFallback,
+            workspaceID: bundle.workspace?.id,
+            tags: bundle.tags,
+            materials: bundle.materials.map {
+                MaterialReference(name: $0.name, kind: $0.kind,
+                                  sourcePath: $0.sourceURL.path)
+            })
         do {
-            try MeetingHistoryStore.save(record)
+            try MeetingHistoryStore.save(record, materialSources: bundle.materials)
         } catch {
             // History is a convenience; a valid summary remains successful.
             historyWarning = "历史记录保存失败：\(error.localizedDescription)"

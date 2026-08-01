@@ -37,6 +37,9 @@ struct MeetingAssets: Sendable {
     var hasVideo: Bool
     /// Present only when speaker separation ran for this recording.
     var diarization: Diarization?
+    var materials: [SupportingMaterial] = []
+    var workspace: MeetingWorkspace?
+    var tags: [String] = []
 
     var title: String { sourceURL.deletingPathExtension().lastPathComponent }
 }

@@ -33,13 +33,15 @@ struct MediaExtractor {
     /// Writes 16 kHz mono PCM — the only format whisper.cpp accepts.
     func extractAudio(to destination: URL) async throws {
         let asset = AVURLAsset(url: url)
-        guard try await !asset.loadTracks(withMediaType: .audio).isEmpty else {
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !tracks.isEmpty else {
             throw Failure.noAudioTrack
         }
 
         let reader = try AVAssetReader(asset: asset)
-        let track = try await asset.loadTracks(withMediaType: .audio)[0]
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+        // Screen recordings may contain separate system-audio and microphone
+        // tracks. AudioMixOutput combines all of them before Whisper sees it.
+        let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000,
             AVNumberOfChannelsKey: 1,
@@ -214,11 +216,11 @@ struct MediaExtractor {
 /// Accessed only by MediaExtractor's serial export queue.
 private final class AudioExportStream: @unchecked Sendable {
     let reader: AVAssetReader
-    let output: AVAssetReaderTrackOutput
+    let output: AVAssetReaderOutput
     let writer: AVAssetWriter
     let input: AVAssetWriterInput
 
-    init(reader: AVAssetReader, output: AVAssetReaderTrackOutput,
+    init(reader: AVAssetReader, output: AVAssetReaderOutput,
          writer: AVAssetWriter, input: AVAssetWriterInput) {
         self.reader = reader
         self.output = output

@@ -25,7 +25,7 @@ struct TextRecognizer {
         return annotated
     }
 
-    private static func recognize(_ image: CGImage) -> [String] {
+    static func recognize(_ image: CGImage) -> [String] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         // Chinese first: the Simplified Chinese model also covers Latin text,
