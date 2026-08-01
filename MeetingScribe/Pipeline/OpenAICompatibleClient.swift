@@ -107,19 +107,38 @@ struct OpenAICompatibleClient {
         return result
     }
 
-    private func endpoint() throws -> URL {
+    func endpoint() throws -> URL {
         var base = baseURL.trimmingCharacters(in: .whitespaces)
         guard !base.isEmpty else { throw Failure.noBaseURL }
         while base.hasSuffix("/") { base.removeLast() }
         // Accept either a bare base ("…/v1") or a full path pasted from docs.
         let path = base.hasSuffix("/chat/completions") ? base : base + "/chat/completions"
-        guard let url = URL(string: path) else { throw Failure.badBaseURL(path) }
+        guard let url = URL(string: path),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              url.host != nil else { throw Failure.badBaseURL(path) }
+        if scheme == "http", !Self.isLocalHost(url.host) {
+            throw Failure.insecureRemoteURL(url.host ?? path)
+        }
         return url
+    }
+
+    static func isLocalHost(_ rawHost: String?) -> Bool {
+        guard let host = rawHost?.lowercased() else { return false }
+        return host == "localhost" || host.hasSuffix(".localhost")
+            || host == "127.0.0.1" || host == "::1"
+    }
+
+    static func securityWarning(for baseURL: String) -> String? {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), url.scheme?.lowercased() == "http",
+              !isLocalHost(url.host) else { return nil }
+        return "远程 HTTP 会明文发送 API key 和会议内容，请改用 HTTPS。"
     }
 
     enum Failure: LocalizedError {
         case noBaseURL
         case badBaseURL(String)
+        case insecureRemoteURL(String)
         case http(Int, String)
         case stream(String)
         case empty
@@ -130,6 +149,8 @@ struct OpenAICompatibleClient {
                 return "未填写接口地址（Base URL）。"
             case .badBaseURL(let url):
                 return "接口地址无效：\(url)"
+            case .insecureRemoteURL(let host):
+                return "拒绝连接不安全的远程 HTTP 地址（\(host)）。请使用 HTTPS；只有本机 localhost 服务允许 HTTP。"
             case .http(401, _), .http(403, _):
                 return "API key 无效或无权限。"
             case .http(404, let detail):

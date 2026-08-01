@@ -142,8 +142,9 @@ final class PipelineRunner {
         let wantsSpeakers = settings.separateSpeakers && Diarizer.readiness().isReady
         let speakerKey = wantsSpeakers
             ? TranscriptCache.key(for: url,
-                                  language: "spk-v2-\(settings.expectedSpeakerCount)",
-                                  glossary: "")
+                                  language: "speakers-\(settings.expectedSpeakerCount)",
+                                  glossary: "",
+                                  version: TranscriptCache.diarizationVersion)
             : nil
 
         var transcript: Transcript?

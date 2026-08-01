@@ -43,6 +43,7 @@ macOS 应用：把会议录像/录音变成会议纪要。语音转录与画面�
 
 CLI 后端只能接收文本（`claude -p` 走 stdin），所以图表类画面会退化成 OCR 文字。
 需要图片理解能力就选 API 后端。API key 存在 keychain，不落 UserDefaults。
+远程 OpenAI 兼容接口必须使用 HTTPS；只有本机 localhost 服务（如 Ollama）允许 HTTP。
 
 ## 管道
 
@@ -56,7 +57,7 @@ CLI 后端只能接收文本（`claude -p` 走 stdin），所以图表类画面�
 
 - **抽帧用固定间隔 + 感知哈希过滤，而不是 ffmpeg 的场景切变检测。** 录屏里鼠标移动和
   摄像头小窗会让场景检测疯狂误触发；dHash 对这类局部变化几乎不响应，对真正的翻页却
-  变化剧烈。实测去重率约 85%。
+  变化剧烈。实测去重率约 85%。候选画面使用固定容量池，长会议不会因频繁切屏无限增长内存。
 - **文字型画面走 OCR 文本，图表型画面才发原图。** 仪表盘截图当图片发要上千 token，
   当文字发只要几百；而架构图靠布局传意，OCR 出来只是一堆散落标签。按识别出的文字量
   自动分流。
@@ -109,6 +110,7 @@ MeetingScribe/
   Views/        ContentView, SettingsView, SpeakerNamingView
   Support/      Shell, Keychain, MarkdownRenderer
 Tests/          转录、说话人、渲染和子进程回归测试
+.github/        GitHub Actions 测试与 Release 构建
 ```
 
 ## 隐私

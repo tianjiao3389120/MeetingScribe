@@ -296,6 +296,12 @@ private struct ProviderSection: View {
                   prompt: Text("https://api.example.com/v1"))
             .font(.system(.callout, design: .monospaced))
 
+        if let warning = OpenAICompatibleClient.securityWarning(for: settings.providerBaseURL) {
+            Label(warning, systemImage: "lock.open.trianglebadge.exclamationmark")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+
         if settings.provider.requiresKey {
             SecureField("API key", text: $key, prompt: Text(settings.provider.keyHint))
                 .onChange(of: key) { _, new in settings.providerKey = new }

@@ -158,8 +158,11 @@ struct MediaExtractor {
         // resolution, and it keeps memory flat on long recordings.
         generator.maximumSize = CGSize(width: 1600, height: 1600)
 
+        // Keep at most `maxFrames` completed candidates plus the active frame.
+        // Previously every changed CGImage stayed alive until a final prune.
         var captures: [ScreenCapture] = []
-        var lastFingerprint: UInt64?
+        var active: ScreenCapture?
+        var nextID = 0
         var stamps: [TimeInterval] = []
         var t: TimeInterval = 1
         while t < duration { stamps.append(t); t += interval }
@@ -172,34 +175,39 @@ struct MediaExtractor {
             guard let image = try? await generator.image(at: time).image else { continue }
 
             let fingerprint = PerceptualHash.compute(image)
-            if let last = lastFingerprint {
-                let distance = PerceptualHash.distance(last, fingerprint)
+            if let current = active {
+                let distance = PerceptualHash.distance(current.fingerprint, fingerprint)
                 if distance < distinctnessThreshold {
                     // Same content still on screen — extend the previous entry.
-                    if !captures.isEmpty {
-                        captures[captures.count - 1].duration = stamp - captures[captures.count - 1].time
-                    }
+                    active?.duration = stamp - current.time
                     continue
                 }
+                retain(current, in: &captures, limit: maxFrames)
             }
 
-            captures.append(ScreenCapture(id: captures.count, time: stamp,
-                                          duration: interval, image: image,
-                                          fingerprint: fingerprint))
-            lastFingerprint = fingerprint
+            active = ScreenCapture(id: nextID, time: stamp, duration: interval,
+                                   image: image, fingerprint: fingerprint)
+            nextID += 1
         }
 
+        if let active { retain(active, in: &captures, limit: maxFrames) }
         progress(1)
-        return prune(captures, to: maxFrames)
+        return captures.sorted { $0.time < $1.time }
     }
 
-    /// If we still have too many, keep the ones that stayed on screen longest —
-    /// a slide someone talked over for two minutes matters more than a frame
-    /// caught mid-scroll.
-    private func prune(_ captures: [ScreenCapture], to limit: Int) -> [ScreenCapture] {
-        guard captures.count > limit else { return captures }
-        let kept = captures.sorted { $0.duration > $1.duration }.prefix(limit)
-        return kept.sorted { $0.time < $1.time }
+    /// Fixed-capacity selection by dwell time. Releasing displaced images keeps
+    /// peak memory proportional to the configured frame limit.
+    private func retain(_ candidate: ScreenCapture,
+                        in captures: inout [ScreenCapture], limit: Int) {
+        guard limit > 0 else { return }
+        if captures.count < limit {
+            captures.append(candidate)
+            return
+        }
+        guard let shortest = captures.indices.min(by: {
+            captures[$0].duration < captures[$1].duration
+        }), candidate.duration > captures[shortest].duration else { return }
+        captures[shortest] = candidate
     }
 }
 

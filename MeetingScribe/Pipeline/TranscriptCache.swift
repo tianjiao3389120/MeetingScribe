@@ -9,6 +9,9 @@ import CryptoKit
 /// comparison and always re-run, since that's usually the reason for the retry.
 enum TranscriptCache {
 
+    static let transcriptionVersion = "transcript-v2|large-v3-turbo|vad-silero-5.1.2|vmsd12|vsd220|mc-1|srt1"
+    static let diarizationVersion = "diarization-v3|pyannote-int8|campplus|threshold0.8|min0.5-0.6|embeddings1"
+
     private static let directory: URL = {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MeetingScribe/transcripts", isDirectory: true)
@@ -21,7 +24,8 @@ enum TranscriptCache {
     /// Hashing gigabytes would cost more than it saves, so the file is
     /// identified by size, modification time and a sample of its bytes — enough
     /// to notice a different or re-encoded file without reading all of it.
-    static func key(for url: URL, language: String, glossary: String) -> String? {
+    static func key(for url: URL, language: String, glossary: String,
+                    version: String = transcriptionVersion) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
 
@@ -42,7 +46,7 @@ enum TranscriptCache {
 
         // Transcription settings are part of the identity — changing the
         // glossary must produce a fresh transcript, not a stale hit.
-        hasher.update(data: Data("|\(language)|\(Transcriber.trimGlossary(glossary))|v1".utf8))
+        hasher.update(data: Data("|\(language)|\(Transcriber.trimGlossary(glossary))|\(version)".utf8))
 
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
