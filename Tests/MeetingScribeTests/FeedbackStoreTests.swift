@@ -35,7 +35,8 @@ final class FeedbackStoreTests: XCTestCase {
     }
 
     func testEmailPromptsPreserveFactsAndRequireChineseReviewFirst() {
-        let chinese = MeetingEmailGenerator.chineseSystemPrompt(tone: .formal, audience: .customer)
+        let chinese = MeetingEmailGenerator.chineseSystemPrompt(
+            template: .progress, tone: .formal, audience: .customer)
         XCTAssertTrue(chinese.contains("只使用纪要中的事实"))
         XCTAssertTrue(chinese.contains("客户"))
         XCTAssertTrue(chinese.contains("一、整体总结"))
@@ -45,5 +46,15 @@ final class FeedbackStoreTests: XCTestCase {
         XCTAssertTrue(chinese.contains("不要 Markdown 表格"))
         XCTAssertTrue(MeetingEmailGenerator.hongKongSystemPrompt.contains("已经确认"))
         XCTAssertTrue(MeetingEmailGenerator.hongKongSystemPrompt.contains("不得增加或删除承诺"))
+    }
+
+    func testMinutesTemplatesMapToExpectedEmailTemplates() {
+        XCTAssertEqual(EmailTemplate.defaultID(forMinutesTemplateID: MinutesTemplate.biweekly.id),
+                       EmailTemplate.progress.id)
+        XCTAssertEqual(EmailTemplate.defaultID(forMinutesTemplateID: MinutesTemplate.customer.id),
+                       EmailTemplate.customer.id)
+        XCTAssertEqual(EmailTemplate.defaultID(forMinutesTemplateID: MinutesTemplate.incident.id),
+                       EmailTemplate.incident.id)
+        XCTAssertEqual(Set(EmailTemplate.all.map(\.id)).count, EmailTemplate.all.count)
     }
 }

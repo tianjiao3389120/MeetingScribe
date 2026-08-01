@@ -17,9 +17,11 @@ struct MeetingEmailGenerator {
 
     let settings: Settings
 
-    func generateChinese(title: String, workspaceName: String?, minutes: String, tone: Tone,
+    func generateChinese(title: String, workspaceName: String?, minutes: String,
+                         template: EmailTemplate, tone: Tone,
                          audience: Audience) async throws -> String {
-        try await complete(system: Self.chineseSystemPrompt(tone: tone, audience: audience),
+        try await complete(system: Self.chineseSystemPrompt(
+            template: template, tone: tone, audience: audience),
                            user: "会议名称：\(title)\n客户或项目：\(workspaceName ?? "未提供")\n\n已确认的会议纪要：\n\(minutes)")
     }
 
@@ -27,25 +29,18 @@ struct MeetingEmailGenerator {
         try await complete(system: Self.hongKongSystemPrompt, user: confirmedChinese)
     }
 
-    static func chineseSystemPrompt(tone: Tone, audience: Audience) -> String {
+    static func chineseSystemPrompt(template: EmailTemplate = .general,
+                                    tone: Tone, audience: Audience) -> String {
         """
         你是阶段性工作同步邮件编辑。根据会议纪要起草一封面向\(audience.rawValue)的简体中文邮件，语气\(tone.rawValue)。
-        沿用用户惯用的项目进度汇报结构，并严格按以下顺序输出：
-
-        主题：【客户或项目】工作同步（仅当输入明确提供日期范围时才加日期范围）
+        第一行是“主题：【客户或项目】符合本邮件模板的简短主题”；仅当输入明确提供日期范围时才加日期范围。
 
         Hi All,
 
         以下是[客户或项目]本周期的工作进度同步：
 
-        一、整体总结
-        用一个紧凑段落概括本周期总体进展、已闭环数量或事项、当前最重要风险，以及下一步重点。没有明确数量时不得自行计算或虚构。
-
-        二、问题与故障
-        每项使用“序号. 问题名称（当前状态）”。先用一段话交代现象和影响，再按纪要中实际存在的信息列出“根因、方案、验证、下一步”；不存在的字段不要硬凑。状态优先使用“已闭环、进行中、待更新、待反馈”等清晰短语。
-
-        三、需求
-        每项清晰列出“需求、状态、时程”；没有明确时程则写“待确认”。如果纪要没有需求，写“本期无新增需求”。
+        本次使用“\(template.name)”模板，严格遵守下面的结构要求：
+        \(template.instructions)
 
         结尾保持简短，不虚构签名。
         只使用纪要中的事实；不确定的信息标注“待确认”；不要虚构收件人、日期范围、负责人、完成比例或承诺。

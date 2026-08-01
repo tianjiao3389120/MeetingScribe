@@ -24,6 +24,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var meetingContext: String?
     var minutesTemplateID: String?
     var emailDrafts: MeetingEmailDrafts?
+    var isFavorite: Bool?
+    var isArchived: Bool?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
@@ -53,9 +55,19 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.meetingContext = nil
         self.minutesTemplateID = nil
         self.emailDrafts = nil
+        self.isFavorite = nil
+        self.isArchived = nil
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }
+
+    var openActionCount: Int {
+        structuredSummary?.actionItems.filter {
+            let status = $0.status.lowercased()
+            return !status.contains("完成") && !status.contains("关闭")
+                && !status.contains("closed") && !status.contains("done")
+        }.count ?? 0
+    }
 }
 
 struct TranscriptTranslation: Codable, Sendable, Equatable {

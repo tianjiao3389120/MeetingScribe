@@ -46,7 +46,28 @@ struct MeetingPreparationView: View {
                     Picker("纪要模板", selection: $selectedTemplateID) {
                         ForEach(MinutesTemplate.all) { Text($0.name).tag($0.id) }
                     }
-                    TextField("本次背景（可选，例如本次目标、阶段或特殊情况）", text: $meetingContext)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("本次背景（可选）")
+                            .font(.callout.weight(.medium))
+                        TextEditor(text: $meetingContext)
+                            .frame(minHeight: 72)
+                            .padding(5)
+                            .background(.background)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.3))
+                            }
+                            .overlay(alignment: .topLeading) {
+                                if meetingContext.isEmpty {
+                                    Text("例如：本次目标、当前阶段、需要重点确认的问题或特殊情况")
+                                        .font(.callout)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(11)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                    }
                     Text("客户的长期信息放在会议空间背景；这里只填写本次会议独有的信息。")
                         .font(.caption).foregroundStyle(.secondary)
                 }

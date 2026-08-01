@@ -6,6 +6,8 @@ struct MeetingEmailView: View {
     let meetingID: UUID
     let title: String
     let workspaceName: String?
+    let minutesTemplateID: String?
+    let workspaceEmailTemplateID: String?
     let minutes: String
     let initialDrafts: MeetingEmailDrafts?
     var onSaved: ((MeetingEmailDrafts) -> Void)?
@@ -14,22 +16,30 @@ struct MeetingEmailView: View {
     @State private var traditional: String
     @State private var tone: MeetingEmailGenerator.Tone
     @State private var audience: MeetingEmailGenerator.Audience
+    @State private var emailTemplateID: String
     @State private var version: Version = .chinese
     @State private var working = false
     @State private var message: String?
 
     private enum Version: String, CaseIterable { case chinese = "中文", traditional = "香港繁体" }
 
-    init(meetingID: UUID, title: String, workspaceName: String? = nil, minutes: String,
+    init(meetingID: UUID, title: String, workspaceName: String? = nil,
+         minutesTemplateID: String? = nil, workspaceEmailTemplateID: String? = nil,
+         minutes: String,
          initialDrafts: MeetingEmailDrafts? = nil,
          onSaved: ((MeetingEmailDrafts) -> Void)? = nil) {
         self.meetingID = meetingID; self.title = title; self.workspaceName = workspaceName
+        self.minutesTemplateID = minutesTemplateID
+        self.workspaceEmailTemplateID = workspaceEmailTemplateID
         self.minutes = minutes
         self.initialDrafts = initialDrafts; self.onSaved = onSaved
         _chinese = State(initialValue: initialDrafts?.chinese ?? "")
         _traditional = State(initialValue: initialDrafts?.hongKongTraditional ?? "")
         _tone = State(initialValue: MeetingEmailGenerator.Tone(rawValue: initialDrafts?.tone ?? "") ?? .natural)
         _audience = State(initialValue: MeetingEmailGenerator.Audience(rawValue: initialDrafts?.audience ?? "") ?? .customer)
+        _emailTemplateID = State(initialValue: initialDrafts?.templateID
+            ?? workspaceEmailTemplateID
+            ?? EmailTemplate.defaultID(forMinutesTemplateID: minutesTemplateID))
     }
 
     private var currentText: Binding<String> {
@@ -44,20 +54,28 @@ struct MeetingEmailView: View {
             }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
             Divider()
 
-            HStack {
-                Picker("收件人", selection: $audience) {
-                    ForEach(MeetingEmailGenerator.Audience.allCases) { Text($0.rawValue).tag($0) }
+            VStack(spacing: 10) {
+                HStack {
+                    Picker("邮件模板", selection: $emailTemplateID) {
+                        ForEach(EmailTemplate.all) { Text($0.name).tag($0.id) }
+                    }
+                    Spacer()
+                    Picker("", selection: $version) {
+                        ForEach(Version.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: 190)
                 }
-                Picker("语气", selection: $tone) {
-                    ForEach(MeetingEmailGenerator.Tone.allCases) { Text($0.rawValue).tag($0) }
+                HStack {
+                    Picker("收件人", selection: $audience) {
+                        ForEach(MeetingEmailGenerator.Audience.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("语气", selection: $tone) {
+                        ForEach(MeetingEmailGenerator.Tone.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Spacer()
                 }
-                Spacer()
-                Picker("", selection: $version) {
-                    ForEach(Version.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 190)
             }.padding(14)
 
-            Text("中文稿按“整体总结 → 问题与故障（状态/根因/方案/验证/下一步）→ 需求（状态/时程）”生成；请核对中文稿后再生成香港繁体。")
+            Text("当前模板：\(EmailTemplate.template(id: emailTemplateID).instructions) 请核对中文稿后再生成香港繁体。")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.bottom, 8)
@@ -104,7 +122,9 @@ struct MeetingEmailView: View {
             do {
                 chinese = try await MeetingEmailGenerator(settings: .shared)
                     .generateChinese(title: title, workspaceName: workspaceName,
-                                     minutes: minutes, tone: tone, audience: audience)
+                                     minutes: minutes,
+                                     template: EmailTemplate.template(id: emailTemplateID),
+                                     tone: tone, audience: audience)
                 traditional = ""; version = .chinese
                 try persist(); message = "中文草稿已生成并保存，请核对后再生成香港繁体。"
             } catch { message = "失败：\(error.localizedDescription)" }
@@ -134,7 +154,8 @@ struct MeetingEmailView: View {
     private func persist() throws {
         let drafts = MeetingEmailDrafts(
             chinese: chinese, hongKongTraditional: traditional,
-            tone: tone.rawValue, audience: audience.rawValue)
+            tone: tone.rawValue, audience: audience.rawValue,
+            templateID: emailTemplateID)
         _ = try MeetingHistoryStore.updateEmailDrafts(id: meetingID, drafts: drafts)
         onSaved?(drafts)
     }
@@ -164,5 +185,8 @@ struct MeetingEmailView: View {
         chinese = drafts.chinese; traditional = drafts.hongKongTraditional
         tone = MeetingEmailGenerator.Tone(rawValue: drafts.tone) ?? .natural
         audience = MeetingEmailGenerator.Audience(rawValue: drafts.audience) ?? .customer
+        emailTemplateID = drafts.templateID
+            ?? workspaceEmailTemplateID
+            ?? EmailTemplate.defaultID(forMinutesTemplateID: minutesTemplateID)
     }
 }

@@ -170,4 +170,34 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).first?.emailDrafts?.hongKongTraditional,
                        drafts.hongKongTraditional)
     }
+
+    func testLibraryScopesAndFavoriteArchivePersistence() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-library-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspaceID = UUID()
+        let minutes = StructuredMinutes(
+            title: "周会", nature: "", duration: "", agenda: ["进展"],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [.init(owner: "张三", task: "更新方案", status: "进行中", due: "下周", evidence: [])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+        let record = MeetingRecord(
+            title: "项目周会", sourcePath: "/meeting.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: minutes, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
+        try MeetingHistoryStore.save(record, root: root)
+
+        var updated = try MeetingHistoryStore.updateLibraryState(
+            id: record.id, favorite: true, root: root)
+        XCTAssertEqual(MeetingLibrary.filter([updated], scope: .favorites).count, 1)
+        XCTAssertEqual(MeetingLibrary.filter([updated], scope: .pendingActions).count, 1)
+        XCTAssertEqual(MeetingLibrary.filter([updated], scope: .workspace(workspaceID)).count, 1)
+
+        updated = try MeetingHistoryStore.updateLibraryState(
+            id: record.id, archived: true, root: root)
+        XCTAssertTrue(MeetingLibrary.filter([updated], scope: .all).isEmpty)
+        XCTAssertEqual(MeetingLibrary.filter([updated], scope: .archived).count, 1)
+        XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).first?.isFavorite, true)
+    }
 }

@@ -590,7 +590,10 @@ private struct ResultView: View {
         .sheet(isPresented: $showEmail) {
             if let id = runner.savedRecordID, let assets = runner.assets {
                 MeetingEmailView(meetingID: id, title: assets.title,
-                                 workspaceName: assets.workspace?.name, minutes: runner.summary)
+                                 workspaceName: assets.workspace?.name,
+                                 minutesTemplateID: assets.minutesTemplateID,
+                                 workspaceEmailTemplateID: assets.workspace?.defaultEmailTemplateID,
+                                 minutes: runner.summary)
             }
         }
     }

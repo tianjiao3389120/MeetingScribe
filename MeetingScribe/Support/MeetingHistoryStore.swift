@@ -125,6 +125,19 @@ enum MeetingHistoryStore {
         return record
     }
 
+    static func updateLibraryState(id: UUID, favorite: Bool? = nil,
+                                   archived: Bool? = nil,
+                                   root: URL = defaultDirectory) throws -> MeetingRecord {
+        let url = root.appendingPathComponent(id.uuidString)
+            .appendingPathComponent("metadata.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        if let favorite { record.isFavorite = favorite }
+        if let archived { record.isArchived = archived }
+        try save(record, root: root)
+        return record
+    }
+
     static func export(_ record: MeetingRecord, to directory: URL) throws {
         let base = record.title
         try record.summaryMarkdown.write(

@@ -5,5 +5,6 @@ struct MeetingEmailDrafts: Codable, Sendable, Equatable {
     var hongKongTraditional: String
     var tone: String
     var audience: String
+    var templateID: String? = nil
     var updatedAt: Date = Date()
 }
