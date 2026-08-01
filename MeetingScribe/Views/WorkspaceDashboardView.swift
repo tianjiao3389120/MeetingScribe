@@ -34,6 +34,7 @@ struct WorkspaceDashboardView: View {
                                 .padding(.top, 4).textSelection(.enabled)
                         }
                     }
+                    changesSection
                     sectionTitle("当前待办", count: insights.openActions.count)
                     if insights.openActions.isEmpty {
                         Text("没有待处理事项").foregroundStyle(.secondary).padding(.vertical, 8)
@@ -93,5 +94,93 @@ struct WorkspaceDashboardView: View {
             }
             Spacer()
         }.padding(10).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var changesSection: some View {
+        if let changes = insights.latestChanges {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("本期变化").font(.headline)
+                    Text("对比 \(changes.previousMeeting.title)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(changes.currentMeeting.createdAt.formatted(date: .abbreviated, time: .omitted))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if changes.items.isEmpty {
+                    Text("两次会议之间没有可识别的事项变化")
+                        .font(.callout).foregroundStyle(.secondary).padding(.vertical, 6)
+                } else {
+                    ForEach(WorkspaceInsights.MeetingChanges.Kind.allCases, id: \.rawValue) { kind in
+                        let rows = changes.items(of: kind)
+                        if !rows.isEmpty {
+                            changeGroup(kind, rows: rows)
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
+        } else if records.count > 1 {
+            GroupBox("本期变化") {
+                Text("至少需要两场包含结构化纪要的会议才能进行对比。")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(.secondary).padding(.top, 4)
+            }
+        }
+    }
+
+    private func changeGroup(_ kind: WorkspaceInsights.MeetingChanges.Kind,
+                             rows: [WorkspaceInsights.MeetingChanges.Item]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("\(kind.rawValue) · \(rows.count)", systemImage: changeIcon(kind))
+                .font(.caption.weight(.semibold)).foregroundStyle(changeColor(kind))
+            ForEach(rows) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Text(item.category).font(.caption2.weight(.medium))
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title).font(.callout)
+                        if kind == .statusChanged || kind == .closed {
+                            Text("\(statusText(item.previousStatus)) → \(statusText(item.currentStatus))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if kind == .notMentioned {
+                            Text("上期状态：\(statusText(item.previousStatus))；未自动视为已完成")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if !item.currentStatus.isEmpty {
+                            Text("状态：\(item.currentStatus)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func statusText(_ value: String) -> String { value.isEmpty ? "未标注" : value }
+
+    private func changeIcon(_ kind: WorkspaceInsights.MeetingChanges.Kind) -> String {
+        switch kind {
+        case .new: "plus.circle.fill"
+        case .closed: "checkmark.circle.fill"
+        case .statusChanged: "arrow.triangle.2.circlepath"
+        case .ongoing: "clock.fill"
+        case .notMentioned: "questionmark.circle"
+        }
+    }
+
+    private func changeColor(_ kind: WorkspaceInsights.MeetingChanges.Kind) -> Color {
+        switch kind {
+        case .new: .blue
+        case .closed: .green
+        case .statusChanged: .orange
+        case .ongoing: .purple
+        case .notMentioned: .secondary
+        }
     }
 }

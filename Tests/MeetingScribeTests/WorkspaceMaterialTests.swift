@@ -77,4 +77,79 @@ final class WorkspaceMaterialTests: XCTestCase {
         XCTAssertEqual(insights.openActions.map(\.task), ["提交方案"])
         XCTAssertEqual(insights.closedActions.map(\.task), ["确认名单"])
     }
+
+    func testWorkspaceInsightsKeepsLatestActionStateWithoutDuplicatingLedger() {
+        func record(date: Date, status: String) -> MeetingRecord {
+            let minutes = StructuredMinutes(
+                title: "周会", nature: "", duration: "", agenda: ["进展"],
+                participantAssessment: [], issues: [], requirements: [],
+                actionItems: [.init(owner: "张三", task: "提交实施方案", status: status,
+                                    due: "周五", evidence: [])],
+                agreements: [], afterMeeting: [], uncertainties: [])
+            return MeetingRecord(createdAt: date, title: "项目周会", sourcePath: "/meeting.mov",
+                                 duration: 60, backend: "测试", model: "mock",
+                                 summaryMarkdown: "纪要", structuredSummary: minutes,
+                                 transcript: Transcript(segments: []), speakerNames: [:],
+                                 usedSummaryFallback: false)
+        }
+
+        let insights = WorkspaceInsights(records: [
+            record(date: Date(timeIntervalSince1970: 100), status: "进行中"),
+            record(date: Date(timeIntervalSince1970: 200), status: "已完成"),
+        ])
+        XCTAssertEqual(insights.actions.count, 2)
+        XCTAssertTrue(insights.openActions.isEmpty)
+        XCTAssertEqual(insights.closedActions.count, 1)
+        XCTAssertEqual(insights.closedActions.first?.status, "已完成")
+        XCTAssertFalse(WorkspaceInsights.isClosed(status: "未完成"))
+        XCTAssertFalse(WorkspaceInsights.isClosed(status: "待解决"))
+        XCTAssertTrue(WorkspaceInsights.isClosed(status: "已解决"))
+    }
+
+    func testWorkspaceInsightsComparesLatestMeetingsWithoutTreatingOmissionAsClosed() throws {
+        func record(date: Date, issues: [StructuredMinutes.Issue],
+                    requirements: [StructuredMinutes.Requirement],
+                    actions: [StructuredMinutes.ActionItem]) -> MeetingRecord {
+            let minutes = StructuredMinutes(
+                title: "双周会", nature: "", duration: "", agenda: ["进展"],
+                participantAssessment: [], issues: issues, requirements: requirements,
+                actionItems: actions, agreements: [], afterMeeting: [], uncertainties: [])
+            return MeetingRecord(createdAt: date, title: "双周会", sourcePath: "/meeting.mov",
+                                 duration: 60, backend: "测试", model: "mock",
+                                 summaryMarkdown: "纪要", structuredSummary: minutes,
+                                 transcript: Transcript(segments: []), speakerNames: [:],
+                                 usedSummaryFallback: false)
+        }
+
+        let old = record(
+            date: Date(timeIntervalSince1970: 100),
+            issues: [
+                .init(title: "登录超时", status: "处理中", rootCause: "", solution: "",
+                      progress: "", evidence: []),
+                .init(title: "报表错误", status: "处理中", rootCause: "", solution: "",
+                      progress: "", evidence: []),
+            ],
+            requirements: [],
+            actions: [.init(owner: "李四", task: "确认上线窗口", status: "未开始",
+                            due: "", evidence: [])])
+        let current = record(
+            date: Date(timeIntervalSince1970: 200),
+            issues: [
+                .init(title: "登录超时", status: "已解决", rootCause: "", solution: "",
+                      progress: "", evidence: []),
+                .init(title: "新增告警", status: "处理中", rootCause: "", solution: "",
+                      progress: "", evidence: []),
+            ],
+            requirements: [.init(title: "增加审计报表", status: "待评估", schedule: "",
+                                 evidence: [])],
+            actions: [.init(owner: "李四", task: "确认上线窗口", status: "进行中",
+                            due: "", evidence: [])])
+
+        let changes = try XCTUnwrap(WorkspaceInsights(records: [old, current]).latestChanges)
+        XCTAssertEqual(changes.currentMeeting.createdAt, current.createdAt)
+        XCTAssertEqual(changes.items(of: .closed).map(\.title), ["登录超时"])
+        XCTAssertEqual(Set(changes.items(of: .new).map(\.title)), ["新增告警", "增加审计报表"])
+        XCTAssertEqual(changes.items(of: .statusChanged).map(\.title), ["确认上线窗口"])
+        XCTAssertEqual(changes.items(of: .notMentioned).map(\.title), ["报表错误"])
+    }
 }
