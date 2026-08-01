@@ -58,9 +58,10 @@ struct ContentView: View {
             set: { if !$0 { pendingMedia = nil } }
         )) {
             if let url = pendingMedia {
-                MeetingPreparationView(mediaURL: url) { title, workspace, context, tags, materials in
+                MeetingPreparationView(mediaURL: url) { title, workspace, context, templateID, tags, materials in
                     pendingMedia = nil
                     runner.run(url: url, title: title, meetingContext: context,
+                               minutesTemplateID: templateID,
                                workspace: workspace, tags: tags, materials: materials)
                 } onCancel: {
                     pendingMedia = nil
@@ -103,6 +104,7 @@ struct ContentView: View {
                                                workspace: workspace, materials: materials)
             } else {
                 runner.run(url: record.sourceURL, title: record.title,
+                           minutesTemplateID: record.minutesTemplateID ?? MinutesTemplate.general.id,
                            workspace: workspace,
                            tags: record.tags ?? [], materials: materials)
             }
@@ -125,6 +127,7 @@ struct ContentView: View {
                 }).value { materials.append(value) }
             }
             runner.run(url: source, title: job.title, meetingContext: job.meetingContext ?? "",
+                       minutesTemplateID: job.minutesTemplateID ?? MinutesTemplate.general.id,
                        workspace: workspace, tags: job.tags, materials: materials)
         }
     }
@@ -405,6 +408,8 @@ private struct ResultView: View {
     @State private var savedURL: URL?
     @State private var saveError: String?
     @State private var showNaming = false
+    @State private var showFeedback = false
+    @State private var showEmail = false
 
     private enum Mode: String, CaseIterable {
         case rendered = "预览"
@@ -536,6 +541,12 @@ private struct ResultView: View {
                     .help("按设置中的实际发言人数重新分离；复用转录缓存")
                 }
 
+                if runner.savedRecordID != nil {
+                    Button("同步邮件") { showEmail = true }
+                    Button("反馈") { showFeedback = true }
+                        .help("评价纪要并提交待审核的术语候选")
+                }
+
                 Button("复制") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(runner.summary, forType: .string)
@@ -567,6 +578,19 @@ private struct ResultView: View {
                 } onCancel: {
                     showNaming = false
                 }
+            }
+        }
+        .sheet(isPresented: $showFeedback) {
+            if let id = runner.savedRecordID, let title = runner.assets?.title {
+                MeetingFeedbackView(meetingID: id, title: title) { request in
+                    runner.regenerate(withFeedback: request)
+                }
+            }
+        }
+        .sheet(isPresented: $showEmail) {
+            if let id = runner.savedRecordID, let assets = runner.assets {
+                MeetingEmailView(meetingID: id, title: assets.title,
+                                 workspaceName: assets.workspace?.name, minutes: runner.summary)
             }
         }
     }

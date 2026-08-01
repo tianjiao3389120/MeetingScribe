@@ -33,6 +33,7 @@ struct MeetingAssets: Sendable {
     var sourceURL: URL
     var customTitle: String?
     var meetingContext: String = ""
+    var minutesTemplateID: String = MinutesTemplate.general.id
     var duration: TimeInterval
     var transcript: Transcript
     var captures: [ScreenCapture]

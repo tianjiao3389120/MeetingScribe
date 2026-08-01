@@ -36,6 +36,7 @@ final class PipelineRunner {
     private(set) var historyWarning: String?
     private(set) var error: String?
     private(set) var isRunning = false
+    private(set) var savedRecordID: UUID?
 
     /// True when transcription and screen extraction succeeded but the model
     /// call failed. The expensive work is still in `assets`, so the user can
@@ -66,6 +67,7 @@ final class PipelineRunner {
     func run(url: URL, forceRetranscribe: Bool = false,
              forceSpeakerSeparation: Bool = false,
              title: String? = nil, meetingContext: String = "",
+             minutesTemplateID: String = MinutesTemplate.general.id,
              workspace: MeetingWorkspace? = nil,
              tags: [String] = [], materials: [SupportingMaterial] = []) {
         task?.cancel()
@@ -77,10 +79,12 @@ final class PipelineRunner {
         isRunning = true
         speakerWarning = nil
         historyWarning = nil
+        savedRecordID = nil
         self.forceRetranscribe = forceRetranscribe
         self.forceSpeakerSeparation = forceSpeakerSeparation
         let pendingJob = PendingMeetingJob(
             sourcePath: url.path, title: title ?? "", meetingContext: meetingContext,
+            minutesTemplateID: minutesTemplateID,
             workspaceID: workspace?.id, tags: tags,
             materialPaths: materials.map { $0.sourceURL.path })
         pendingJobID = pendingJob.id
@@ -90,6 +94,7 @@ final class PipelineRunner {
             guard let self else { return }
             do {
                 try await self.execute(url: url, title: title, meetingContext: meetingContext,
+                                       minutesTemplateID: minutesTemplateID,
                                        workspace: workspace,
                                        tags: tags, materials: materials)
             } catch is CancellationError {
@@ -111,6 +116,7 @@ final class PipelineRunner {
         guard let bundle = assets, !isRunning else { return }
         run(url: bundle.sourceURL, forceSpeakerSeparation: true,
             title: bundle.title, meetingContext: bundle.meetingContext,
+            minutesTemplateID: bundle.minutesTemplateID,
             workspace: bundle.workspace, tags: bundle.tags, materials: bundle.materials)
     }
 
@@ -118,6 +124,7 @@ final class PipelineRunner {
     func retryAnalysis() {
         guard let bundle = assets, !isRunning else { return }
         task?.cancel()
+        savedRecordID = nil
         error = nil
         isRunning = true
 
@@ -136,6 +143,16 @@ final class PipelineRunner {
         }
     }
 
+    func regenerate(withFeedback feedback: String) {
+        guard var bundle = assets, !isRunning else { return }
+        let value = feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        bundle.meetingContext = [bundle.meetingContext, "重新生成修改要求：\(value)"]
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+        assets = bundle
+        retryAnalysis()
+    }
+
     func analyzeEditedTranscript(record: MeetingRecord, transcript: Transcript,
                                  workspace: MeetingWorkspace?,
                                  materials: [SupportingMaterial]) {
@@ -144,7 +161,9 @@ final class PipelineRunner {
         usedSummaryFallback = false; isRunning = true
         let bundle = MeetingAssets(
             sourceURL: record.sourceURL, customTitle: record.title,
-            meetingContext: record.meetingContext ?? "", duration: record.duration,
+            meetingContext: record.meetingContext ?? "",
+            minutesTemplateID: record.minutesTemplateID ?? MinutesTemplate.general.id,
+            duration: record.duration,
             transcript: transcript, captures: [], hasVideo: false,
             diarization: nil, materials: materials, workspace: workspace,
             tags: record.tags ?? [])
@@ -170,6 +189,7 @@ final class PipelineRunner {
     }
 
     private func execute(url: URL, title: String?, meetingContext: String,
+                         minutesTemplateID: String,
                          workspace: MeetingWorkspace?,
                          tags: [String], materials: [SupportingMaterial]) async throws {
         let settings = Settings.shared
@@ -314,6 +334,7 @@ final class PipelineRunner {
         let bundle = MeetingAssets(sourceURL: url,
                                    customTitle: title,
                                    meetingContext: meetingContext,
+                                   minutesTemplateID: minutesTemplateID,
                                    duration: info.duration,
                                    transcript: transcript,
                                    captures: captures,
@@ -380,8 +401,10 @@ final class PipelineRunner {
             })
         var storedRecord = record
         storedRecord.meetingContext = bundle.meetingContext
+        storedRecord.minutesTemplateID = bundle.minutesTemplateID
         do {
             try MeetingHistoryStore.save(storedRecord, materialSources: bundle.materials)
+            savedRecordID = storedRecord.id
         } catch {
             // History is a convenience; a valid summary remains successful.
             historyWarning = "历史记录保存失败：\(error.localizedDescription)"

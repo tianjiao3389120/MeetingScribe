@@ -32,6 +32,12 @@ struct WorkspaceManagementView: View {
                         }
                         TextField("长期背景，例如客户身份、产品和项目目标", text: $workspace.context)
                             .font(.caption)
+                        Picker("默认纪要模板", selection: Binding(
+                            get: { workspace.defaultTemplateID ?? MinutesTemplate.general.id },
+                            set: { workspace.defaultTemplateID = $0 }
+                        )) {
+                            ForEach(MinutesTemplate.all) { Text($0.name).tag($0.id) }
+                        }.font(.caption)
                     }.padding(.vertical, 5)
                 }
                 Button { workspaces.append(MeetingWorkspace(name: "新空间", kind: .project)) } label: {

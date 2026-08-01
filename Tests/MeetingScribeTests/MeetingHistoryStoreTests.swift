@@ -149,4 +149,25 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertFalse(MeetingSearch.matches(
             record, workspaceName: "香港银行", query: "香港银行 UAT 李四"))
     }
+
+    func testEmailDraftsPersistWithMeetingHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-email-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = MeetingRecord(
+            title: "客户周会", sourcePath: "/meeting.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "确认下周上线",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        try MeetingHistoryStore.save(record, root: root)
+        let drafts = MeetingEmailDrafts(
+            chinese: "主题：周会同步", hongKongTraditional: "主旨：週會同步",
+            tone: "自然", audience: "客户")
+
+        let updated = try MeetingHistoryStore.updateEmailDrafts(
+            id: record.id, drafts: drafts, root: root)
+        XCTAssertEqual(updated.emailDrafts?.chinese, drafts.chinese)
+        XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).first?.emailDrafts?.hongKongTraditional,
+                       drafts.hongKongTraditional)
+    }
 }

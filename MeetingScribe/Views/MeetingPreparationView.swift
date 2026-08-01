@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 struct MeetingPreparationView: View {
     let mediaURL: URL
-    let onStart: (String, MeetingWorkspace?, String, [String], [SupportingMaterial]) -> Void
+    let onStart: (String, MeetingWorkspace?, String, String, [String], [SupportingMaterial]) -> Void
     let onCancel: () -> Void
 
     @State private var workspaces: [MeetingWorkspace] = []
@@ -18,9 +18,10 @@ struct MeetingPreparationView: View {
     @State private var newContext = ""
     @State private var meetingTitle: String
     @State private var meetingContext = ""
+    @State private var selectedTemplateID = MinutesTemplate.general.id
 
     init(mediaURL: URL,
-         onStart: @escaping (String, MeetingWorkspace?, String, [String], [SupportingMaterial]) -> Void,
+         onStart: @escaping (String, MeetingWorkspace?, String, String, [String], [SupportingMaterial]) -> Void,
          onCancel: @escaping () -> Void) {
         self.mediaURL = mediaURL; self.onStart = onStart; self.onCancel = onCancel
         _meetingTitle = State(initialValue: mediaURL.deletingPathExtension().lastPathComponent)
@@ -42,6 +43,9 @@ struct MeetingPreparationView: View {
             Form {
                 Section("本次会议") {
                     TextField("会议名称", text: $meetingTitle)
+                    Picker("纪要模板", selection: $selectedTemplateID) {
+                        ForEach(MinutesTemplate.all) { Text($0.name).tag($0.id) }
+                    }
                     TextField("本次背景（可选，例如本次目标、阶段或特殊情况）", text: $meetingContext)
                     Text("客户的长期信息放在会议空间背景；这里只填写本次会议独有的信息。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -117,6 +121,11 @@ struct MeetingPreparationView: View {
         }
         .frame(width: 620, height: 590)
         .onAppear(perform: loadWorkspaces)
+        .onChange(of: selectedWorkspaceID) { _, id in
+            if let workspace = workspaces.first(where: { $0.id == id }) {
+                selectedTemplateID = workspace.defaultTemplateID ?? MinutesTemplate.general.id
+            }
+        }
     }
 
     private func loadWorkspaces() {
@@ -191,6 +200,7 @@ struct MeetingPreparationView: View {
         guard !title.isEmpty else { materialError = "会议名称不能为空。"; return }
         onStart(title, selectedWorkspace,
                 meetingContext.trimmingCharacters(in: .whitespacesAndNewlines),
+                selectedTemplateID,
                 Array(Set(tags)).sorted(), materials)
     }
 

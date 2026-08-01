@@ -18,6 +18,7 @@ struct MeetingHistoryView: View {
     @State private var dashboardWorkspace: MeetingWorkspace?
     @State private var editingTranscript: MeetingRecord?
     @State private var translatingTranscript: MeetingRecord?
+    @State private var emailRecord: MeetingRecord?
 
     private enum WorkspaceFilter: Hashable { case all, ungrouped, workspace(UUID) }
 
@@ -146,6 +147,17 @@ struct MeetingHistoryView: View {
                 }
             }
         }
+        .sheet(item: $emailRecord) { record in
+            MeetingEmailView(
+                meetingID: record.id, title: record.title,
+                workspaceName: workspace(for: record)?.name,
+                minutes: record.summaryMarkdown, initialDrafts: record.emailDrafts
+            ) { drafts in
+                if let index = records.firstIndex(where: { $0.id == record.id }) {
+                    records[index].emailDrafts = drafts
+                }
+            }
+        }
         .onChange(of: filtered.map(\.id)) { _, ids in
             if selection == nil || !ids.contains(selection!) { selection = ids.first }
         }
@@ -184,6 +196,7 @@ struct MeetingHistoryView: View {
                 }
                 Menu("更多操作") {
                     Button("会议信息、归组与标签…") { editingClassification = record }
+                    Button("生成同步邮件…") { emailRecord = record }
                     Divider()
                     Button("校正逐字稿并重新生成…") { editingTranscript = record }
                     Button("生成双栏释义…") { translatingTranscript = record }

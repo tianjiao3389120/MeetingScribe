@@ -6,13 +6,15 @@ final class WorkspaceMaterialTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("meetingscribe-workspaces-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
-        let workspace = MeetingWorkspace(name: "某客户", kind: .customer,
+        var workspace = MeetingWorkspace(name: "某客户", kind: .customer,
                                          context: "我方是安全产品厂商")
+        workspace.defaultTemplateID = MinutesTemplate.customer.id
 
         try MeetingWorkspaceStore.save([workspace], to: url)
         let loaded = try MeetingWorkspaceStore.load(from: url)
         XCTAssertEqual(loaded.first?.id, workspace.id)
         XCTAssertEqual(loaded.first?.context, "我方是安全产品厂商")
+        XCTAssertEqual(loaded.first?.defaultTemplateID, MinutesTemplate.customer.id)
     }
 
     func testTextMaterialExtractionAndLengthLimit() throws {

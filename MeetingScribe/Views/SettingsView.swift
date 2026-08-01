@@ -9,6 +9,8 @@ struct SettingsView: View {
     @State private var showVoiceProfiles = false
     @State private var voiceProfileCount = VoiceProfileStore.load().count
     @State private var showStorageManagement = false
+    @State private var glossaryCandidates = FeedbackStore.loadCandidates()
+    @State private var glossaryCandidateError: String?
 
     static func describeCache() -> String {
         let (count, bytes) = TranscriptCache.summary
@@ -123,6 +125,28 @@ struct SettingsView: View {
                         Button("恢复默认") { settings.glossary = Settings.defaultGlossary }
                             .buttonStyle(.link)
                     }
+                    if !glossaryCandidates.isEmpty {
+                        DisclosureGroup("待审核术语（\(glossaryCandidates.count)）") {
+                            ForEach(glossaryCandidates) { candidate in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(candidate.term)
+                                        Text("来自：\(candidate.sourceTitle)")
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button("加入") { accept(candidate) }
+                                        .disabled(!canAccept(candidate))
+                                    Button(role: .destructive) { discard(candidate) } label: {
+                                        Image(systemName: "xmark")
+                                    }.buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                        if let glossaryCandidateError {
+                            Text(glossaryCandidateError).font(.caption).foregroundStyle(.red)
+                        }
+                    }
                 }
 
                 Section("存储") {
@@ -156,6 +180,26 @@ struct SettingsView: View {
         .sheet(isPresented: $showStorageManagement, onDismiss: {
             cacheSummary = Self.describeCache()
         }) { StorageManagementView() }
+    }
+
+    private func canAccept(_ candidate: GlossaryCandidate) -> Bool {
+        let separator = settings.glossary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : "，"
+        return settings.glossary.count + separator.count + candidate.term.count <= 170
+    }
+
+    private func accept(_ candidate: GlossaryCandidate) {
+        guard canAccept(candidate) else { glossaryCandidateError = "词表已接近 170 字上限，请先精简。"; return }
+        let base = settings.glossary.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.glossary = base.isEmpty ? candidate.term : "\(base)，\(candidate.term)"
+        discard(candidate)
+    }
+
+    private func discard(_ candidate: GlossaryCandidate) {
+        do {
+            try FeedbackStore.removeCandidate(id: candidate.id)
+            glossaryCandidates.removeAll { $0.id == candidate.id }
+            glossaryCandidateError = nil
+        } catch { glossaryCandidateError = error.localizedDescription }
     }
 }
 

@@ -22,6 +22,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var materials: [MaterialReference]?
     var transcriptTranslations: [TranscriptTranslation]?
     var meetingContext: String?
+    var minutesTemplateID: String?
+    var emailDrafts: MeetingEmailDrafts?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
@@ -49,6 +51,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.materials = materials
         self.transcriptTranslations = transcriptTranslations
         self.meetingContext = nil
+        self.minutesTemplateID = nil
+        self.emailDrafts = nil
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }

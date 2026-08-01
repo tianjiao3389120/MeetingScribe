@@ -18,6 +18,7 @@ struct MeetingWorkspace: Codable, Identifiable, Sendable, Hashable {
     var name: String
     var kind: Kind
     var context: String = ""
+    var defaultTemplateID: String?
     var createdAt: Date = Date()
 }
 

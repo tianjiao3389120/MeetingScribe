@@ -114,6 +114,17 @@ enum MeetingHistoryStore {
         return record
     }
 
+    static func updateEmailDrafts(id: UUID, drafts: MeetingEmailDrafts,
+                                  root: URL = defaultDirectory) throws -> MeetingRecord {
+        let url = root.appendingPathComponent(id.uuidString)
+            .appendingPathComponent("metadata.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        record.emailDrafts = drafts
+        try save(record, root: root)
+        return record
+    }
+
     static func export(_ record: MeetingRecord, to directory: URL) throws {
         let base = record.title
         try record.summaryMarkdown.write(
