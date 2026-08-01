@@ -30,6 +30,8 @@ struct SettingsView: View {
                             Text("Claude Opus 5（最强）").tag("claude-opus-5")
                             Text("Claude Sonnet 5（更快更省）").tag("claude-sonnet-5")
                         }
+                    case .openAICompatible:
+                        ProviderSection(settings: $settings)
                     }
                 }
 
@@ -115,6 +117,113 @@ struct SettingsView: View {
             .padding(14)
         }
         .frame(width: 560, height: 640)
+    }
+}
+
+/// Provider picker for the OpenAI-compatible backend.
+private struct ProviderSection: View {
+    @Binding var settings: Settings
+    @State private var key: String = ""
+    @State private var customModel: String = ""
+    @State private var probe: ProbeState = .idle
+
+    private enum ProbeState: Equatable {
+        case idle, running, ok(String), failed(String)
+    }
+
+    var body: some View {
+        Picker("服务商", selection: Binding(
+            get: { settings.providerID },
+            set: { id in
+                settings.selectProvider(ProviderPreset.preset(id: id))
+                key = settings.providerKey ?? ""
+                customModel = ""
+                probe = .idle
+            }
+        )) {
+            ForEach(ProviderPreset.all) { Text($0.name).tag($0.id) }
+        }
+
+        TextField("接口地址", text: $settings.providerBaseURL,
+                  prompt: Text("https://api.example.com/v1"))
+            .font(.system(.callout, design: .monospaced))
+
+        if settings.provider.requiresKey {
+            SecureField("API key", text: $key, prompt: Text(settings.provider.keyHint))
+                .onChange(of: key) { _, new in settings.providerKey = new }
+                .onAppear { key = settings.providerKey ?? "" }
+        }
+
+        if settings.provider.models.isEmpty {
+            TextField("模型名", text: $settings.providerModel, prompt: Text("按服务商文档填写"))
+                .font(.system(.callout, design: .monospaced))
+            Toggle("该模型支持读图", isOn: Binding(
+                get: { settings.providerVisionOverride ?? false },
+                set: { settings.providerVisionOverride = $0 }
+            ))
+        } else {
+            Picker("模型", selection: $settings.providerModel) {
+                ForEach(settings.provider.models) { Text($0.label).tag($0.id) }
+                if !customModel.isEmpty { Text(customModel).tag(customModel) }
+            }
+        }
+
+        HStack {
+            if settings.providerSupportsVision {
+                Label("架构图等画面会作为图片传入", systemImage: "photo")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("该模型不支持读图，画面只以 OCR 文字传入", systemImage: "text.alignleft")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !settings.provider.docsURL.isEmpty {
+                Link("获取 key", destination: URL(string: settings.provider.docsURL)!)
+                    .font(.caption)
+            }
+        }
+
+        HStack(spacing: 10) {
+            Button("测试连接") { runProbe() }
+                .disabled(probe == .running || settings.providerBaseURL.isEmpty)
+
+            switch probe {
+            case .idle:
+                EmptyView()
+            case .running:
+                ProgressView().controlSize(.small)
+            case .ok(let message):
+                Label(message, systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(.green)
+            case .failed(let message):
+                Label(message, systemImage: "xmark.circle.fill")
+                    .font(.caption).foregroundStyle(.red)
+                    .lineLimit(3).textSelection(.enabled)
+            }
+        }
+    }
+
+    /// One cheap round-trip, so a wrong URL or key surfaces here instead of
+    /// after a three-minute transcription.
+    private func runProbe() {
+        probe = .running
+        let client = OpenAICompatibleClient(
+            baseURL: settings.providerBaseURL,
+            apiKey: settings.providerKey,
+            model: settings.providerModel,
+            supportsVision: false
+        )
+        Task {
+            do {
+                let reply = try await client.complete(
+                    system: "你是一个测试助手。", user: "回复两个字：可用", images: [])
+                probe = .ok("连接正常：\(reply.prefix(20))")
+            } catch {
+                probe = .failed(error.localizedDescription)
+            }
+        }
     }
 }
 

@@ -25,6 +25,7 @@ info "打包 app bundle…"
 rm -rf "$DEST"
 mkdir -p "$DEST/Contents/MacOS" "$DEST/Contents/Resources"
 cp "$BINARY" "$DEST/Contents/MacOS/$APP_NAME"
+[ -x "$DEST/Contents/MacOS/$APP_NAME" ] || { echo "打包失败：二进制未就位" >&2; exit 1; }
 
 cat > "$DEST/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -63,10 +64,35 @@ info "签名…"
 codesign --force --deep --sign - "$DEST" 2>/dev/null
 
 if [ "${1:-}" = "--install" ]; then
+    TARGET="/Applications/$APP_NAME.app"
+
+    # 正在运行的实例会占住可执行文件，rm -rf 删不掉，cp 就会复制进残留目录，
+    # 旧二进制原封不动 —— 装完看起来成功，跑起来还是老版本。先退出它。
+    if pgrep -x "$APP_NAME" > /dev/null 2>&1; then
+        info "检测到 $APP_NAME 正在运行，先退出…"
+        osascript -e "tell application \"$APP_NAME\" to quit" 2>/dev/null || true
+        for _ in $(seq 20); do
+            pgrep -x "$APP_NAME" > /dev/null 2>&1 || break
+            sleep 0.25
+        done
+        pgrep -x "$APP_NAME" > /dev/null 2>&1 && pkill -x "$APP_NAME" 2>/dev/null || true
+        sleep 0.5
+    fi
+
     info "安装到 /Applications…"
-    rm -rf "/Applications/$APP_NAME.app"
+    rm -rf "$TARGET"
+    [ -e "$TARGET" ] && { echo "无法删除旧版本，请手动退出 $APP_NAME 后重试" >&2; exit 1; }
     cp -R "$DEST" /Applications/
-    info "完成 → /Applications/$APP_NAME.app"
+
+    # 自检：装上的必须和刚构建的是同一个二进制
+    NEW_SUM=$(shasum -a 256 "$DEST/Contents/MacOS/$APP_NAME" | cut -d' ' -f1)
+    GOT_SUM=$(shasum -a 256 "$TARGET/Contents/MacOS/$APP_NAME" 2>/dev/null | cut -d' ' -f1)
+    if [ "$NEW_SUM" != "$GOT_SUM" ]; then
+        echo "安装校验失败：/Applications 里的二进制与本次构建不一致" >&2
+        exit 1
+    fi
+
+    info "完成 → $TARGET（已校验）"
 else
     info "完成 → $(pwd)/$DEST"
     info "安装到 /Applications：./build.sh --install"

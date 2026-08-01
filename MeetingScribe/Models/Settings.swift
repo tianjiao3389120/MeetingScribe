@@ -4,13 +4,15 @@ import Observation
 enum BackendKind: String, CaseIterable, Identifiable, Codable {
     case claudeCLI
     case anthropicAPI
+    case openAICompatible
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .claudeCLI:    return "本机 Claude Code"
-        case .anthropicAPI: return "Anthropic API"
+        case .claudeCLI:         return "本机 Claude Code"
+        case .anthropicAPI:      return "Anthropic API"
+        case .openAICompatible:  return "其他大模型"
         }
     }
 
@@ -19,7 +21,9 @@ enum BackendKind: String, CaseIterable, Identifiable, Codable {
         case .claudeCLI:
             return "调用本机已安装的 claude 命令，使用现有订阅，不额外计费。屏幕画面以文字形式传入，架构图等图片会被跳过。"
         case .anthropicAPI:
-            return "直接调用 Anthropic API，需要 API key，按量计费。支持把架构图作为图片传入，纪要质量更好。"
+            return "直接调用 Anthropic API，需要 API key，按量计费。支持把架构图作为图片传入。"
+        case .openAICompatible:
+            return "DeepSeek、智谱、Kimi、通义、硅基流动，或任意 OpenAI 兼容接口（含本地 Ollama）。选了不支持读图的模型时，画面只以 OCR 文字传入。"
         }
     }
 }
@@ -99,6 +103,58 @@ final class Settings {
         didSet { defaults.set(keepIntermediates, forKey: Keys.keepIntermediates) }
     }
 
+    // MARK: OpenAI-compatible providers
+
+    var providerID: String {
+        didSet { defaults.set(providerID, forKey: Keys.providerID) }
+    }
+    /// Prefilled from the preset but editable — vendors move endpoints, and a
+    /// wrong-but-fixable URL beats a hardcoded one the user can't correct.
+    var providerBaseURL: String {
+        didSet { defaults.set(providerBaseURL, forKey: Keys.providerBaseURL) }
+    }
+    var providerModel: String {
+        didSet { defaults.set(providerModel, forKey: Keys.providerModel) }
+    }
+    /// Set when the user types a model the preset doesn't list.
+    var providerVisionOverride: Bool? {
+        didSet {
+            if let value = providerVisionOverride {
+                defaults.set(value, forKey: Keys.providerVision)
+            } else {
+                defaults.removeObject(forKey: Keys.providerVision)
+            }
+        }
+    }
+
+    var provider: ProviderPreset { ProviderPreset.preset(id: providerID) }
+
+    /// Whether the currently selected model can accept images.
+    var providerSupportsVision: Bool {
+        if let override = providerVisionOverride { return override }
+        return provider.models.first { $0.id == providerModel }?.supportsVision ?? false
+    }
+
+    /// Switching provider swaps in that vendor's defaults; the previous
+    /// vendor's key stays in the keychain under its own account.
+    func selectProvider(_ preset: ProviderPreset) {
+        providerID = preset.id
+        providerBaseURL = preset.baseURL
+        providerModel = preset.models.first?.id ?? ""
+        providerVisionOverride = nil
+    }
+
+    var providerKey: String? {
+        get { Keychain.read(account: provider.keychainAccount) }
+        set {
+            if let newValue, !newValue.isEmpty {
+                Keychain.write(account: provider.keychainAccount, value: newValue)
+            } else {
+                Keychain.delete(account: provider.keychainAccount)
+            }
+        }
+    }
+
     private enum Keys {
         static let backend = "backend"
         static let apiModel = "apiModel"
@@ -107,6 +163,10 @@ final class Settings {
         static let glossary = "glossary"
         static let contextHint = "contextHint"
         static let keepIntermediates = "keepIntermediates"
+        static let providerID = "providerID"
+        static let providerBaseURL = "providerBaseURL"
+        static let providerModel = "providerModel"
+        static let providerVision = "providerVisionOverride"
     }
 
     static let defaultGlossary = """
@@ -128,6 +188,13 @@ final class Settings {
         glossary = defaults.string(forKey: Keys.glossary) ?? Settings.defaultGlossary
         contextHint = defaults.string(forKey: Keys.contextHint) ?? ""
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
+
+        let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.deepseek.id
+        providerID = storedProvider
+        let preset = ProviderPreset.preset(id: storedProvider)
+        providerBaseURL = defaults.string(forKey: Keys.providerBaseURL) ?? preset.baseURL
+        providerModel = defaults.string(forKey: Keys.providerModel) ?? (preset.models.first?.id ?? "")
+        providerVisionOverride = defaults.object(forKey: Keys.providerVision) as? Bool
     }
 
     /// Kept in the keychain, never in UserDefaults.

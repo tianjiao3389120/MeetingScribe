@@ -13,8 +13,19 @@ struct Analyzer {
     let assets: MeetingAssets
     let settings: Settings
 
-    func run(progress: @Sendable (String) -> Void) async throws -> String {
-        let imageIDs = PromptBuilder.selectImageCaptures(from: assets.captures, limit: 12)
+    func run(progress: @escaping @Sendable (String) -> Void) async throws -> String {
+        // Only offer images to a backend that can actually take them; otherwise
+        // every capture goes in as OCR text and nothing is silently dropped.
+        let canSendImages: Bool
+        switch settings.backend {
+        case .claudeCLI:        canSendImages = false   // `claude -p` takes stdin text only
+        case .anthropicAPI:     canSendImages = true
+        case .openAICompatible: canSendImages = settings.providerSupportsVision
+        }
+
+        let imageIDs = canSendImages
+            ? PromptBuilder.selectImageCaptures(from: assets.captures, limit: 12)
+            : []
         let builder = PromptBuilder(assets: assets,
                                     contextHint: settings.contextHint,
                                     imageCaptureIDs: imageIDs)
@@ -27,7 +38,43 @@ struct Analyzer {
         case .anthropicAPI:
             progress("正在调用 Anthropic API 生成纪要…")
             return try await runAPI(timeline: timeline, imageIDs: imageIDs)
+        case .openAICompatible:
+            let preset = settings.provider
+            progress("正在调用 \(preset.name)（\(settings.providerModel)）生成纪要…")
+            return try await runOpenAICompatible(timeline: timeline,
+                                                 imageIDs: imageIDs,
+                                                 progress: progress)
         }
+    }
+
+    // MARK: - OpenAI-compatible providers
+
+    private func runOpenAICompatible(
+        timeline: String,
+        imageIDs: Set<Int>,
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> String {
+        let client = OpenAICompatibleClient(
+            baseURL: settings.providerBaseURL,
+            apiKey: settings.providerKey,
+            model: settings.providerModel,
+            supportsVision: settings.providerSupportsVision
+        )
+
+        let attachments = assets.captures
+            .filter { imageIDs.contains($0.id) }
+            .compactMap { capture -> OpenAICompatibleClient.Attachment? in
+                guard let jpeg = jpegData(from: capture.image) else { return nil }
+                return .init(caption: "图片 #\(capture.id)（屏幕画面，时间 \(capture.timecode)）：",
+                             jpeg: jpeg)
+            }
+
+        return try await client.complete(
+            system: PromptBuilder.systemPrompt,
+            user: timeline,
+            images: attachments,
+            onProgress: progress
+        )
     }
 
     // MARK: - Local CLI
