@@ -71,18 +71,35 @@ struct MediaExtractor {
         writer.startSession(atSourceTime: .zero)
 
         let queue = DispatchQueue(label: "audio-export")
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            input.requestMediaDataWhenReady(on: queue) {
-                while input.isReadyForMoreMediaData {
-                    guard let buffer = output.copyNextSampleBuffer() else {
-                        input.markAsFinished()
-                        writer.finishWriting { continuation.resume() }
-                        return
+        let cancelled = Cancellation()
+
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                input.requestMediaDataWhenReady(on: queue) {
+                    while input.isReadyForMoreMediaData {
+                        // Long files spend real time here; honour cancellation
+                        // rather than running the export to completion.
+                        if cancelled.isSet {
+                            reader.cancelReading()
+                            input.markAsFinished()
+                            writer.cancelWriting()
+                            continuation.resume()
+                            return
+                        }
+                        guard let buffer = output.copyNextSampleBuffer() else {
+                            input.markAsFinished()
+                            writer.finishWriting { continuation.resume() }
+                            return
+                        }
+                        input.append(buffer)
                     }
-                    input.append(buffer)
                 }
             }
+        } onCancel: {
+            cancelled.set()
         }
+
+        try Task.checkCancellation()
 
         if writer.status == .failed {
             throw Failure.exportFailed(writer.error?.localizedDescription ?? "未知错误")
@@ -158,6 +175,15 @@ struct MediaExtractor {
         let kept = captures.sorted { $0.duration > $1.duration }.prefix(limit)
         return kept.sorted { $0.time < $1.time }
     }
+}
+
+/// One-way flag shared between the cancellation handler and the export queue.
+private final class Cancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
 }
 
 /// 64-bit dHash: downscale to 9×8 greyscale, then record whether each pixel is

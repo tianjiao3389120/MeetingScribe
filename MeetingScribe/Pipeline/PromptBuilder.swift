@@ -64,8 +64,62 @@ struct PromptBuilder {
     ```
     """
 
+    /// Rough ceiling on the assembled timeline, in characters.
+    ///
+    /// The smallest context window among the supported providers is around
+    /// 32k tokens; Chinese runs close to one token per character, so this
+    /// leaves room for the system prompt and the response. A three-hour
+    /// meeting exceeds it, and blowing the limit surfaces as an empty reply or
+    /// an opaque vendor error — worse than degrading deliberately.
+    static let characterBudget = 45_000
+
+    /// True when the assembled timeline had to be trimmed to fit.
+    private(set) var didTrim = false
+
     /// The user-turn text. Image captures are attached separately by the backend.
     func buildTimeline() -> String {
+        let full = assembleTimeline(includingScreenText: true)
+        guard full.count > Self.characterBudget else { return full }
+
+        // Screen OCR is the first thing to go: dashboards and alert lists are
+        // verbose, and the transcript is what carries the discussion.
+        let withoutScreen = assembleTimeline(includingScreenText: false)
+        if withoutScreen.count <= Self.characterBudget {
+            return withoutScreen + "\n\n（注：会议较长，屏幕文字内容已省略以适应模型上下文限制。）"
+        }
+
+        // Still too long — keep the head and tail of the transcript, which hold
+        // the agenda and the conclusions, and say plainly what was dropped.
+        return trimmedToBudget(withoutScreen)
+    }
+
+    private func trimmedToBudget(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        var head: [String] = []
+        var tail: [String] = []
+        var headSize = 0, tailSize = 0
+        let half = Self.characterBudget / 2
+
+        var front = 0, back = lines.count - 1
+        while front <= back {
+            if headSize <= tailSize {
+                let line = lines[front]
+                if headSize + line.count > half { break }
+                head.append(line); headSize += line.count + 1; front += 1
+            } else {
+                let line = lines[back]
+                if tailSize + line.count > half { break }
+                tail.insert(line, at: 0); tailSize += line.count + 1; back -= 1
+            }
+        }
+
+        let dropped = lines.count - head.count - tail.count
+        return head.joined(separator: "\n")
+            + "\n\n〔中间约 \(dropped) 行因长度限制未包含，请在纪要中说明本次材料不完整〕\n\n"
+            + tail.joined(separator: "\n")
+    }
+
+    private func assembleTimeline(includingScreenText: Bool) -> String {
         var lines: [String] = []
 
         lines.append("会议文件：\(assets.title)")
@@ -110,7 +164,7 @@ struct PromptBuilder {
                     lines.append("")
                     lines.append("【屏幕 \(capture.timecode)\(held)】见随附图片 #\(capture.id)")
                     lines.append("")
-                } else if !capture.recognizedText.isEmpty {
+                } else if includingScreenText, !capture.recognizedText.isEmpty {
                     lines.append("")
                     lines.append("【屏幕 \(capture.timecode)\(held)】")
                     lines.append("```")

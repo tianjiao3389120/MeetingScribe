@@ -16,7 +16,7 @@ struct ContentView: View {
             case .idle, .failed:
                 DropZone(isTargeted: $isTargeted,
                          error: runner.error,
-                         onPick: runner.run(url:))
+                         onPick: { runner.run(url: $0) })
             case .done:
                 ResultView(runner: runner, savedPath: $savedPath)
             default:
@@ -42,6 +42,8 @@ private struct DropZone: View {
     @Binding var isTargeted: Bool
     let error: String?
     let onPick: (URL) -> Void
+
+    @State private var rejection: String?
 
     var body: some View {
         VStack(spacing: 20) {
@@ -89,17 +91,41 @@ private struct DropZone: View {
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
-                Task { @MainActor in onPick(url) }
+                Task { @MainActor in accept(url) }
             }
             return true
         }
+        .alert("无法处理这个文件", isPresented: Binding(
+            get: { rejection != nil }, set: { if !$0 { rejection = nil } }
+        )) {
+            Button("好") { rejection = nil }
+        } message: {
+            Text(rejection ?? "")
+        }
+    }
+
+    /// Reject non-media up front — otherwise the failure surfaces minutes later
+    /// as an opaque AVFoundation error.
+    private func accept(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            rejection = "文件不存在或已被移动。"
+            return
+        }
+        let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
+        guard let type, type.conforms(to: .audiovisualContent) else {
+            let name = url.lastPathComponent
+            rejection = "「\(name)」不是音频或视频文件。\n"
+                + "支持的格式：mov、mp4、m4a、mp3、wav 等。"
+            return
+        }
+        onPick(url)
     }
 
     private func pick() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.movie, .audio, .mpeg4Movie, .quickTimeMovie, .mp3, .wav]
+        panel.allowedContentTypes = [.audiovisualContent]
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { onPick(url) }
+        if panel.runModal() == .OK, let url = panel.url { accept(url) }
     }
 }
 

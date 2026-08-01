@@ -37,7 +37,11 @@ final class PipelineRunner {
     /// fix their key or switch provider and retry without redoing it.
     var canRetryAnalysis: Bool { assets != nil && summary.isEmpty }
 
+    /// Whether this run skipped transcription by reusing a cached transcript.
+    private(set) var usedCachedTranscript = false
+
     private var task: Task<Void, Never>?
+    private var forceRetranscribe = false
 
     func cancel() {
         task?.cancel()
@@ -47,12 +51,13 @@ final class PipelineRunner {
         detail = "已取消"
     }
 
-    func run(url: URL) {
+    func run(url: URL, forceRetranscribe: Bool = false) {
         task?.cancel()
         error = nil
         summary = ""
         assets = nil
         isRunning = true
+        self.forceRetranscribe = forceRetranscribe
 
         task = Task { [weak self] in
             guard let self else { return }
@@ -101,37 +106,55 @@ final class PipelineRunner {
         guard info.hasAudio else { throw MediaExtractor.Failure.noAudioTrack }
         detail = "时长 \(TranscriptSegment.humanDuration(info.duration))" + (info.hasVideo ? "，含画面" : "")
 
-        // --- audio -------------------------------------------------------
-        stage = .extractingAudio
-        let work = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meetingscribe-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
-        defer {
-            if !settings.keepIntermediates { try? FileManager.default.removeItem(at: work) }
+        // --- transcription (cached) ----------------------------------------
+        let cacheKey = TranscriptCache.key(for: url,
+                                           language: settings.language,
+                                           glossary: settings.glossary)
+        var transcript: Transcript?
+        if !forceRetranscribe, let cacheKey, let cached = TranscriptCache.load(key: cacheKey) {
+            transcript = cached
+            stage = .transcribing
+            progress = 1
+            detail = "复用已缓存的转录结果（\(cached.segments.count) 段）"
+            usedCachedTranscript = true
         }
 
-        let audioURL = work.appendingPathComponent("audio.wav")
-        try await extractor.extractAudio(to: audioURL)
-        try Task.checkCancellation()
+        if transcript == nil {
+            usedCachedTranscript = false
 
-        // --- transcription ------------------------------------------------
-        stage = .transcribing
-        progress = 0
-        let transcriber = Transcriber(audioURL: audioURL,
-                                      language: settings.language,
-                                      glossary: settings.glossary)
-        let transcript = try await transcriber.run { [weak self] seconds, _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.progress = min(seconds / max(info.duration, 1), 1)
-                self.detail = "已转录 \(TranscriptSegment.timecode(seconds)) / \(TranscriptSegment.timecode(info.duration))"
+            stage = .extractingAudio
+            let work = FileManager.default.temporaryDirectory
+                .appendingPathComponent("meetingscribe-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+            defer {
+                if !settings.keepIntermediates { try? FileManager.default.removeItem(at: work) }
             }
+
+            let audioURL = work.appendingPathComponent("audio.wav")
+            try await extractor.extractAudio(to: audioURL)
+            try Task.checkCancellation()
+
+            stage = .transcribing
+            progress = 0
+            let transcriber = Transcriber(audioURL: audioURL,
+                                          language: settings.language,
+                                          glossary: settings.glossary)
+            let fresh = try await transcriber.run { [weak self] seconds, _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.progress = min(seconds / max(info.duration, 1), 1)
+                    self.detail = "已转录 \(TranscriptSegment.timecode(seconds)) / \(TranscriptSegment.timecode(info.duration))"
+                }
+            }
+            try Task.checkCancellation()
+
+            if let cacheKey { TranscriptCache.save(fresh, key: cacheKey) }
+            transcript = fresh
         }
-        try Task.checkCancellation()
 
         // Silent or music-only input yields nothing to summarise; fail here
         // instead of spending a model call on an empty timeline.
-        guard !transcript.segments.isEmpty else { throw Failure.noSpeech }
+        guard let transcript, !transcript.segments.isEmpty else { throw Failure.noSpeech }
 
         // --- screen -------------------------------------------------------
         var captures: [ScreenCapture] = []

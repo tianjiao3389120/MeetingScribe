@@ -6,6 +6,14 @@ struct SettingsView: View {
     @State private var apiKey = Settings.shared.apiKey ?? ""
     @State private var modelStatus = ModelStatus.check()
     @State private var download: ModelDownloader?
+    @State private var cacheSummary = SettingsView.describeCache()
+
+    static func describeCache() -> String {
+        let (count, bytes) = TranscriptCache.summary
+        guard count > 0 else { return "无" }
+        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return "\(count) 份，\(size)"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -99,6 +107,24 @@ struct SettingsView: View {
                         Button("恢复默认") { settings.glossary = Settings.defaultGlossary }
                             .buttonStyle(.link)
                     }
+                }
+
+                Section("缓存") {
+                    LabeledContent("已缓存的转录结果") {
+                        HStack(spacing: 10) {
+                            Text(cacheSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button("清除") {
+                                TranscriptCache.clear()
+                                cacheSummary = Self.describeCache()
+                            }
+                            .disabled(TranscriptCache.summary.count == 0)
+                        }
+                    }
+                    Text("同一个文件重复处理时会跳过转录，直接复用结果。修改识别语言或词表会自动重新转录。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {
