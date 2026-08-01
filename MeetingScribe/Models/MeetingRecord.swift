@@ -6,7 +6,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     let id: UUID
     let schemaVersion: Int
     let createdAt: Date
-    let title: String
+    var title: String
     let sourcePath: String
     let duration: TimeInterval
     let backend: String
@@ -21,6 +21,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var tags: [String]?
     var materials: [MaterialReference]?
     var transcriptTranslations: [TranscriptTranslation]?
+    var meetingContext: String?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
@@ -47,6 +48,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.tags = tags
         self.materials = materials
         self.transcriptTranslations = transcriptTranslations
+        self.meetingContext = nil
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }

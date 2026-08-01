@@ -58,9 +58,10 @@ struct ContentView: View {
             set: { if !$0 { pendingMedia = nil } }
         )) {
             if let url = pendingMedia {
-                MeetingPreparationView(mediaURL: url) { workspace, tags, materials in
+                MeetingPreparationView(mediaURL: url) { title, workspace, context, tags, materials in
                     pendingMedia = nil
-                    runner.run(url: url, workspace: workspace, tags: tags, materials: materials)
+                    runner.run(url: url, title: title, meetingContext: context,
+                               workspace: workspace, tags: tags, materials: materials)
                 } onCancel: {
                     pendingMedia = nil
                 }
@@ -101,7 +102,8 @@ struct ContentView: View {
                 runner.analyzeEditedTranscript(record: record, transcript: editedTranscript,
                                                workspace: workspace, materials: materials)
             } else {
-                runner.run(url: record.sourceURL, workspace: workspace,
+                runner.run(url: record.sourceURL, title: record.title,
+                           workspace: workspace,
                            tags: record.tags ?? [], materials: materials)
             }
         }
@@ -122,7 +124,8 @@ struct ContentView: View {
                     try MaterialExtractor.extract(from: URL(fileURLWithPath: path))
                 }).value { materials.append(value) }
             }
-            runner.run(url: source, workspace: workspace, tags: job.tags, materials: materials)
+            runner.run(url: source, title: job.title, meetingContext: job.meetingContext ?? "",
+                       workspace: workspace, tags: job.tags, materials: materials)
         }
     }
 }

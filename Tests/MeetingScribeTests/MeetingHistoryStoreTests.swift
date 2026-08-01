@@ -30,16 +30,18 @@ final class MeetingHistoryStoreTests: XCTestCase {
 
         let workspaceID = UUID()
         let updated = try MeetingHistoryStore.updateClassification(
-            id: record.id, workspaceID: workspaceID, tags: ["双周会", "客户"], root: root)
+            id: record.id, title: "客户项目周会",
+            workspaceID: workspaceID, tags: ["双周会", "客户"], root: root)
+        XCTAssertEqual(updated.title, "客户项目周会")
         XCTAssertEqual(updated.workspaceID, workspaceID)
         XCTAssertEqual(updated.tags ?? [], ["双周会", "客户"])
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root)[0].workspaceID, workspaceID)
 
         try MeetingHistoryStore.export(updated, to: export)
         XCTAssertTrue(FileManager.default.fileExists(
-            atPath: export.appendingPathComponent("项目周会 纪要.md").path))
+            atPath: export.appendingPathComponent("客户项目周会 纪要.md").path))
         XCTAssertTrue(FileManager.default.fileExists(
-            atPath: export.appendingPathComponent("项目周会 逐字稿.txt").path))
+            atPath: export.appendingPathComponent("客户项目周会 逐字稿.txt").path))
 
         try MeetingHistoryStore.remove(id: record.id, root: root)
         XCTAssertTrue(try MeetingHistoryStore.loadAll(root: root).isEmpty)
@@ -133,5 +135,18 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertEqual(overview.meetingCount, 1)
         XCTAssertEqual(overview.missingSourceCount, 1)
         XCTAssertGreaterThan(overview.historyBytes, 0)
+    }
+
+    func testMeetingSearchRequiresEveryTermAcrossDifferentFields() {
+        let record = MeetingRecord(
+            title: "日志治理双周会", sourcePath: "/meeting.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "讨论告警优化",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [0: "张三"], usedSummaryFallback: false,
+            tags: ["客户", "UAT"])
+        XCTAssertTrue(MeetingSearch.matches(
+            record, workspaceName: "香港银行", query: "香港银行 UAT 张三"))
+        XCTAssertFalse(MeetingSearch.matches(
+            record, workspaceName: "香港银行", query: "香港银行 UAT 李四"))
     }
 }

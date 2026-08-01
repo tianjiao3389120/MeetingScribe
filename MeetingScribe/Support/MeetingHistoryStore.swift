@@ -78,13 +78,15 @@ enum MeetingHistoryStore {
         try FileManager.default.removeItem(at: directory)
     }
 
-    static func updateClassification(id: UUID, workspaceID: UUID?, tags: [String],
+    static func updateClassification(id: UUID, title: String? = nil,
+                                     workspaceID: UUID?, tags: [String],
                                      root: URL = defaultDirectory) throws -> MeetingRecord {
         let url = root.appendingPathComponent(id.uuidString)
             .appendingPathComponent("metadata.json")
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        if let title { record.title = title }
         record.workspaceID = workspaceID
         record.tags = tags
         try save(record, root: root)

@@ -42,15 +42,17 @@ struct OpenAICompatibleClient {
         // some gateways reject the array form when it holds only text.
         let userContent: Any = content.count == 1 ? user : content
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": system],
                 ["role": "user", "content": userContent],
             ],
             "stream": true,
-            "max_tokens": 8192,
         ]
+        // OpenAI's current Chat Completions schema uses max_completion_tokens;
+        // most compatible vendors still implement the older max_tokens name.
+        body[usesOpenAICompletionTokenParameter ? "max_completion_tokens" : "max_tokens"] = 8192
 
         var request = URLRequest(url: try endpoint())
         request.httpMethod = "POST"
@@ -120,6 +122,11 @@ struct OpenAICompatibleClient {
             throw Failure.insecureRemoteURL(url.host ?? path)
         }
         return url
+    }
+
+    var usesOpenAICompletionTokenParameter: Bool {
+        URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?
+            .host?.lowercased() == "api.openai.com"
     }
 
     static func isLocalHost(_ rawHost: String?) -> Bool {

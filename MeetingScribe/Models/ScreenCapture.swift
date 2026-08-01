@@ -31,6 +31,8 @@ struct ScreenCapture: Identifiable, Sendable {
 /// Everything the pipeline extracted from one media file.
 struct MeetingAssets: Sendable {
     var sourceURL: URL
+    var customTitle: String?
+    var meetingContext: String = ""
     var duration: TimeInterval
     var transcript: Transcript
     var captures: [ScreenCapture]
@@ -41,5 +43,8 @@ struct MeetingAssets: Sendable {
     var workspace: MeetingWorkspace?
     var tags: [String] = []
 
-    var title: String { sourceURL.deletingPathExtension().lastPathComponent }
+    var title: String {
+        let value = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? sourceURL.deletingPathExtension().lastPathComponent : value
+    }
 }

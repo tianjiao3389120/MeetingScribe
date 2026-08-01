@@ -65,6 +65,7 @@ final class PipelineRunner {
 
     func run(url: URL, forceRetranscribe: Bool = false,
              forceSpeakerSeparation: Bool = false,
+             title: String? = nil, meetingContext: String = "",
              workspace: MeetingWorkspace? = nil,
              tags: [String] = [], materials: [SupportingMaterial] = []) {
         task?.cancel()
@@ -79,7 +80,8 @@ final class PipelineRunner {
         self.forceRetranscribe = forceRetranscribe
         self.forceSpeakerSeparation = forceSpeakerSeparation
         let pendingJob = PendingMeetingJob(
-            sourcePath: url.path, workspaceID: workspace?.id, tags: tags,
+            sourcePath: url.path, title: title ?? "", meetingContext: meetingContext,
+            workspaceID: workspace?.id, tags: tags,
             materialPaths: materials.map { $0.sourceURL.path })
         pendingJobID = pendingJob.id
         try? PendingJobStore.save(pendingJob)
@@ -87,7 +89,8 @@ final class PipelineRunner {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.execute(url: url, workspace: workspace,
+                try await self.execute(url: url, title: title, meetingContext: meetingContext,
+                                       workspace: workspace,
                                        tags: tags, materials: materials)
             } catch is CancellationError {
                 self.stage = .idle
@@ -107,6 +110,7 @@ final class PipelineRunner {
     func rerunSpeakerSeparation() {
         guard let bundle = assets, !isRunning else { return }
         run(url: bundle.sourceURL, forceSpeakerSeparation: true,
+            title: bundle.title, meetingContext: bundle.meetingContext,
             workspace: bundle.workspace, tags: bundle.tags, materials: bundle.materials)
     }
 
@@ -139,7 +143,8 @@ final class PipelineRunner {
         error = nil; summary = ""; structuredSummary = nil
         usedSummaryFallback = false; isRunning = true
         let bundle = MeetingAssets(
-            sourceURL: record.sourceURL, duration: record.duration,
+            sourceURL: record.sourceURL, customTitle: record.title,
+            meetingContext: record.meetingContext ?? "", duration: record.duration,
             transcript: transcript, captures: [], hasVideo: false,
             diarization: nil, materials: materials, workspace: workspace,
             tags: record.tags ?? [])
@@ -164,7 +169,8 @@ final class PipelineRunner {
         retryAnalysis()
     }
 
-    private func execute(url: URL, workspace: MeetingWorkspace?,
+    private func execute(url: URL, title: String?, meetingContext: String,
+                         workspace: MeetingWorkspace?,
                          tags: [String], materials: [SupportingMaterial]) async throws {
         let settings = Settings.shared
         let extractor = MediaExtractor(url: url)
@@ -306,6 +312,8 @@ final class PipelineRunner {
         }
 
         let bundle = MeetingAssets(sourceURL: url,
+                                   customTitle: title,
+                                   meetingContext: meetingContext,
                                    duration: info.duration,
                                    transcript: transcript,
                                    captures: captures,
@@ -357,7 +365,7 @@ final class PipelineRunner {
             title: bundle.title,
             sourcePath: bundle.sourceURL.path,
             duration: bundle.duration,
-            backend: settings.backend.displayName,
+            backend: settings.provider.name,
             model: model,
             summaryMarkdown: result.markdown,
             structuredSummary: result.structured,
@@ -370,8 +378,10 @@ final class PipelineRunner {
                 MaterialReference(name: $0.name, kind: $0.kind,
                                   sourcePath: $0.sourceURL.path)
             })
+        var storedRecord = record
+        storedRecord.meetingContext = bundle.meetingContext
         do {
-            try MeetingHistoryStore.save(record, materialSources: bundle.materials)
+            try MeetingHistoryStore.save(storedRecord, materialSources: bundle.materials)
         } catch {
             // History is a convenience; a valid summary remains successful.
             historyWarning = "历史记录保存失败：\(error.localizedDescription)"

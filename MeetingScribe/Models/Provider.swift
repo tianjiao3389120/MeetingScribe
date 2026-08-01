@@ -26,13 +26,26 @@ struct ProviderPreset: Identifiable, Hashable {
 
     var keychainAccount: String { "provider-key-\(id)" }
 
-    static let all: [ProviderPreset] = [deepseek, zhipu, moonshot, qwen, siliconflow, ollama, custom]
+    static let all: [ProviderPreset] = [openAI, deepseek, zhipu, moonshot, qwen, siliconflow, ollama, custom]
 
     static func preset(id: String) -> ProviderPreset {
         all.first { $0.id == id } ?? deepseek
     }
 
     // MARK: Presets
+
+    static let openAI = ProviderPreset(
+        id: "openai",
+        name: "OpenAI",
+        baseURL: "https://api.openai.com/v1",
+        models: [
+            ModelOption(id: "gpt-5.6-terra", label: "GPT-5.6 Terra（均衡，推荐）", supportsVision: true),
+            ModelOption(id: "gpt-5.6-sol", label: "GPT-5.6 Sol（质量优先）", supportsVision: true),
+            ModelOption(id: "gpt-5.6-luna", label: "GPT-5.6 Luna（经济快速）", supportsVision: true),
+        ],
+        docsURL: "https://platform.openai.com/api-keys",
+        keyHint: "sk-…"
+    )
 
     static let deepseek = ProviderPreset(
         id: "deepseek",

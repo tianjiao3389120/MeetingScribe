@@ -9,6 +9,7 @@ struct MeetingClassificationView: View {
     @State private var workspaceID: UUID?
     @State private var tagsText: String
     @State private var error: String?
+    @State private var title: String
 
     init(record: MeetingRecord, workspaces: [MeetingWorkspace],
          onSaved: @escaping (MeetingRecord) -> Void, onCancel: @escaping () -> Void) {
@@ -16,12 +17,13 @@ struct MeetingClassificationView: View {
         self.onSaved = onSaved; self.onCancel = onCancel
         _workspaceID = State(initialValue: record.workspaceID)
         _tagsText = State(initialValue: (record.tags ?? []).joined(separator: ", "))
+        _title = State(initialValue: record.title)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("归组与标签").font(.title3.weight(.medium))
-            Text(record.title).font(.callout).foregroundStyle(.secondary)
+            Text("会议信息").font(.title3.weight(.medium))
+            TextField("会议名称", text: $title)
             Picker("主要空间", selection: $workspaceID) {
                 Text("未归组").tag(UUID?.none)
                 ForEach(workspaces) { workspace in
@@ -43,8 +45,11 @@ struct MeetingClassificationView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         do {
+            let cleanedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanedTitle.isEmpty else { error = "会议名称不能为空。"; return }
             let updated = try MeetingHistoryStore.updateClassification(
-                id: record.id, workspaceID: workspaceID, tags: Array(Set(tags)).sorted())
+                id: record.id, title: cleanedTitle,
+                workspaceID: workspaceID, tags: Array(Set(tags)).sorted())
             onSaved(updated)
         } catch { self.error = "保存失败：\(error.localizedDescription)" }
     }

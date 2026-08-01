@@ -29,14 +29,9 @@ struct MeetingHistoryView: View {
             case .workspace(let id): return record.workspaceID == id
             }
         }
-        guard !query.isEmpty else { return scoped }
-        return scoped.filter {
-            $0.title.localizedCaseInsensitiveContains(query)
-                || $0.summaryMarkdown.localizedCaseInsensitiveContains(query)
-                || ($0.tags ?? []).contains { $0.localizedCaseInsensitiveContains(query) }
-                || $0.speakerNames.values.contains {
-                    $0.localizedCaseInsensitiveContains(query)
-                }
+        return scoped.filter { record in
+            MeetingSearch.matches(record, workspaceName: workspace(for: record)?.name,
+                                  query: query)
         }
     }
 
@@ -120,7 +115,7 @@ struct MeetingHistoryView: View {
             .padding(12)
         }
         .frame(width: 920, height: 620)
-        .searchable(text: $query, prompt: "搜索标题、纪要、标签或说话人")
+        .searchable(text: $query, prompt: "组合搜索：空间 标签 标题 纪要 说话人")
         .onAppear(perform: load)
         .sheet(isPresented: $showWorkspaceManager, onDismiss: loadWorkspaces) {
             WorkspaceManagementView()
@@ -188,7 +183,7 @@ struct MeetingHistoryView: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Menu("更多操作") {
-                    Button("归组与标签…") { editingClassification = record }
+                    Button("会议信息、归组与标签…") { editingClassification = record }
                     Divider()
                     Button("校正逐字稿并重新生成…") { editingTranscript = record }
                     Button("生成双栏释义…") { translatingTranscript = record }

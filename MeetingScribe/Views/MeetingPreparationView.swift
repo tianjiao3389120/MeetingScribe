@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 struct MeetingPreparationView: View {
     let mediaURL: URL
-    let onStart: (MeetingWorkspace?, [String], [SupportingMaterial]) -> Void
+    let onStart: (String, MeetingWorkspace?, String, [String], [SupportingMaterial]) -> Void
     let onCancel: () -> Void
 
     @State private var workspaces: [MeetingWorkspace] = []
@@ -16,6 +16,15 @@ struct MeetingPreparationView: View {
     @State private var newName = ""
     @State private var newKind: MeetingWorkspace.Kind = .customer
     @State private var newContext = ""
+    @State private var meetingTitle: String
+    @State private var meetingContext = ""
+
+    init(mediaURL: URL,
+         onStart: @escaping (String, MeetingWorkspace?, String, [String], [SupportingMaterial]) -> Void,
+         onCancel: @escaping () -> Void) {
+        self.mediaURL = mediaURL; self.onStart = onStart; self.onCancel = onCancel
+        _meetingTitle = State(initialValue: mediaURL.deletingPathExtension().lastPathComponent)
+    }
 
     private var selectedWorkspace: MeetingWorkspace? {
         workspaces.first { $0.id == selectedWorkspaceID }
@@ -31,6 +40,12 @@ struct MeetingPreparationView: View {
             Divider()
 
             Form {
+                Section("本次会议") {
+                    TextField("会议名称", text: $meetingTitle)
+                    TextField("本次背景（可选，例如本次目标、阶段或特殊情况）", text: $meetingContext)
+                    Text("客户的长期信息放在会议空间背景；这里只填写本次会议独有的信息。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("会议空间") {
                     Picker("归入", selection: $selectedWorkspaceID) {
                         Text("不归组").tag(UUID?.none)
@@ -172,7 +187,11 @@ struct MeetingPreparationView: View {
         let tags = tagsText.split(whereSeparator: { $0 == "," || $0 == "，" })
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        onStart(selectedWorkspace, Array(Set(tags)).sorted(), materials)
+        let title = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { materialError = "会议名称不能为空。"; return }
+        onStart(title, selectedWorkspace,
+                meetingContext.trimmingCharacters(in: .whitespacesAndNewlines),
+                Array(Set(tags)).sorted(), materials)
     }
 
     private func icon(for kind: SupportingMaterial.Kind) -> String {

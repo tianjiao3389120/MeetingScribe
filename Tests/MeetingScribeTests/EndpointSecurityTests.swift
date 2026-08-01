@@ -28,4 +28,17 @@ final class EndpointSecurityTests: XCTestCase {
         }
         XCTAssertNotNil(OpenAICompatibleClient.securityWarning(for: client.baseURL))
     }
+
+    func testOpenAIPresetUsesOfficialEndpointAndVisionModels() throws {
+        XCTAssertEqual(ProviderPreset.openAI.baseURL, "https://api.openai.com/v1")
+        XCTAssertTrue(ProviderPreset.all.contains { $0.id == "openai" })
+        XCTAssertTrue(ProviderPreset.openAI.models.allSatisfy(\.supportsVision))
+
+        let client = OpenAICompatibleClient(
+            baseURL: ProviderPreset.openAI.baseURL, apiKey: "secret",
+            model: ProviderPreset.openAI.models[0].id, supportsVision: true)
+        XCTAssertEqual(try client.endpoint().absoluteString,
+                       "https://api.openai.com/v1/chat/completions")
+        XCTAssertTrue(client.usesOpenAICompletionTokenParameter)
+    }
 }

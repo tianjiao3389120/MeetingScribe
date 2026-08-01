@@ -35,7 +35,9 @@ struct Analyzer {
             ? PromptBuilder.selectImageCaptures(from: assets.captures, limit: 12)
             : []
         let combinedContext = [settings.recognitionScenario.analysisGuidance,
-                               settings.contextHint, assets.workspace?.context ?? ""]
+                               assets.workspace?.context ?? "",
+                               assets.meetingContext,
+                               "本次纪要附加要求：\(settings.minutesInstructions)"]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: "\n")
         let builder = PromptBuilder(assets: assets,

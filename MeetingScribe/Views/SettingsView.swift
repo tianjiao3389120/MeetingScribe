@@ -3,7 +3,6 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var settings = Settings.shared
-    @State private var apiKey = Settings.shared.apiKey ?? ""
     @State private var modelStatus = ModelStatus.check()
     @State private var download: ModelDownloader?
     @State private var cacheSummary = SettingsView.describeCache()
@@ -22,29 +21,8 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("生成纪要") {
-                    Picker("后端", selection: $settings.backend) {
-                        ForEach(BackendKind.allCases) { Text($0.displayName).tag($0) }
-                    }
-                    .pickerStyle(.radioGroup)
-
-                    Text(settings.backend.explanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    switch settings.backend {
-                    case .claudeCLI:
-                        ToolRow(tool: .claude)
-                    case .anthropicAPI:
-                        SecureField("API key", text: $apiKey, prompt: Text("sk-ant-…"))
-                            .onChange(of: apiKey) { _, new in settings.apiKey = new }
-                        Picker("模型", selection: $settings.apiModel) {
-                            Text("Claude Opus 5（最强）").tag("claude-opus-5")
-                            Text("Claude Sonnet 5（更快更省）").tag("claude-sonnet-5")
-                        }
-                    case .openAICompatible:
-                        ProviderSection(settings: $settings)
-                    }
+                Section("大模型") {
+                    ProviderSection(settings: $settings)
                 }
 
                 Section("转录") {
@@ -82,6 +60,8 @@ struct SettingsView: View {
                     Text(settings.recognitionScenario.explanation)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("Whisper large-v3-turbo 和静音检测模型会随“识别模型”一起下载；OCR 使用 macOS 系统能力，大模型通过接口调用，均无需另外安装。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("说话人分离") {
@@ -108,11 +88,25 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("默认会议背景") {
-                    TextEditor(text: $settings.contextHint)
-                        .frame(height: 52)
-                        .font(.callout)
-                    Text("适用于所有会议。具体客户或项目的信息请填写在会议空间背景中，两者会合并使用。")
+                Section("会议纪要指令") {
+                    TextEditor(text: $settings.minutesInstructions)
+                        .frame(height: 85).font(.callout)
+                    HStack {
+                        Text("追加到内置的结构化纪要提示词；JSON 格式和事实校验规则由应用固定维护。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("恢复默认") {
+                            settings.minutesInstructions = Settings.defaultMinutesInstructions
+                        }.buttonStyle(.link)
+                    }
+                    DisclosureGroup("查看内置完整提示词（只读）") {
+                        ScrollView {
+                            Text(PromptBuilder.systemPrompt)
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(height: 150)
+                    }
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -122,7 +116,7 @@ struct SettingsView: View {
                         .frame(height: 110)
                         .font(.system(.caption, design: .monospaced))
                     HStack {
-                        Text("写成通顺的句子而非散词罗列，170 字以内。发现新错词就补进来。")
+                        Text("仅手工维护，不会自动增删。写成通顺句子，170 字以内；客户专用词优先通过会议材料提供。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -269,6 +263,7 @@ private struct ProviderSection: View {
     @State private var key: String = ""
     @State private var customModel: String = ""
     @State private var probe: ProbeState = .idle
+    @State private var hasStoredKey = false
 
     private enum ProbeState: Equatable {
         case idle, running, ok(String), failed(String)
@@ -279,7 +274,8 @@ private struct ProviderSection: View {
             get: { settings.providerID },
             set: { id in
                 settings.selectProvider(ProviderPreset.preset(id: id))
-                key = settings.providerKey ?? ""
+                key = ""
+                hasStoredKey = settings.providerKeyExists
                 customModel = ""
                 probe = .idle
             }
@@ -298,9 +294,17 @@ private struct ProviderSection: View {
         }
 
         if settings.provider.requiresKey {
-            SecureField("API key", text: $key, prompt: Text(settings.provider.keyHint))
-                .onChange(of: key) { _, new in settings.providerKey = new }
-                .onAppear { key = settings.providerKey ?? "" }
+            SecureField("API key", text: $key,
+                        prompt: Text(hasStoredKey ? "已保存；输入新值可替换" : settings.provider.keyHint))
+                .onChange(of: key) { _, new in
+                    guard !new.isEmpty else { return }
+                    settings.providerKey = new; hasStoredKey = true
+                }
+            if hasStoredKey {
+                Button("清除已保存的 API key", role: .destructive) {
+                    settings.providerKey = nil; key = ""; hasStoredKey = false
+                }.font(.caption)
+            }
         }
 
         if settings.provider.models.isEmpty {
@@ -352,6 +356,7 @@ private struct ProviderSection: View {
                     .lineLimit(3).textSelection(.enabled)
             }
         }
+        .onAppear { hasStoredKey = settings.providerKeyExists }
     }
 
     /// One cheap round-trip, so a wrong URL or key surfaces here instead of

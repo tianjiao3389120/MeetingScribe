@@ -20,6 +20,16 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
+    static func exists(account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    }
+
     @discardableResult
     static func write(account: String, value: String) -> Bool {
         guard let data = value.data(using: .utf8) else { return false }

@@ -160,6 +160,9 @@ final class Settings {
     var contextHint: String {
         didSet { defaults.set(contextHint, forKey: Keys.contextHint) }
     }
+    var minutesInstructions: String {
+        didSet { defaults.set(minutesInstructions, forKey: Keys.minutesInstructions) }
+    }
     var keepIntermediates: Bool {
         didSet { defaults.set(keepIntermediates, forKey: Keys.keepIntermediates) }
     }
@@ -226,6 +229,7 @@ final class Settings {
             }
         }
     }
+    var providerKeyExists: Bool { Keychain.exists(account: provider.keychainAccount) }
 
     private enum Keys {
         static let backend = "backend"
@@ -235,6 +239,7 @@ final class Settings {
         static let frameDensity = "frameDensity"
         static let glossary = "glossary"
         static let contextHint = "contextHint"
+        static let minutesInstructions = "minutesInstructions"
         static let keepIntermediates = "keepIntermediates"
         static let separateSpeakers = "separateSpeakers"
         static let speakerCount = "expectedSpeakerCount"
@@ -253,10 +258,17 @@ final class Settings {
     反弹shell、异常登录、入侵检测、闭环、需求、哈希。
     """
 
+    static let defaultMinutesInstructions = """
+    使用简体中文输出；优先保留问题、需求、决定、责任人、截止时间和协作约定。
+    不确定的信息明确标注待核对，不要补充会议中没有出现的结论。
+    """
+
     private let defaults = UserDefaults.standard
 
     private init() {
-        backend = BackendKind(rawValue: defaults.string(forKey: Keys.backend) ?? "") ?? .claudeCLI
+        // Legacy Claude CLI / Anthropic selections migrate to the unified
+        // OpenAI-compatible provider configuration.
+        backend = .openAICompatible
         apiModel = defaults.string(forKey: Keys.apiModel) ?? "claude-opus-5"
         let storedLanguage = defaults.string(forKey: Keys.language) ?? "zh"
         let migratedScenario: RecognitionScenario = switch storedLanguage {
@@ -272,6 +284,8 @@ final class Settings {
         frameDensity = FrameDensity(rawValue: defaults.string(forKey: Keys.frameDensity) ?? "") ?? .normal
         glossary = defaults.string(forKey: Keys.glossary) ?? Settings.defaultGlossary
         contextHint = defaults.string(forKey: Keys.contextHint) ?? ""
+        minutesInstructions = defaults.string(forKey: Keys.minutesInstructions)
+            ?? Settings.defaultMinutesInstructions
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
         separateSpeakers = defaults.object(forKey: Keys.separateSpeakers) as? Bool ?? false
         expectedSpeakerCount = defaults.object(forKey: Keys.speakerCount) as? Int ?? 0
