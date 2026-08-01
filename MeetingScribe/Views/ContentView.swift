@@ -104,6 +104,7 @@ struct ContentView: View {
                                                workspace: workspace, materials: materials)
             } else {
                 runner.run(url: record.sourceURL, title: record.title,
+                           meetingContext: record.meetingContext ?? "",
                            minutesTemplateID: record.minutesTemplateID ?? MinutesTemplate.general.id,
                            workspace: workspace,
                            tags: record.tags ?? [], materials: materials)
@@ -164,7 +165,9 @@ private struct DropZone: View {
                     Label("使用系统截屏录制", systemImage: "record.circle")
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityLabel("使用系统截屏录制")
                 Button("选择文件…") { pick() }
+                    .accessibilityLabel("选择会议录像或录音文件")
             }
             .controlSize(.large)
 

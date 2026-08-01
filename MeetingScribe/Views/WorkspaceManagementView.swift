@@ -56,8 +56,8 @@ struct WorkspaceManagementView: View {
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 else if saved { Label("已保存", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.green) }
                 Spacer()
-                Button("完成") { dismiss() }
-                Button("保存") { save() }.keyboardShortcut(.defaultAction)
+                Button("取消") { dismiss() }
+                Button("保存并关闭") { saveAndClose() }.keyboardShortcut(.defaultAction)
             }.padding(14)
         }
         .frame(width: 620, height: 480)
@@ -80,7 +80,7 @@ struct WorkspaceManagementView: View {
         }
     }
 
-    private func save() {
+    private func saveAndClose() {
         let invalid = workspaces.contains { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard !invalid else { error = "空间名称不能为空。"; return }
         do {
@@ -89,6 +89,7 @@ struct WorkspaceManagementView: View {
             try MeetingHistoryStore.clearWorkspaceReferences(removedIDs)
             originalIDs = Set(workspaces.map(\.id))
             error = nil; saved = true
+            dismiss()
         } catch { self.error = "保存失败：\(error.localizedDescription)" }
     }
 }

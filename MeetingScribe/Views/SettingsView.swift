@@ -340,15 +340,26 @@ private struct ProviderSection: View {
         if settings.provider.requiresKey {
             SecureField("API key", text: $key,
                         prompt: Text(hasStoredKey ? "已保存；输入新值可替换" : settings.provider.keyHint))
-                .onChange(of: key) { _, new in
-                    guard !new.isEmpty else { return }
-                    settings.providerKey = new; hasStoredKey = true
+            HStack {
+                Button(hasStoredKey ? "保存新的 API key" : "保存 API key") {
+                    let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !value.isEmpty else { return }
+                    settings.providerKey = value
+                    key = ""
+                    hasStoredKey = true
+                    probe = .idle
                 }
-            if hasStoredKey {
-                Button("清除已保存的 API key", role: .destructive) {
-                    settings.providerKey = nil; key = ""; hasStoredKey = false
-                }.font(.caption)
+                .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if hasStoredKey {
+                    Button("清除已保存的 API key", role: .destructive) {
+                        settings.providerKey = nil; key = ""; hasStoredKey = false
+                        probe = .idle
+                    }
+                }
             }
+            .font(.caption)
+            Text("密钥只会在点击保存时写入钥匙串。")
+                .font(.caption).foregroundStyle(.secondary)
         }
 
         if settings.provider.models.isEmpty {

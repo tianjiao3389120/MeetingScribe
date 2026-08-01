@@ -62,8 +62,8 @@ struct VoiceProfileManagementView: View {
                         .foregroundStyle(.green)
                 }
                 Spacer()
-                Button("完成") { dismiss() }
-                Button("保存更改") { save() }
+                Button("取消") { dismiss() }
+                Button("保存并关闭") { saveAndClose() }
                     .keyboardShortcut(.defaultAction)
             }
             .padding(16)
@@ -91,12 +91,13 @@ struct VoiceProfileManagementView: View {
         }
     }
 
-    private func save() {
+    private func saveAndClose() {
         do {
             try VoiceProfileStore.replace(profiles)
             profiles = try VoiceProfileStore.loadChecked()
             error = nil
             saved = true
+            dismiss()
         } catch {
             self.error = "保存失败：\(error.localizedDescription)"
             saved = false
