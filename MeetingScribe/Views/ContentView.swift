@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var runner = PipelineRunner()
     @State private var showSettings = false
     @State private var showHistory = false
+    @State private var showRealtimeTranscription = false
     @State private var isTargeted = false
     @State private var savedPath: String?
     @State private var pendingMedia: URL?
@@ -31,6 +32,12 @@ struct ContentView: View {
         .frame(minWidth: 720, minHeight: 520)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button { showRealtimeTranscription = true } label: {
+                    Label("实时字幕", systemImage: "waveform.and.mic")
+                }
+                .disabled(runner.isRunning)
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button { showHistory = true } label: {
                     Label("历史会议", systemImage: "clock.arrow.circlepath")
                 }
@@ -52,6 +59,9 @@ struct ContentView: View {
                 showHistory = false
                 reprocess(record, editedTranscript: transcript)
             })
+        }
+        .sheet(isPresented: $showRealtimeTranscription) {
+            RealtimeTranscriptionView()
         }
         .sheet(isPresented: Binding(
             get: { pendingMedia != nil },

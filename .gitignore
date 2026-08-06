@@ -12,3 +12,10 @@ glossary.local.txt
 *key*.txt
 *.key
 .env
+
+# 实时音频 POC/诊断在项目根目录生成的本地文件，可能含真实会议内容
+/MeetingScribe-*.wav
+/MeetingScribe-*.txt
+/blackhole-*.wav
+/direct-*.wav
+/helper-*.wav

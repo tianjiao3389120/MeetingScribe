@@ -28,6 +28,17 @@ macOS 应用：把会议录像/录音变成会议纪要。语音转录与画面�
 也可以在首页点击“使用系统截屏录制”，直接打开 macOS 自带的截屏与录屏工具（等同于
 `Shift–Command–5`）。录制完成后，把系统生成的 MOV 拖回 MeetingScribe，或点击“选择文件”导入分析。
 
+### 实时字幕与 Audio Helper 权限
+
+首页“实时字幕”使用独立的 `MeetingScribeAudioHelper.app` 读取 BlackHole 系统音频，再通过本机
+Unix Socket 传给主程序。macOS 的录音权限按 App Bundle 分配，因此首次使用时需要在
+“系统设置 → 隐私与安全性 → 麦克风”中允许 **MeetingScribe Audio Helper**；只允许
+`MeetingScribe.app` 不能让 Helper 获得音频。
+
+建议使用 `./build.sh --install`，它会同时安装主程序和 `/Applications/MeetingScribeAudioHelper.app`。
+如果实时字幕提示权限不足，可直接在提示区域打开录音权限设置，并在 Finder 中定位当前实际使用的
+Helper。授权后返回实时字幕窗口重新开始即可。
+
 说话人分离设置中的人数指**实际开口人数**，不是参会名单人数。30 人在线但只有约 5 人发言，
 就填 5；无法判断时选“自动判断”。自动结果不理想时可修改人数并在结果页点“重新分离”，
 逐字稿会从缓存复用，不会重新转录。

@@ -6,7 +6,24 @@ import SwiftUI
 @main
 enum Entry {
     static func main() {
-        let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        let commands: Set<String> = [
+            "--request-audio-permission",
+            "--blackhole-audio-server"
+        ]
+        if let index = arguments.firstIndex(where: commands.contains) {
+            let commandArguments = ArraySlice(arguments[index...])
+            switch arguments[index] {
+            case "--request-audio-permission":
+                BlackHoleAudioSocketServer.requestPermissionOnly()
+            case "--blackhole-audio-server":
+                BlackHoleAudioSocketServer.run(arguments: commandArguments)
+            default:
+                break
+            }
+            return
+        }
+        let args = arguments.filter { !$0.hasPrefix("-") }
         if let path = args.first, FileManager.default.fileExists(atPath: path) {
             CommandLineRunner.run(path: path)
         } else {
