@@ -34,6 +34,26 @@ struct RealtimeTranscriptionView: View {
 
             Divider()
 
+            HStack(spacing: 16) {
+                Picker("识别场景", selection: $model.scenario) {
+                    ForEach(RecognitionScenario.allCases) { scenario in
+                        Text(scenario.displayName).tag(scenario)
+                    }
+                }
+                .frame(maxWidth: 330)
+                Toggle("简体中文翻译", isOn: $model.translationEnabled)
+                    .toggleStyle(.switch)
+                Spacer()
+                Text("翻译使用“设置 → 大模型”中的当前服务")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(model.isRunning)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+
+            Divider()
+
             if model.needsAudioPermissionHelp {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("需要给 MeetingScribe Audio Helper 录音权限",
@@ -65,7 +85,7 @@ struct RealtimeTranscriptionView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        if model.finalText.isEmpty && model.partialText.isEmpty {
+                        if model.lines.isEmpty && model.partialText.isEmpty {
                             ContentUnavailableView(
                                 "等待语音",
                                 systemImage: "waveform",
@@ -73,9 +93,11 @@ struct RealtimeTranscriptionView: View {
                             )
                             .frame(maxWidth: .infinity, minHeight: 260)
                         } else {
-                            Text(model.finalText)
-                                .font(.body)
-                                .textSelection(.enabled)
+                            LazyVStack(alignment: .leading, spacing: 14) {
+                                ForEach(model.lines) { line in
+                                    subtitleRow(line)
+                                }
+                            }
                             if !model.partialText.isEmpty {
                                 Text(model.partialText)
                                     .foregroundStyle(.secondary)
@@ -89,6 +111,11 @@ struct RealtimeTranscriptionView: View {
                 }
                 .onChange(of: model.partialText) { _, _ in
                     withAnimation { proxy.scrollTo("partial", anchor: .bottom) }
+                }
+                .onChange(of: model.lines.count) { _, _ in
+                    if let id = model.lines.last?.id {
+                        withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                    }
                 }
             }
 
@@ -144,6 +171,37 @@ struct RealtimeTranscriptionView: View {
         .frame(minWidth: 680, minHeight: 520)
         .onDisappear { model.stop() }
     }
+
+    private func subtitleRow(_ line: RealtimeSubtitleLine) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(line.original)
+                .font(.body)
+                .textSelection(.enabled)
+            if model.translationEnabled {
+                if let translation = line.translation {
+                    Text(translation)
+                        .font(.body)
+                        .foregroundStyle(Color.accentColor)
+                        .textSelection(.enabled)
+                } else if let error = line.translationError {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("翻译中…")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .id(line.id)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 8)
+        .overlay(alignment: .bottom) { Divider() }
+    }
 }
 
 @MainActor
@@ -152,7 +210,9 @@ private final class RealtimeTranscriptionViewModel {
     var isRunning = false
     var status = "未开始"
     var partialText = ""
-    var finalText = ""
+    var lines: [RealtimeSubtitleLine] = []
+    var scenario = Settings.shared.recognitionScenario
+    var translationEnabled = true
     var sentBytes = 0
     var audioPeak: Float = 0
     var captureDescription = "采集设备：未启动"
@@ -174,7 +234,12 @@ private final class RealtimeTranscriptionViewModel {
     private var realtime: OpenAIRealtimeTranscriptionService?
     private var senderTask: Task<Void, Never>?
     private var receiverTask: Task<Void, Never>?
+    private var translationTask: Task<Void, Never>?
+    private var translator: RealtimeSubtitleTranslator?
     private var outputURL: URL?
+
+    var finalText: String { RealtimeSubtitleTranslator.originalText(from: lines) }
+    var translatedText: String { RealtimeSubtitleTranslator.translatedText(from: lines) }
 
     func start() {
         guard !isRunning else { return }
@@ -182,7 +247,7 @@ private final class RealtimeTranscriptionViewModel {
         error = nil
         needsAudioPermissionHelp = false
         partialText = ""
-        finalText = ""
+        lines = []
         sentBytes = 0
         serverEventCount = 0
         transcriptEventCount = 0
@@ -207,9 +272,7 @@ private final class RealtimeTranscriptionViewModel {
             realtime?.close()
             _ = await receiver?.value
             if let outputURL {
-                let transcriptURL = outputURL.deletingPathExtension().appendingPathExtension("txt")
-                try? finalText.write(to: transcriptURL, atomically: true, encoding: .utf8)
-                outputDescription = "已保存：\(transcriptURL.lastPathComponent) 与 \(outputURL.lastPathComponent)"
+                persistTranscripts(outputURL: outputURL)
             }
             isRunning = false
             status = "已停止"
@@ -232,7 +295,26 @@ private final class RealtimeTranscriptionViewModel {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let output = directory.appendingPathComponent("realtime-\(Int(Date().timeIntervalSince1970)).wav")
             let capture = BlackHoleAudioSocketClient(outputURL: output)
-            let realtime = try OpenAIRealtimeTranscriptionService(apiKey: key)
+            let language: String? = switch scenario {
+            case .mandarin: "zh"
+            case .english: "en"
+            case .autoMultilingual, .hongKongMixed: nil
+            }
+            let prompt = [scenario.transcriptionHint, Transcriber.trimGlossary(Settings.shared.glossary)]
+                .filter { !$0.isEmpty }.joined(separator: " ")
+            let realtime = try OpenAIRealtimeTranscriptionService(
+                apiKey: key, language: language, prompt: prompt)
+            if translationEnabled {
+                do {
+                    translator = try RealtimeSubtitleTranslator(
+                        settings: Settings.shared, scenario: scenario)
+                } catch {
+                    self.error = error.localizedDescription
+                    translator = nil
+                }
+            } else {
+                translator = nil
+            }
             self.capture = capture
             self.realtime = realtime
             outputURL = output
@@ -291,8 +373,9 @@ private final class RealtimeTranscriptionViewModel {
             if !text.isEmpty {
                 transcriptEventCount += 1
                 status = "已收到最终字幕"
-                finalText += text + "\n"
+                lines.append(RealtimeSubtitleLine(original: text))
                 partialText = ""
+                startTranslationIfNeeded()
             }
         case .failed(let message): error = message
         case .status(let value):
@@ -303,6 +386,47 @@ private final class RealtimeTranscriptionViewModel {
     private func setError(_ message: String) {
         error = message
         status = "连接中断"
+    }
+
+    private func startTranslationIfNeeded() {
+        guard translationEnabled, translator != nil, translationTask == nil else { return }
+        translationTask = Task { [weak self] in
+            await self?.translatePendingLines()
+        }
+    }
+
+    private func translatePendingLines() async {
+        while let index = lines.firstIndex(where: {
+            $0.translation == nil && $0.translationError == nil
+        }), let translator {
+            let id = lines[index].id
+            let original = lines[index].original
+            do {
+                let translated = try await translator.translate(original)
+                if let current = lines.firstIndex(where: { $0.id == id }) {
+                    lines[current].translation = translated
+                }
+            } catch {
+                if let current = lines.firstIndex(where: { $0.id == id }) {
+                    lines[current].translationError = error.localizedDescription
+                }
+            }
+            if let outputURL { persistTranscripts(outputURL: outputURL) }
+        }
+        translationTask = nil
+    }
+
+    private func persistTranscripts(outputURL: URL) {
+        let originalURL = outputURL.deletingPathExtension().appendingPathExtension("txt")
+        try? finalText.write(to: originalURL, atomically: true, encoding: .utf8)
+        var names = [originalURL.lastPathComponent, outputURL.lastPathComponent]
+        if translationEnabled, !translatedText.isEmpty {
+            let translatedURL = outputURL.deletingPathExtension()
+                .appendingPathExtension("translated.txt")
+            try? translatedText.write(to: translatedURL, atomically: true, encoding: .utf8)
+            names.insert(translatedURL.lastPathComponent, at: 1)
+        }
+        outputDescription = "已保存：" + names.joined(separator: "、")
     }
 
     func openAudioPrivacySettings() {
