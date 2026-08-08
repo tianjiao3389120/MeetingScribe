@@ -231,6 +231,23 @@ final class Settings {
     }
     var providerKeyExists: Bool { Keychain.exists(account: provider.keychainAccount) }
 
+    /// OpenAI Realtime transcription is independent from the model used for
+    /// minutes and translation. Keeping a separate key lets those workflows
+    /// use different accounts, quotas and providers.
+    var realtimeOpenAIKey: String? {
+        get { Keychain.read(account: "openai-realtime-api-key") }
+        set {
+            if let newValue, !newValue.isEmpty {
+                Keychain.write(account: "openai-realtime-api-key", value: newValue)
+            } else {
+                Keychain.delete(account: "openai-realtime-api-key")
+            }
+        }
+    }
+    var realtimeOpenAIKeyExists: Bool {
+        Keychain.exists(account: "openai-realtime-api-key")
+    }
+
     private enum Keys {
         static let backend = "backend"
         static let apiModel = "apiModel"

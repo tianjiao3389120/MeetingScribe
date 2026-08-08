@@ -9,8 +9,11 @@ struct SettingsView: View {
     @State private var showVoiceProfiles = false
     @State private var voiceProfileCount = VoiceProfileStore.load().count
     @State private var showStorageManagement = false
+    @State private var showRuntimeDiagnostics = false
     @State private var glossaryCandidates = FeedbackStore.loadCandidates()
     @State private var glossaryCandidateError: String?
+    @State private var realtimeKey = ""
+    @State private var hasRealtimeKey = Settings.shared.realtimeOpenAIKeyExists
 
     static func describeCache() -> String {
         let (count, bytes) = TranscriptCache.summary
@@ -25,6 +28,31 @@ struct SettingsView: View {
             Form {
                 Section("大模型") {
                     ProviderSection(settings: $settings)
+                }
+
+                Section("实时字幕识别") {
+                    SecureField("OpenAI Realtime API key", text: $realtimeKey,
+                                prompt: Text(hasRealtimeKey ? "已保存；输入新值可替换" : "sk-…"))
+                    HStack {
+                        Button(hasRealtimeKey ? "保存新的识别 key" : "保存识别 key") {
+                            let value = realtimeKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !value.isEmpty else { return }
+                            settings.realtimeOpenAIKey = value
+                            realtimeKey = ""
+                            hasRealtimeKey = true
+                        }
+                        .disabled(realtimeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if hasRealtimeKey {
+                            Button("清除识别 key", role: .destructive) {
+                                settings.realtimeOpenAIKey = nil
+                                realtimeKey = ""
+                                hasRealtimeKey = false
+                            }
+                        }
+                    }
+                    .font(.caption)
+                    Text("只用于 OpenAI Realtime 语音识别；会议纪要和字幕翻译继续使用上方的大模型配置，两者的账号和额度互不影响。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("转录") {
@@ -76,7 +104,7 @@ struct SettingsView: View {
                             Button("管理…") { showVoiceProfiles = true }
                         }
                     }
-                    Text("声纹只保存在本机应用支持目录，用于后续会议自动识别姓名，可随时删除。")
+                    Text("这里统计的是你在会议结果页手动确认姓名后登记的人数，不是已处理会议数。处理新会议不会自动创建匿名档案；请在结果页点击“登记/更新声纹”。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -155,6 +183,11 @@ struct SettingsView: View {
                 }
 
                 Section("调试") {
+                    Button("运行环境诊断…", systemImage: "stethoscope") {
+                        showRuntimeDiagnostics = true
+                    }
+                    Text("检查转录引擎、模型、BlackHole、Audio Helper 和大模型配置，不会调用接口。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("保留临时音轨", isOn: $settings.keepIntermediates)
                     Text("仅用于排查转录问题，会持续占用临时目录空间；正常使用建议关闭。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -180,6 +213,7 @@ struct SettingsView: View {
         .sheet(isPresented: $showStorageManagement, onDismiss: {
             cacheSummary = Self.describeCache()
         }) { StorageManagementView() }
+        .sheet(isPresented: $showRuntimeDiagnostics) { RuntimeDiagnosticsView() }
     }
 
     private func canAccept(_ candidate: GlossaryCandidate) -> Bool {

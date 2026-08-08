@@ -28,6 +28,10 @@ final class BlackHoleAudioCaptureService: @unchecked Sendable {
     private var peak: Float = 0
     private var startedAt: Date?
 
+    static func inputDeviceAvailable(named name: String = "BlackHole 2ch") -> Bool {
+        AudioDevice.findInput(named: name) != nil
+    }
+
     init(outputURL: URL, deviceName: String = "BlackHole 2ch") throws {
         self.deviceName = deviceName
         let streamPair = Self.makePCMStream()

@@ -4,12 +4,60 @@ import Observation
 import SwiftUI
 
 struct RealtimeTranscriptionView: View {
+    private enum DisplayMode: String, CaseIterable, Identifiable {
+        case bilingual = "原文 + 翻译"
+        case original = "仅原文"
+        case translation = "仅翻译"
+
+        var id: String { rawValue }
+    }
+
     @State private var model = RealtimeTranscriptionViewModel()
+    @State private var showDiagnostics = false
+    @State private var showHistory = false
+    @State private var focusMode = false
+    @State private var displayMode: DisplayMode = .bilingual
+    @State private var backgroundOpacity = 0.92
+    @State private var subtitleOpacity = 1.0
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            if !focusMode {
+                standardHeader
+                Divider()
+                controls
+                Divider()
+            }
+
+            subtitleContent
+
+            if !focusMode {
+                statusFooter
+            }
+        }
+        .frame(minWidth: focusMode ? 420 : 680, minHeight: focusMode ? 220 : 520)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(backgroundOpacity))
+        .background(FloatingWindowConfigurator())
+        .overlay(alignment: .topTrailing) {
+            if focusMode {
+                Button("退出专注字幕", systemImage: "rectangle.compress.vertical") {
+                    focusMode = false
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .help("恢复完整控制界面")
+                .padding(8)
+                .opacity(0.65)
+            }
+        }
+        .onDisappear { model.stop() }
+        .sheet(isPresented: $showDiagnostics) { RuntimeDiagnosticsView() }
+        .sheet(isPresented: $showHistory) { RealtimeTranscriptHistoryView() }
+    }
+
+    private var standardHeader: some View {
+        HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("实时字幕")
                         .font(.title2.weight(.semibold))
@@ -18,6 +66,9 @@ struct RealtimeTranscriptionView: View {
                         .foregroundStyle(model.error == nil ? Color.secondary : Color.red)
                 }
                 Spacer()
+                Button("专注字幕", systemImage: "rectangle.expand.vertical") { focusMode = true }
+                Button("历史", systemImage: "clock.arrow.circlepath") { showHistory = true }
+                Button("诊断", systemImage: "stethoscope") { showDiagnostics = true }
                 if model.isRunning {
                     Button("停止", systemImage: "stop.fill", role: .destructive) {
                         model.stop()
@@ -29,31 +80,56 @@ struct RealtimeTranscriptionView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
-            }
-            .padding(20)
+        }
+        .padding(20)
+    }
 
-            Divider()
-
-            HStack(spacing: 16) {
+    private var controls: some View {
+        HStack(spacing: 16) {
                 Picker("识别场景", selection: $model.scenario) {
                     ForEach(RecognitionScenario.allCases) { scenario in
                         Text(scenario.displayName).tag(scenario)
                     }
                 }
                 .frame(maxWidth: 330)
+                .disabled(model.isRunning)
                 Toggle("简体中文翻译", isOn: $model.translationEnabled)
                     .toggleStyle(.switch)
+                    .disabled(model.isRunning)
+                Picker("显示", selection: $displayMode) {
+                    ForEach(DisplayMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .frame(width: 150)
+                .disabled(!model.translationEnabled)
+                .onChange(of: model.translationEnabled) { _, enabled in
+                    if !enabled, displayMode == .translation { displayMode = .original }
+                }
                 Spacer()
-                Text("翻译使用“设置 → 大模型”中的当前服务")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Button("小") { model.subtitleSize = max(13, model.subtitleSize - 2) }
+                    .help("减小字幕")
+                Button("大") { model.subtitleSize = min(30, model.subtitleSize + 2) }
+                    .help("增大字幕")
+                VStack(alignment: .trailing, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text("背景").font(.caption2).foregroundStyle(.secondary)
+                        Slider(value: $backgroundOpacity, in: 0.15...1).frame(width: 80)
+                    }
+                    HStack(spacing: 5) {
+                        Text("字幕").font(.caption2).foregroundStyle(.secondary)
+                        Slider(value: $subtitleOpacity, in: 0.35...1).frame(width: 80)
+                    }
+                }
             }
-            .disabled(model.isRunning)
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
 
-            Divider()
+    }
 
+    @ViewBuilder
+    private var subtitleContent: some View {
+        VStack(spacing: 0) {
             if model.needsAudioPermissionHelp {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("需要给 MeetingScribe Audio Helper 录音权限",
@@ -94,15 +170,25 @@ struct RealtimeTranscriptionView: View {
                             .frame(maxWidth: .infinity, minHeight: 260)
                         } else {
                             LazyVStack(alignment: .leading, spacing: 14) {
-                                ForEach(model.lines) { line in
+                                ForEach(visibleLines) { line in
                                     subtitleRow(line)
                                 }
                             }
-                            if !model.partialText.isEmpty {
+                            if displayMode != .translation, !model.partialText.isEmpty {
                                 Text(model.partialText)
+                                    .font(.system(size: model.subtitleSize))
                                     .foregroundStyle(.secondary)
+                                    .opacity(subtitleOpacity)
                                     .textSelection(.enabled)
                                     .id("partial")
+                            }
+                            if displayMode == .translation, model.pendingTranslationCount > 0 {
+                                HStack(spacing: 7) {
+                                    ProgressView().controlSize(.small)
+                                    Text("正在结合上下文翻译…")
+                                }
+                                .font(.caption).foregroundStyle(.secondary)
+                                .id("partial")
                             }
                         }
                     }
@@ -118,7 +204,11 @@ struct RealtimeTranscriptionView: View {
                     }
                 }
             }
+        }
+    }
 
+    private var statusFooter: some View {
+        VStack(spacing: 0) {
             if let error = model.error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
@@ -129,11 +219,15 @@ struct RealtimeTranscriptionView: View {
             }
 
             HStack {
-                Text("\(model.outputDescription) · 已发送 \(ByteCountFormatter.string(fromByteCount: Int64(model.sentBytes), countStyle: .file))")
+                Text("\(model.outputDescription) · 已发送 \(ByteCountFormatter.string(fromByteCount: Int64(model.sentBytes), countStyle: .file)) · 待翻译 \(model.pendingTranslationCount) 条")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
+                Button("复制全部", systemImage: "doc.on.doc") { model.copyAll() }
+                    .disabled(model.lines.isEmpty)
+                Button("清空") { model.clearSubtitles() }
+                    .disabled(model.lines.isEmpty && model.partialText.isEmpty)
                 Button("关闭") { dismiss() }
                     .disabled(model.isRunning)
             }
@@ -168,21 +262,23 @@ struct RealtimeTranscriptionView: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 8)
         }
-        .frame(minWidth: 680, minHeight: 520)
-        .onDisappear { model.stop() }
     }
 
     private func subtitleRow(_ line: RealtimeSubtitleLine) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(line.original)
-                .font(.body)
-                .textSelection(.enabled)
-            if model.translationEnabled {
+            if displayMode != .translation {
+                Text(line.original)
+                    .font(.system(size: model.subtitleSize))
+                    .textSelection(.enabled)
+            }
+            if model.translationEnabled, displayMode != .original {
                 if let translation = line.translation {
-                    Text(translation)
-                        .font(.body)
-                        .foregroundStyle(Color.accentColor)
-                        .textSelection(.enabled)
+                    if !translation.isEmpty {
+                        Text(translation)
+                            .font(.system(size: model.subtitleSize))
+                            .foregroundStyle(Color.accentColor)
+                            .textSelection(.enabled)
+                    }
                 } else if let error = line.translationError {
                     Label(error, systemImage: "exclamationmark.circle")
                         .font(.caption)
@@ -197,10 +293,19 @@ struct RealtimeTranscriptionView: View {
                 }
             }
         }
+        .opacity(subtitleOpacity)
         .id(line.id)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 8)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var visibleLines: [RealtimeSubtitleLine] {
+        guard displayMode == .translation else { return model.lines }
+        return model.lines.filter {
+            if let translation = $0.translation { return !translation.isEmpty }
+            return $0.translationError != nil
+        }
     }
 }
 
@@ -213,6 +318,7 @@ private final class RealtimeTranscriptionViewModel {
     var lines: [RealtimeSubtitleLine] = []
     var scenario = Settings.shared.recognitionScenario
     var translationEnabled = true
+    var subtitleSize: CGFloat = 17
     var sentBytes = 0
     var audioPeak: Float = 0
     var captureDescription = "采集设备：未启动"
@@ -237,13 +343,19 @@ private final class RealtimeTranscriptionViewModel {
     private var translationTask: Task<Void, Never>?
     private var translator: RealtimeSubtitleTranslator?
     private var outputURL: URL?
+    private var isStopping = false
 
     var finalText: String { RealtimeSubtitleTranslator.originalText(from: lines) }
     var translatedText: String { RealtimeSubtitleTranslator.translatedText(from: lines) }
+    var pendingTranslationCount: Int {
+        guard translationEnabled else { return 0 }
+        return lines.filter { $0.translation == nil && $0.translationError == nil }.count
+    }
 
     func start() {
         guard !isRunning else { return }
         isRunning = true
+        isStopping = false
         error = nil
         needsAudioPermissionHelp = false
         partialText = ""
@@ -256,7 +368,8 @@ private final class RealtimeTranscriptionViewModel {
     }
 
     func stop() {
-        guard isRunning else { return }
+        guard isRunning, !isStopping else { return }
+        isStopping = true
         status = "正在保存…"
         capture?.stop()
         let sender = senderTask
@@ -271,22 +384,28 @@ private final class RealtimeTranscriptionViewModel {
             receiver?.cancel()
             realtime?.close()
             _ = await receiver?.value
+            if let translationTask {
+                status = "正在完成剩余翻译…"
+                await translationTask.value
+            }
             if let outputURL {
                 persistTranscripts(outputURL: outputURL)
             }
             isRunning = false
+            isStopping = false
             status = "已停止"
             capture = nil
             self.realtime = nil
             senderTask = nil
             receiverTask = nil
+            translationTask = nil
         }
     }
 
     private func run() async {
         do {
-            let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
-                ?? (Settings.shared.providerID == "openai" ? Settings.shared.providerKey : nil)
+            let key = ProcessInfo.processInfo.environment["OPENAI_REALTIME_API_KEY"]
+                ?? Settings.shared.realtimeOpenAIKey
             guard let key, !key.isEmpty else {
                 throw OpenAIRealtimeTranscriptionService.Failure.missingAPIKey
             }
@@ -340,6 +459,10 @@ private final class RealtimeTranscriptionViewModel {
                             self?.audioPeak = max(self?.audioPeak ?? 0, Self.peak(of: chunk))
                         }
                     }
+                    await MainActor.run { [weak self] in
+                        guard let self, self.isRunning, !self.isStopping else { return }
+                        self.setError("Audio Helper 已停止发送音频。请运行环境诊断后重新开始。")
+                    }
                 } catch {
                     await MainActor.run { [weak self] in self?.setError(error.localizedDescription) }
                 }
@@ -375,6 +498,7 @@ private final class RealtimeTranscriptionViewModel {
                 status = "已收到最终字幕"
                 lines.append(RealtimeSubtitleLine(original: text))
                 partialText = ""
+                if let outputURL { persistTranscripts(outputURL: outputURL) }
                 startTranslationIfNeeded()
             }
         case .failed(let message): error = message
@@ -384,8 +508,29 @@ private final class RealtimeTranscriptionViewModel {
     }
 
     private func setError(_ message: String) {
+        guard isRunning else { return }
         error = message
         status = "连接中断"
+        isStopping = true
+        let capture = capture
+        let outputURL = outputURL
+        capture?.stop()
+        senderTask?.cancel()
+        receiverTask?.cancel()
+        realtime?.close()
+        isRunning = false
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            if let capture, let outputURL {
+                capture.copyWAV(to: outputURL)
+                self?.persistTranscripts(outputURL: outputURL)
+            }
+            self?.capture = nil
+            self?.realtime = nil
+            self?.senderTask = nil
+            self?.receiverTask = nil
+            self?.isStopping = false
+        }
     }
 
     private func startTranslationIfNeeded() {
@@ -396,19 +541,34 @@ private final class RealtimeTranscriptionViewModel {
     }
 
     private func translatePendingLines() async {
-        while let index = lines.firstIndex(where: {
-            $0.translation == nil && $0.translationError == nil
-        }), let translator {
-            let id = lines[index].id
-            let original = lines[index].original
+        while translator != nil {
+            // Let a few adjacent final segments accumulate. Translating them
+            // together produces much more coherent pronouns and sentence
+            // boundaries while original deltas continue to render instantly.
+            try? await Task.sleep(for: .seconds(2))
+            let indexes = lines.indices.filter {
+                lines[$0].translation == nil && lines[$0].translationError == nil
+            }.prefix(3)
+            guard !indexes.isEmpty, let translator else { break }
+            let batch = Array(indexes)
+            let ids = batch.map { lines[$0].id }
+            let original = batch.map { lines[$0].original }.joined(separator: "\n")
             do {
                 let translated = try await translator.translate(original)
-                if let current = lines.firstIndex(where: { $0.id == id }) {
+                for id in ids.dropLast() {
+                    if let current = lines.firstIndex(where: { $0.id == id }) {
+                        lines[current].translation = ""
+                    }
+                }
+                if let id = ids.last,
+                   let current = lines.firstIndex(where: { $0.id == id }) {
                     lines[current].translation = translated
                 }
             } catch {
-                if let current = lines.firstIndex(where: { $0.id == id }) {
-                    lines[current].translationError = error.localizedDescription
+                for id in ids {
+                    if let current = lines.firstIndex(where: { $0.id == id }) {
+                        lines[current].translationError = error.localizedDescription
+                    }
                 }
             }
             if let outputURL { persistTranscripts(outputURL: outputURL) }
@@ -438,6 +598,22 @@ private final class RealtimeTranscriptionViewModel {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    func copyAll() {
+        let text = translationEnabled && !translatedText.isEmpty
+            ? lines.map { line in
+                if let translation = line.translation { return "\(line.original)\n\(translation)" }
+                return line.original
+            }.joined(separator: "\n\n")
+            : finalText
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func clearSubtitles() {
+        lines = []
+        partialText = ""
+    }
+
     private static func peak(of data: Data) -> Float {
         var peak: Float = 0
         data.withUnsafeBytes { raw in
@@ -453,4 +629,25 @@ private final class RealtimeTranscriptionViewModel {
         return min(peak, 1)
     }
 
+}
+
+private struct FloatingWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { configure(view.window) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async { configure(view.window) }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        guard let window else { return }
+        window.level = .floating
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
+        window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
+    }
 }

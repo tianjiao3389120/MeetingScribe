@@ -41,6 +41,12 @@ struct MeetingScribeApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
+
+        Window("实时字幕", id: "realtime-transcription") {
+            RealtimeTranscriptionView()
+        }
+        .defaultSize(width: 760, height: 600)
+        .windowResizability(.contentMinSize)
     }
 }
 

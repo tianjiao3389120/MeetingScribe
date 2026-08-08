@@ -13,7 +13,7 @@ struct VoiceProfileManagementView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("声纹档案")
                     .font(.title3.weight(.medium))
-                Text("声纹属于敏感生物特征，只保存在这台 Mac。改名会影响后续自动识别；删除后无法恢复。")
+                Text("这里只显示已确认姓名的人。请在会议结果页点击“登记/更新声纹”，试听并填写姓名；仅导入会议不会自动新增匿名档案。声纹只保存在这台 Mac。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

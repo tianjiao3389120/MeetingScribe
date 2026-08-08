@@ -2,10 +2,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @Environment(\.openWindow) private var openWindow
     @State private var runner = PipelineRunner()
     @State private var showSettings = false
     @State private var showHistory = false
-    @State private var showRealtimeTranscription = false
     @State private var isTargeted = false
     @State private var savedPath: String?
     @State private var pendingMedia: URL?
@@ -32,7 +32,7 @@ struct ContentView: View {
         .frame(minWidth: 720, minHeight: 520)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { showRealtimeTranscription = true } label: {
+                Button { openWindow(id: "realtime-transcription") } label: {
                     Label("实时字幕", systemImage: "waveform.and.mic")
                 }
                 .disabled(runner.isRunning)
@@ -59,9 +59,6 @@ struct ContentView: View {
                 showHistory = false
                 reprocess(record, editedTranscript: transcript)
             })
-        }
-        .sheet(isPresented: $showRealtimeTranscription) {
-            RealtimeTranscriptionView()
         }
         .sheet(isPresented: Binding(
             get: { pendingMedia != nil },
@@ -539,11 +536,11 @@ private struct ResultView: View {
                         Button {
                             showNaming = true
                         } label: {
-                            Label("\(diarization.speakerCount) 位说话人", systemImage: "person.2")
+                            Label("登记/更新 \(diarization.speakerCount) 位说话人声纹", systemImage: "person.wave.2")
                                 .font(.caption)
                         }
                         .buttonStyle(.link)
-                        .help("给说话人命名，之后的会议自动识别")
+                        .help("试听并确认姓名；确认后才会加入声纹档案")
                     }
 
                     Button("重新分离") {
