@@ -209,6 +209,115 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).first?.isFavorite, true)
     }
 
+    func testEditingActionPersistsAndRegeneratesMarkdown() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-action-edit-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let minutes = StructuredMinutes(
+            title: "项目周会", nature: "周会", duration: "30 分钟", agenda: ["进展"],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [.init(owner: "张三", task: "提交方案", status: "进行中",
+                                due: "周五", evidence: ["[12:00]"])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+        let record = MeetingRecord(
+            title: "项目周会", sourcePath: "/meeting.mov", duration: 10,
+            backend: "测试", model: "mock",
+            summaryMarkdown: StructuredMinutesRenderer.markdown(from: minutes),
+            structuredSummary: minutes, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        try MeetingHistoryStore.save(record, root: root)
+
+        var action = minutes.actionItems[0]
+        action.owner = " 李四 "
+        action.task = " 完成上线检查 "
+        action.status = "已完成"
+        action.due = "下周一"
+        let updated = try MeetingHistoryStore.updateActionItem(
+            id: record.id, index: 0, action: action, root: root)
+
+        XCTAssertEqual(updated.openActionCount, 0)
+        XCTAssertEqual(updated.structuredSummary?.actionItems[0].owner, "李四")
+        XCTAssertTrue(updated.summaryMarkdown.contains("- [x] 完成上线检查（下周一） [已完成]"))
+        XCTAssertTrue(updated.summaryMarkdown.contains("（证据：[12:00]）"))
+        let loaded = try XCTUnwrap(MeetingHistoryStore.loadAll(root: root).first)
+        XCTAssertEqual(loaded.structuredSummary?.actionItems[0].status, "已完成")
+        let minutesFile = root.appendingPathComponent(record.id.uuidString)
+            .appendingPathComponent("minutes.md")
+        XCTAssertEqual(try String(contentsOf: minutesFile, encoding: .utf8), updated.summaryMarkdown)
+    }
+
+    func testApplyingEvidenceBackedSuggestionUpdatesHistoricalAction() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-action-suggestion-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspaceID = UUID()
+        let oldMinutes = StructuredMinutes(
+            title: "上期", nature: "", duration: "", agenda: ["进展"],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [.init(owner: "张三", task: "提交上线方案", status: "进行中",
+                                due: "周五", evidence: [])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+        var old = MeetingRecord(
+            createdAt: Date(timeIntervalSince1970: 100), title: "上期会议",
+            sourcePath: "/old.mov", duration: 10, backend: "测试", model: "mock",
+            summaryMarkdown: StructuredMinutesRenderer.markdown(from: oldMinutes),
+            structuredSummary: oldMinutes, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
+        try MeetingHistoryStore.save(old, root: root)
+        let targetID = ActionTracking.id(for: oldMinutes.actionItems[0], meetingID: old.id, index: 0)
+        var current = MeetingRecord(
+            createdAt: Date(timeIntervalSince1970: 200), title: "本期会议",
+            sourcePath: "/new.mov", duration: 10, backend: "测试", model: "mock",
+            summaryMarkdown: "纪要", structuredSummary: oldMinutes,
+            transcript: Transcript(segments: []), speakerNames: [:],
+            usedSummaryFallback: false, workspaceID: workspaceID)
+        let suggestion = ActionStatusSuggestion(
+            targetMeetingID: old.id, targetActionID: targetID, task: "提交上线方案",
+            previousStatus: "进行中", proposedStatus: "已完成", evidence: ["[08:20]"])
+        current.actionStatusSuggestions = [suggestion]
+        try MeetingHistoryStore.save(current, root: root)
+
+        let updated = try MeetingHistoryStore.applyActionSuggestion(
+            sourceMeetingID: current.id, suggestionID: suggestion.id, root: root)
+        XCTAssertEqual(updated.count, 2)
+        let records = try MeetingHistoryStore.loadAll(root: root)
+        old = try XCTUnwrap(records.first { $0.id == old.id })
+        current = try XCTUnwrap(records.first { $0.id == current.id })
+        XCTAssertEqual(old.structuredSummary?.actionItems[0].status, "已完成")
+        XCTAssertTrue(old.summaryMarkdown.contains("- [x] 提交上线方案"))
+        XCTAssertEqual(current.appliedActionSuggestionIDs, [suggestion.id])
+    }
+
+    func testHistoricalReviewSuggestionsPersistWithoutChangingActionStatus() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let minutes = StructuredMinutes(
+            title: "后续会议", nature: "周会", duration: "10 分钟", agenda: [],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [.init(owner: "张三", task: "整理材料", status: "进行中",
+                                due: "本周", evidence: ["[01:00]"])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+        let meeting = MeetingRecord(
+            title: "后续会议", sourcePath: "/meeting.mov", duration: 600,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: minutes, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        try MeetingHistoryStore.save(meeting, root: root)
+        let suggestion = ActionStatusSuggestion(
+            targetMeetingID: UUID(), targetActionID: "MS-OLD-1", task: "提交方案",
+            previousStatus: "进行中", proposedStatus: "已完成", evidence: ["[12:34]"])
+
+        let updated = try MeetingHistoryStore.updateActionSuggestions(
+            id: meeting.id, suggestions: [suggestion], root: root)
+
+        XCTAssertEqual(updated.actionStatusSuggestions, [suggestion])
+        XCTAssertEqual(updated.structuredSummary?.actionItems.first?.status,
+                       meeting.structuredSummary?.actionItems.first?.status)
+        XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).first?
+            .actionStatusSuggestions, [suggestion])
+    }
+
     func testLibrarySortingAndTimeSections() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))

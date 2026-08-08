@@ -31,6 +31,7 @@ struct ScreenCapture: Identifiable, Sendable {
 /// Everything the pipeline extracted from one media file.
 struct MeetingAssets: Sendable {
     var sourceURL: URL
+    var recordedAt: Date = Date()
     var customTitle: String?
     var meetingContext: String = ""
     var minutesTemplateID: String = MinutesTemplate.general.id

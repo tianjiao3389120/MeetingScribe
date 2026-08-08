@@ -32,11 +32,18 @@ struct StructuredMinutes: Codable, Sendable, Equatable {
     }
 
     struct ActionItem: Codable, Sendable, Equatable {
+        var trackingID: String? = nil
         var owner: String
         var task: String
         var status: String
         var due: String
         var evidence: [String]
+
+        var isClosed: Bool {
+            let value = status.lowercased()
+            return value.contains("完成") || value.contains("关闭")
+                || value.contains("closed") || value.contains("done")
+        }
     }
 
     struct EvidenceItem: Codable, Sendable, Equatable {

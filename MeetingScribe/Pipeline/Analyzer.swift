@@ -37,6 +37,7 @@ struct Analyzer {
         let combinedContext = [settings.recognitionScenario.analysisGuidance,
                                assets.workspace?.context ?? "",
                                assets.meetingContext,
+                               ActionTracking.promptContext(for: assets.workspace?.id),
                                "纪要模板（\(MinutesTemplate.template(id: assets.minutesTemplateID).name)）：\(MinutesTemplate.template(id: assets.minutesTemplateID).instructions)",
                                "本次纪要附加要求：\(settings.minutesInstructions)"]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

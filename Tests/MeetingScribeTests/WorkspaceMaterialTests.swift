@@ -2,6 +2,36 @@ import XCTest
 @testable import MeetingScribe
 
 final class WorkspaceMaterialTests: XCTestCase {
+    func testActionTrackingSuggestsOnlyExactEvidenceBackedStatusChanges() {
+        let workspaceID = UUID()
+        let oldMinutes = StructuredMinutes(
+            title: "上期", nature: "", duration: "", agenda: ["进展"],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [.init(owner: "张三", task: "提交上线方案", status: "进行中",
+                                due: "", evidence: [])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+        let old = MeetingRecord(
+            title: "上期", sourcePath: "/old.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: oldMinutes, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
+        var current = StructuredMinutes(
+            title: "本期", nature: "", duration: "", agenda: ["进展"],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [
+                .init(owner: "张三", task: "提交上线方案", status: "已完成",
+                      due: "", evidence: ["[08:20]"]),
+                .init(owner: "李四", task: "确认名单", status: "已完成",
+                      due: "", evidence: []),
+            ], agreements: [], afterMeeting: [], uncertainties: [])
+
+        let suggestions = ActionTracking.prepare(&current, priorRecords: [old])
+        XCTAssertEqual(suggestions.count, 1)
+        XCTAssertEqual(suggestions[0].task, "提交上线方案")
+        XCTAssertEqual(suggestions[0].proposedStatus, "已完成")
+        XCTAssertEqual(current.actionItems[0].trackingID, suggestions[0].targetActionID)
+        XCTAssertNotNil(current.actionItems[1].trackingID)
+    }
     func testWorkspaceRoundTripPreservesContext() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("meetingscribe-workspaces-\(UUID().uuidString).json")

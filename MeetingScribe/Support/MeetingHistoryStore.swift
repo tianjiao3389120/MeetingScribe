@@ -1,6 +1,23 @@
 import Foundation
 
 enum MeetingHistoryStore {
+    enum Failure: LocalizedError {
+        case noStructuredActions
+        case actionNotFound
+        case emptyAction
+        case suggestionNotFound
+        case trackedActionNotFound
+
+        var errorDescription: String? {
+            switch self {
+            case .noStructuredActions: return "这场会议没有可编辑的结构化待办。"
+            case .actionNotFound: return "待办已经变化，请重新打开后再试。"
+            case .emptyAction: return "待办内容不能为空。"
+            case .suggestionNotFound: return "状态建议已经变化，请重新打开后再试。"
+            case .trackedActionNotFound: return "找不到建议对应的历史待办。"
+            }
+        }
+    }
     static let defaultDirectory: URL = {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MeetingScribe/Meetings", isDirectory: true)
@@ -79,6 +96,7 @@ enum MeetingHistoryStore {
     }
 
     static func updateClassification(id: UUID, title: String? = nil,
+                                     createdAt: Date? = nil,
                                      workspaceID: UUID?, tags: [String],
                                      root: URL = defaultDirectory) throws -> MeetingRecord {
         let url = root.appendingPathComponent(id.uuidString)
@@ -87,6 +105,7 @@ enum MeetingHistoryStore {
         decoder.dateDecodingStrategy = .iso8601
         var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
         if let title { record.title = title }
+        if let createdAt { record.createdAt = createdAt }
         record.workspaceID = workspaceID
         record.tags = tags
         try save(record, root: root)
@@ -134,6 +153,66 @@ enum MeetingHistoryStore {
         var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
         if let favorite { record.isFavorite = favorite }
         if let archived { record.isArchived = archived }
+        try save(record, root: root)
+        return record
+    }
+
+    static func updateActionItem(id: UUID, index: Int,
+                                 action: StructuredMinutes.ActionItem,
+                                 root: URL = defaultDirectory) throws -> MeetingRecord {
+        let url = root.appendingPathComponent(id.uuidString)
+            .appendingPathComponent("metadata.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        guard var structured = record.structuredSummary else { throw Failure.noStructuredActions }
+        guard structured.actionItems.indices.contains(index) else { throw Failure.actionNotFound }
+        var cleaned = action
+        cleaned.task = action.task.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned.owner = action.owner.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned.due = action.due.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned.status = action.status.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.task.isEmpty else { throw Failure.emptyAction }
+        structured.actionItems[index] = cleaned
+        record.structuredSummary = structured
+        record.summaryMarkdown = StructuredMinutesRenderer.markdown(from: structured)
+        try save(record, root: root)
+        return record
+    }
+
+    static func applyActionSuggestion(sourceMeetingID: UUID, suggestionID: UUID,
+                                      root: URL = defaultDirectory) throws -> [MeetingRecord] {
+        let records = try loadAll(root: root)
+        guard var source = records.first(where: { $0.id == sourceMeetingID }),
+              let suggestion = source.actionStatusSuggestions?.first(where: { $0.id == suggestionID })
+        else { throw Failure.suggestionNotFound }
+        if source.appliedActionSuggestionIDs?.contains(suggestionID) == true { return [source] }
+        guard var target = records.first(where: { $0.id == suggestion.targetMeetingID }),
+              var structured = target.structuredSummary,
+              let index = structured.actionItems.indices.first(where: {
+                  ActionTracking.id(for: structured.actionItems[$0], meetingID: target.id, index: $0)
+                      == suggestion.targetActionID
+              }) else { throw Failure.trackedActionNotFound }
+
+        structured.actionItems[index].trackingID = suggestion.targetActionID
+        structured.actionItems[index].status = suggestion.proposedStatus
+        target.structuredSummary = structured
+        target.summaryMarkdown = StructuredMinutesRenderer.markdown(from: structured)
+        try save(target, root: root)
+
+        var applied = source.appliedActionSuggestionIDs ?? []
+        applied.append(suggestionID)
+        source.appliedActionSuggestionIDs = applied
+        try save(source, root: root)
+        return [target, source]
+    }
+
+    static func updateActionSuggestions(id: UUID, suggestions: [ActionStatusSuggestion],
+                                        root: URL = defaultDirectory) throws -> MeetingRecord {
+        let url = root.appendingPathComponent(id.uuidString)
+            .appendingPathComponent("metadata.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        record.actionStatusSuggestions = suggestions
         try save(record, root: root)
         return record
     }

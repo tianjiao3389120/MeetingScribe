@@ -332,6 +332,7 @@ final class PipelineRunner {
         }
 
         let bundle = MeetingAssets(sourceURL: url,
+                                   recordedAt: MeetingDateResolver.recordedAt(for: url),
                                    customTitle: title,
                                    meetingContext: meetingContext,
                                    minutesTemplateID: minutesTemplateID,
@@ -371,14 +372,24 @@ final class PipelineRunner {
         let result = try await analyzer.run { [weak self] message in
             Task { @MainActor in self?.detail = message }
         }
-        summary = result.markdown
-        structuredSummary = result.structured
+        var trackedStructured = result.structured
+        var actionSuggestions: [ActionStatusSuggestion] = []
+        if var structured = trackedStructured {
+            let priorRecords = ((try? MeetingHistoryStore.loadAll()) ?? []).filter {
+                $0.workspaceID == bundle.workspace?.id && $0.workspaceID != nil
+            }
+            actionSuggestions = ActionTracking.prepare(&structured, priorRecords: priorRecords)
+            trackedStructured = structured
+        }
+        let renderedMarkdown = trackedStructured.map(StructuredMinutesRenderer.markdown) ?? result.markdown
+        summary = renderedMarkdown
+        structuredSummary = trackedStructured
         usedSummaryFallback = result.usedFallback
 
         let resolvedTitle = MeetingTitleResolver.resolve(
             requestedTitle: bundle.title,
             sourceURL: bundle.sourceURL,
-            generatedTitle: result.structured?.title)
+            generatedTitle: trackedStructured?.title)
         if resolvedTitle != bundle.title {
             var updatedAssets = bundle
             updatedAssets.customTitle = resolvedTitle
@@ -393,13 +404,14 @@ final class PipelineRunner {
         case .openAICompatible: model = settings.providerModel
         }
         let record = MeetingRecord(
+            createdAt: bundle.recordedAt,
             title: resolvedTitle,
             sourcePath: bundle.sourceURL.path,
             duration: bundle.duration,
             backend: settings.provider.name,
             model: model,
-            summaryMarkdown: result.markdown,
-            structuredSummary: result.structured,
+            summaryMarkdown: renderedMarkdown,
+            structuredSummary: trackedStructured,
             transcript: bundle.transcript,
             speakerNames: bundle.diarization?.names ?? [:],
             usedSummaryFallback: result.usedFallback,
@@ -412,6 +424,7 @@ final class PipelineRunner {
         var storedRecord = record
         storedRecord.meetingContext = bundle.meetingContext
         storedRecord.minutesTemplateID = bundle.minutesTemplateID
+        storedRecord.actionStatusSuggestions = actionSuggestions
         do {
             try MeetingHistoryStore.save(storedRecord, materialSources: bundle.materials)
             savedRecordID = storedRecord.id

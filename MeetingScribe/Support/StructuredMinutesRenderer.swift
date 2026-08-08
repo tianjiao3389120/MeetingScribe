@@ -45,7 +45,7 @@ enum StructuredMinutesRenderer {
                 lines += (grouped[owner] ?? []).map { item in
                     let status = item.status.isEmpty ? "" : " [\(item.status)]"
                     let due = item.due.isEmpty ? "" : "（\(item.due)）"
-                    return "- [ ] \(item.task)\(due)\(status)\(evidenceSuffix(item.evidence))"
+                    return "- [\(item.isClosed ? "x" : " ")] \(item.task)\(due)\(status)\(evidenceSuffix(item.evidence))"
                 }
             }
             if !value.agreements.isEmpty {

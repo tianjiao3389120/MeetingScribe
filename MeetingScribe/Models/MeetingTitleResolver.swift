@@ -20,6 +20,12 @@ enum MeetingTitleResolver {
         return generated.count > 36 ? String(generated.prefix(36)) + "…" : generated
     }
 
+    static func historicalTitle(for record: MeetingRecord) -> String? {
+        let resolved = resolve(requestedTitle: record.title, sourceURL: record.sourceURL,
+                               generatedTitle: record.structuredSummary?.title)
+        return comparable(resolved) == comparable(cleaned(record.title)) ? nil : resolved
+    }
+
     private static func cleaned(_ value: String) -> String {
         var result = value
             .components(separatedBy: .newlines)

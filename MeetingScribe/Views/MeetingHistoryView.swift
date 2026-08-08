@@ -23,10 +23,20 @@ struct MeetingHistoryView: View {
     @State private var editingTranscript: MeetingRecord?
     @State private var translatingTranscript: MeetingRecord?
     @State private var emailRecord: MeetingRecord?
+    @State private var editingAction: ActionEditTarget?
+    @State private var pendingActionReviewWorkspace: MeetingWorkspace?
+    @State private var isReviewingActions = false
     @State private var detailTab: DetailTab = .minutes
 
     private enum DetailTab: String, CaseIterable {
         case minutes = "纪要", actions = "待办", transcript = "逐字稿", email = "邮件", info = "信息"
+    }
+
+    private struct ActionEditTarget: Identifiable {
+        let id = UUID()
+        let meetingID: UUID
+        let index: Int
+        let action: StructuredMinutes.ActionItem
     }
 
     private var filtered: [MeetingRecord] {
@@ -140,6 +150,13 @@ struct MeetingHistoryView: View {
                 }
             }
         }
+        .sheet(item: $editingAction) { target in
+            ActionItemEditorView(action: target.action) { action in
+                saveAction(target, action: action)
+            } onCancel: {
+                editingAction = nil
+            }
+        }
         .onChange(of: filtered.map(\.id)) { _, ids in
             if selection == nil || !ids.contains(selection!) { selection = ids.first }
         }
@@ -152,6 +169,15 @@ struct MeetingHistoryView: View {
             Button("删除", role: .destructive) { removePending() }
         } message: {
             Text("只删除 MeetingScribe 的历史副本，不会删除原始媒体或已经导出的文件。")
+        }
+        .alert("回溯历史待办？", isPresented: Binding(
+            get: { pendingActionReviewWorkspace != nil },
+            set: { if !$0 { pendingActionReviewWorkspace = nil } }
+        )) {
+            Button("取消", role: .cancel) { pendingActionReviewWorkspace = nil }
+            Button("开始分析") { startHistoricalActionReview() }
+        } message: {
+            Text("将按时间顺序分析“\(pendingActionReviewWorkspace?.name ?? "当前空间")”的后续会议，并为明确提及的历史待办生成状态建议。不会直接修改待办状态，分析会消耗大模型 Token。")
         }
     }
 
@@ -274,6 +300,21 @@ struct MeetingHistoryView: View {
                         Image(systemName: "chart.bar.doc.horizontal")
                     }.buttonStyle(.borderless).help("空间总览与待办台账")
                 }
+                Menu {
+                    if let workspace = actionReviewWorkspace {
+                        Button("回溯“\(workspace.name)”的历史待办…") {
+                            pendingActionReviewWorkspace = workspace
+                        }.disabled(isReviewingActions)
+                    } else {
+                        Button("请先将会议归入一个空间") {}
+                            .disabled(true)
+                    }
+                } label: {
+                    Label(isReviewingActions ? "正在回溯" : "历史待办回溯",
+                          systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }.padding(12)
             Divider()
             if filtered.isEmpty {
@@ -381,16 +422,57 @@ struct MeetingHistoryView: View {
             MarkdownView(markdown: record.summaryMarkdown)
         case .actions:
             if let actions = record.structuredSummary?.actionItems, !actions.isEmpty {
-                List(actions.indices, id: \.self) { index in
-                    let action = actions[index]
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(action.task).font(.body.weight(.medium))
-                        HStack {
-                            Label(action.owner.isEmpty ? "待确认" : action.owner, systemImage: "person")
-                            Label(action.due.isEmpty ? "待确认" : action.due, systemImage: "calendar")
-                            Text(action.status.isEmpty ? "状态待确认" : action.status)
-                        }.font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 4)
+                List {
+                    let suggestions = pendingSuggestions(for: record)
+                    if !suggestions.isEmpty {
+                        Section {
+                            ForEach(suggestions) { suggestion in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text(suggestion.task).font(.body.weight(.medium))
+                                        Spacer()
+                                        Button("确认更新") { applySuggestion(record, suggestion) }
+                                    }
+                                    Text("\(statusText(suggestion.previousStatus)) → \(statusText(suggestion.proposedStatus))")
+                                        .font(.caption).foregroundStyle(.blue)
+                                    Text("依据：\(suggestion.evidence.joined(separator: "、"))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }.padding(.vertical, 4)
+                            }
+                        } header: {
+                            HStack {
+                                Text("历史待办状态建议")
+                                Spacer()
+                                Button("全部确认") { applyAllSuggestions(record) }
+                                    .font(.caption).buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    Section("本次会议待办") {
+                        ForEach(actions.indices, id: \.self) { index in
+                            let action = actions[index]
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: action.isClosed ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(action.isClosed ? Color.green : Color.secondary)
+                                    .padding(.top, 2)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(action.task).font(.body.weight(.medium))
+                                        .foregroundStyle(action.isClosed ? Color.secondary : Color.primary)
+                                    HStack {
+                                        Label(action.owner.isEmpty ? "待确认" : action.owner, systemImage: "person")
+                                        Label(action.due.isEmpty ? "待确认" : action.due, systemImage: "calendar")
+                                        Text(action.status.isEmpty ? "状态待确认" : action.status)
+                                    }.font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("编辑…") {
+                                    editingAction = ActionEditTarget(
+                                        meetingID: record.id, index: index, action: action)
+                                }
+                                .buttonStyle(.borderless)
+                            }.padding(.vertical, 4)
+                        }
+                    }
                 }
             } else {
                 ContentUnavailableView("没有结构化待办", systemImage: "checklist")
@@ -457,6 +539,7 @@ struct MeetingHistoryView: View {
     private func load() {
         do {
             records = try MeetingHistoryStore.loadAll()
+            migrateHistoricalTitlesIfNeeded()
             loadWorkspaces()
             scope = restoredScope(storedScope)
             selection = listSections.first?.records.first?.id
@@ -517,6 +600,76 @@ struct MeetingHistoryView: View {
         return workspaces.first { $0.id == id }
     }
 
+    private var actionReviewWorkspace: MeetingWorkspace? {
+        if let selectedFilterWorkspace { return selectedFilterWorkspace }
+        guard let id = selected?.workspaceID else { return nil }
+        return workspaces.first { $0.id == id }
+    }
+
+    private func startHistoricalActionReview() {
+        guard let workspace = pendingActionReviewWorkspace else { return }
+        pendingActionReviewWorkspace = nil
+        isReviewingActions = true
+        error = nil
+        exportMessage = "正在准备“\(workspace.name)”的历史待办回溯…"
+        let snapshot = records
+        Task {
+            do {
+                let result = try await HistoricalActionReviewService(settings: .shared).run(
+                    records: snapshot, workspaceID: workspace.id
+                ) { message in
+                    Task { @MainActor in exportMessage = message }
+                }
+                for updated in result.updatedRecords {
+                    if let index = records.firstIndex(where: { $0.id == updated.id }) {
+                        records[index] = updated
+                    }
+                }
+                exportMessage = result.reviewedMeetings == 0
+                    ? "没有需要回溯的历史待办。"
+                    : "回溯完成：检查 \(result.reviewedMeetings) 场后续会议，生成 \(result.suggestions) 条待确认建议。"
+                if result.suggestions > 0 {
+                    selection = result.updatedRecords.last?.id
+                    detailTab = .actions
+                }
+            } catch {
+                self.error = "历史待办回溯失败：\(error.localizedDescription)"
+            }
+            isReviewingActions = false
+        }
+    }
+
+    private func migrateHistoricalTitlesIfNeeded() {
+        let key = "meetingHistory.didMigrateTitlesAndDates.v2"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let candidates = records.compactMap { record -> (MeetingRecord, String?, Date?)? in
+            let title = MeetingTitleResolver.historicalTitle(for: record)
+            let fileDate = MeetingDateResolver.recordedAtIfAvailable(for: record.sourceURL)
+            let date = fileDate.flatMap {
+                abs($0.timeIntervalSince(record.createdAt)) > 1 ? $0 : nil
+            }
+            guard title != nil || date != nil else { return nil }
+            return (record, title, date)
+        }
+        do {
+            for (record, title, date) in candidates {
+                let updated = try MeetingHistoryStore.updateClassification(
+                    id: record.id, title: title, createdAt: date,
+                    workspaceID: record.workspaceID,
+                    tags: record.tags ?? [])
+                if let index = records.firstIndex(where: { $0.id == updated.id }) {
+                    records[index] = updated
+                }
+            }
+            UserDefaults.standard.set(true, forKey: key)
+            if !candidates.isEmpty {
+                exportMessage = "已自动整理 \(candidates.count) 条存量会议的名称或日期。"
+            }
+        } catch {
+            self.error = "存量会议名称自动整理失败：\(error.localizedDescription)"
+        }
+    }
+
     private func toggleFavorite(_ record: MeetingRecord) {
         updateLibraryState(record, favorite: !(record.isFavorite ?? false), archived: nil)
     }
@@ -533,6 +686,46 @@ struct MeetingHistoryView: View {
             error = nil
         } catch { self.error = "保存失败：\(error.localizedDescription)" }
     }
+
+    private func saveAction(_ target: ActionEditTarget,
+                            action: StructuredMinutes.ActionItem) {
+        do {
+            let updated = try MeetingHistoryStore.updateActionItem(
+                id: target.meetingID, index: target.index, action: action)
+            if let index = records.firstIndex(where: { $0.id == updated.id }) {
+                records[index] = updated
+            }
+            editingAction = nil
+            error = nil
+        } catch {
+            self.error = "待办保存失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func pendingSuggestions(for record: MeetingRecord) -> [ActionStatusSuggestion] {
+        let applied = Set(record.appliedActionSuggestionIDs ?? [])
+        return (record.actionStatusSuggestions ?? []).filter { !applied.contains($0.id) }
+    }
+
+    private func applySuggestion(_ record: MeetingRecord, _ suggestion: ActionStatusSuggestion) {
+        do {
+            for updated in try MeetingHistoryStore.applyActionSuggestion(
+                sourceMeetingID: record.id, suggestionID: suggestion.id) {
+                if let index = records.firstIndex(where: { $0.id == updated.id }) {
+                    records[index] = updated
+                }
+            }
+            error = nil
+        } catch { self.error = "状态更新失败：\(error.localizedDescription)" }
+    }
+
+    private func applyAllSuggestions(_ record: MeetingRecord) {
+        for suggestion in pendingSuggestions(for: record) {
+            applySuggestion(records.first(where: { $0.id == record.id }) ?? record, suggestion)
+        }
+    }
+
+    private func statusText(_ value: String) -> String { value.isEmpty ? "待确认" : value }
 
     private func removePending() {
         guard let record = pendingDelete else { return }

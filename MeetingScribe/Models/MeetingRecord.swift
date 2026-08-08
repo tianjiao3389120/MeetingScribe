@@ -5,14 +5,14 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
 
     let id: UUID
     let schemaVersion: Int
-    let createdAt: Date
+    var createdAt: Date
     var title: String
     let sourcePath: String
     let duration: TimeInterval
     let backend: String
     let model: String
-    let summaryMarkdown: String
-    let structuredSummary: StructuredMinutes?
+    var summaryMarkdown: String
+    var structuredSummary: StructuredMinutes?
     let transcript: Transcript
     let speakerNames: [Int: String]
     let usedSummaryFallback: Bool
@@ -26,6 +26,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var emailDrafts: MeetingEmailDrafts?
     var isFavorite: Bool?
     var isArchived: Bool?
+    var actionStatusSuggestions: [ActionStatusSuggestion]?
+    var appliedActionSuggestionIDs: [UUID]?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
@@ -57,16 +59,33 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.emailDrafts = nil
         self.isFavorite = nil
         self.isArchived = nil
+        self.actionStatusSuggestions = nil
+        self.appliedActionSuggestionIDs = nil
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }
 
     var openActionCount: Int {
-        structuredSummary?.actionItems.filter {
-            let status = $0.status.lowercased()
-            return !status.contains("完成") && !status.contains("关闭")
-                && !status.contains("closed") && !status.contains("done")
-        }.count ?? 0
+        structuredSummary?.actionItems.filter { !$0.isClosed }.count ?? 0
+    }
+}
+
+struct ActionStatusSuggestion: Codable, Identifiable, Sendable, Equatable {
+    let id: UUID
+    let targetMeetingID: UUID
+    let targetActionID: String
+    let task: String
+    let previousStatus: String
+    let proposedStatus: String
+    let evidence: [String]
+
+    init(id: UUID = UUID(), targetMeetingID: UUID, targetActionID: String,
+         task: String, previousStatus: String, proposedStatus: String,
+         evidence: [String]) {
+        self.id = id; self.targetMeetingID = targetMeetingID
+        self.targetActionID = targetActionID; self.task = task
+        self.previousStatus = previousStatus; self.proposedStatus = proposedStatus
+        self.evidence = evidence
     }
 }
 
