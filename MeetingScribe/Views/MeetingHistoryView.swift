@@ -12,7 +12,11 @@ struct MeetingHistoryView: View {
     @State private var pendingDelete: MeetingRecord?
     @State private var exportMessage: String?
     @State private var workspaces: [MeetingWorkspace] = []
-    @State private var scope: MeetingLibraryScope = .all
+    @State private var scope: MeetingLibraryScope = .recent
+    @AppStorage("meetingLibrary.scope") private var storedScope = "recent"
+    @AppStorage("meetingLibrary.sort") private var storedSort = MeetingLibrarySort.newest.rawValue
+    @AppStorage("meetingLibrary.workspacesExpanded") private var workspacesExpanded = true
+    @AppStorage("meetingLibrary.tagsExpanded") private var tagsExpanded = true
     @State private var showWorkspaceManager = false
     @State private var editingClassification: MeetingRecord?
     @State private var dashboardWorkspace: MeetingWorkspace?
@@ -35,6 +39,30 @@ struct MeetingHistoryView: View {
 
     private var selected: MeetingRecord? {
         records.first { $0.id == selection }
+    }
+
+    private var sort: MeetingLibrarySort {
+        get { MeetingLibrarySort(rawValue: storedSort) ?? .newest }
+        nonmutating set { storedSort = newValue.rawValue }
+    }
+
+    private var availableTags: [(name: String, count: Int)] {
+        var values: [String: (name: String, count: Int)] = [:]
+        for record in records where record.isArchived != true {
+            for tag in record.tags ?? [] {
+                let name = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { continue }
+                let key = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                    .lowercased()
+                let current = values[key]
+                values[key] = (current?.name ?? name, (current?.count ?? 0) + 1)
+            }
+        }
+        return values.values.sorted {
+            $0.count == $1.count
+                ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                : $0.count > $1.count
+        }
     }
 
     var body: some View {
@@ -68,11 +96,13 @@ struct MeetingHistoryView: View {
         .frame(width: 1160, height: 700)
         .searchable(text: $query, prompt: "组合搜索：空间 标签 标题 纪要 说话人")
         .onAppear(perform: load)
+        .onChange(of: scope) { _, value in storedScope = serializedScope(value) }
         .sheet(isPresented: $showWorkspaceManager, onDismiss: loadWorkspaces) {
             WorkspaceManagementView()
         }
         .sheet(item: $editingClassification) { record in
-            MeetingClassificationView(record: record, workspaces: workspaces) { updated in
+            MeetingClassificationView(record: record, workspaces: workspaces,
+                                      tagSuggestions: MeetingTags.suggestions(from: records)) { updated in
                 if let index = records.firstIndex(where: { $0.id == updated.id }) {
                     records[index] = updated
                 }
@@ -135,26 +165,45 @@ struct MeetingHistoryView: View {
                 }.buttonStyle(.borderless).help("管理会议空间")
             }.padding(12)
             Divider()
-            List(selection: $scope) {
+            List {
                 Section("智能分类") {
+                    scopeRow("最近会议", icon: "clock", count: MeetingLibrary.filter(records, scope: .recent).count, scope: .recent)
                     scopeRow("全部会议", icon: "tray.full", count: MeetingLibrary.filter(records, scope: .all).count, scope: .all)
-                    scopeRow("最近 30 天", icon: "clock", count: MeetingLibrary.filter(records, scope: .recent).count, scope: .recent)
                     scopeRow("待办未完成", icon: "checklist", count: MeetingLibrary.filter(records, scope: .pendingActions).count, scope: .pendingActions)
-                    scopeRow("已收藏", icon: "star", count: MeetingLibrary.filter(records, scope: .favorites).count, scope: .favorites)
                     scopeRow("未归组", icon: "questionmark.folder", count: MeetingLibrary.filter(records, scope: .ungrouped).count, scope: .ungrouped)
-                    scopeRow("已归档", icon: "archivebox", count: MeetingLibrary.filter(records, scope: .archived).count, scope: .archived)
                 }
-                ForEach(MeetingWorkspace.Kind.allCases) { kind in
-                    let values = workspaces.filter { $0.kind == kind }
-                    if !values.isEmpty {
-                        Section(kind.label) {
-                            ForEach(values) { workspace in
-                                Label(workspace.name, systemImage: kind == .recurring ? "repeat" : "folder")
-                                    .tag(MeetingLibraryScope.workspace(workspace.id))
-                                    .contextMenu {
-                                        Button("查看空间总览") { dashboardWorkspace = workspace }
-                                    }
+                Section {
+                    DisclosureGroup(isExpanded: $workspacesExpanded) {
+                        ForEach(MeetingWorkspace.Kind.allCases) { kind in
+                            let values = workspaces.filter { $0.kind == kind }
+                            if !values.isEmpty {
+                                Text(kind.label)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                ForEach(values) { workspace in
+                                    scopeRow(workspace.name,
+                                             icon: kind == .recurring ? "repeat" : "folder",
+                                             count: MeetingLibrary.filter(records, scope: .workspace(workspace.id)).count,
+                                             scope: .workspace(workspace.id))
+                                        .contextMenu {
+                                            Button("查看空间总览") { dashboardWorkspace = workspace }
+                                        }
+                                }
                             }
+                        }
+                    } label: {
+                        Label("会议空间", systemImage: "folder")
+                    }
+                }
+                if !availableTags.isEmpty {
+                    Section {
+                        DisclosureGroup(isExpanded: $tagsExpanded) {
+                            ForEach(availableTags, id: \.name) { tag in
+                                scopeRow(tag.name, icon: "tag", count: tag.count,
+                                         scope: .meetingTag(tag.name))
+                            }
+                        } label: {
+                            Label("会议标签", systemImage: "tag")
                         }
                     }
                 }
@@ -164,11 +213,21 @@ struct MeetingHistoryView: View {
 
     private func scopeRow(_ title: String, icon: String, count: Int,
                           scope: MeetingLibraryScope) -> some View {
-        HStack {
-            Label(title, systemImage: icon)
-            Spacer()
-            Text("\(count)").font(.caption).foregroundStyle(.secondary)
-        }.tag(scope)
+        Button {
+            self.scope = scope
+        } label: {
+            HStack {
+                Label(title, systemImage: icon)
+                Spacer()
+                Text("\(count)").font(.caption).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(self.scope == scope ? Color.accentColor.opacity(0.16) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
     }
 
     private var meetingList: some View {
@@ -176,6 +235,40 @@ struct MeetingHistoryView: View {
             HStack {
                 Text(scopeTitle).font(.headline)
                 Spacer()
+                Menu {
+                    Button {
+                        scope = scope == .favorites ? .all : .favorites
+                    } label: {
+                        Label("已收藏（\(MeetingLibrary.filter(records, scope: .favorites).count)）",
+                              systemImage: scope == .favorites ? "checkmark" : "star")
+                    }
+                    Button {
+                        scope = scope == .archived ? .all : .archived
+                    } label: {
+                        Label("已归档（\(MeetingLibrary.filter(records, scope: .archived).count)）",
+                              systemImage: scope == .archived ? "checkmark" : "archivebox")
+                    }
+                    if scope == .favorites || scope == .archived {
+                        Divider()
+                        Button("清除状态筛选") { scope = .all }
+                    }
+                } label: {
+                    Label("筛选", systemImage: "line.3.horizontal.decrease.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Menu {
+                    Picker("排序", selection: Binding(get: { sort }, set: { sort = $0 })) {
+                        ForEach(MeetingLibrarySort.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                } label: {
+                    Label(sort.label, systemImage: "arrow.up.arrow.down")
+                        .labelStyle(.titleAndIcon)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
                 if let workspace = selectedFilterWorkspace {
                     Button { dashboardWorkspace = workspace } label: {
                         Image(systemName: "chart.bar.doc.horizontal")
@@ -188,9 +281,9 @@ struct MeetingHistoryView: View {
                                        systemImage: "doc.text.magnifyingglass")
             } else {
                 List(selection: $selection) {
-                    ForEach(listSections, id: \.0) { section in
-                        Section(section.0) {
-                            ForEach(section.1) { meetingRow($0).tag($0.id) }
+                    ForEach(listSections) { section in
+                        Section(section.title) {
+                            ForEach(section.records) { meetingRow($0).tag($0.id) }
                         }
                     }
                 }
@@ -206,21 +299,26 @@ struct MeetingHistoryView: View {
                 Spacer()
                 if record.emailDrafts != nil { Image(systemName: "envelope.fill").foregroundStyle(.secondary) }
             }
-            Text(record.createdAt.formatted(date: .abbreviated, time: .shortened))
-                .font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 8) {
+                Text(record.createdAt.formatted(date: .abbreviated, time: .shortened))
+                Text(TranscriptSegment.humanDuration(record.duration))
                 if let workspace = workspace(for: record) {
                     Label(workspace.name, systemImage: workspace.kind == .recurring ? "repeat" : "folder")
+                }
+            }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            HStack(spacing: 8) {
+                if let tags = record.tags, !tags.isEmpty {
+                    Text(tags.prefix(2).map { "#\($0)" }.joined(separator: "  "))
+                        .foregroundStyle(Color.accentColor)
+                    if tags.count > 2 {
+                        Text("+\(tags.count - 2)").foregroundStyle(.secondary)
+                    }
                 }
                 if record.openActionCount > 0 {
                     Label("\(record.openActionCount) 待办", systemImage: "checklist")
                         .foregroundStyle(.orange)
                 }
             }.font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            if let tags = record.tags, !tags.isEmpty {
-                Text(tags.map { "#\($0)" }.joined(separator: "  "))
-                    .font(.caption2).foregroundStyle(Color.accentColor).lineLimit(1)
-            }
         }.padding(.vertical, 4)
     }
 
@@ -342,42 +440,67 @@ struct MeetingHistoryView: View {
     private var scopeTitle: String {
         switch scope {
         case .all: return "全部会议"
-        case .recent: return "最近 30 天"
+        case .recent: return "最近会议"
         case .pendingActions: return "待办未完成"
         case .favorites: return "已收藏"
         case .ungrouped: return "未归组"
         case .archived: return "已归档"
         case .workspace(let id): return workspaces.first { $0.id == id }?.name ?? "会议空间"
+        case .meetingTag(let tag): return "标签 · \(tag)"
         }
     }
 
-    private var listSections: [(String, [MeetingRecord])] {
-        var result: [(String, [MeetingRecord])] = []
-        let recurringIDs = Set(workspaces.filter { $0.kind == .recurring }.map(\.id))
-        for workspace in workspaces.filter({ $0.kind == .recurring }) {
-            let values = filtered.filter { $0.workspaceID == workspace.id }
-            if !values.isEmpty { result.append(("\(workspace.name) · 固定会议", values)) }
-        }
-        let regular = filtered.filter { record in
-            guard let id = record.workspaceID else { return true }
-            return !recurringIDs.contains(id)
-        }
-        let groups = Dictionary(grouping: regular) {
-            $0.createdAt.formatted(.dateTime.year().month(.wide))
-        }
-        result += groups.map { ($0.key, $0.value) }
-            .sorted { ($0.1.first?.createdAt ?? .distantPast) > ($1.1.first?.createdAt ?? .distantPast) }
-        return result
+    private var listSections: [MeetingLibrarySection] {
+        MeetingLibrary.timeSections(filtered, sort: sort)
     }
 
     private func load() {
         do {
             records = try MeetingHistoryStore.loadAll()
             loadWorkspaces()
-            selection = records.first?.id
+            scope = restoredScope(storedScope)
+            selection = listSections.first?.records.first?.id
             error = nil
         } catch {
             self.error = "读取历史失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func serializedScope(_ value: MeetingLibraryScope) -> String {
+        switch value {
+        case .all: return "all"
+        case .recent: return "recent"
+        case .pendingActions: return "pendingActions"
+        case .favorites: return "favorites"
+        case .ungrouped: return "ungrouped"
+        case .archived: return "archived"
+        case .workspace(let id): return "workspace:\(id.uuidString)"
+        case .meetingTag(let tag): return "tag:\(tag)"
+        }
+    }
+
+    private func restoredScope(_ value: String) -> MeetingLibraryScope {
+        switch value {
+        case "all": return .all
+        case "pendingActions": return .pendingActions
+        case "favorites": return .favorites
+        case "ungrouped": return .ungrouped
+        case "archived": return .archived
+        default:
+            if value.hasPrefix("workspace:"),
+               let id = UUID(uuidString: String(value.dropFirst("workspace:".count))),
+               workspaces.contains(where: { $0.id == id }) {
+                return .workspace(id)
+            }
+            if value.hasPrefix("tag:") {
+                let tag = String(value.dropFirst("tag:".count))
+                if availableTags.contains(where: {
+                    $0.name.localizedCaseInsensitiveCompare(tag) == .orderedSame
+                }) {
+                    return .meetingTag(tag)
+                }
+            }
+            return .recent
         }
     }
 

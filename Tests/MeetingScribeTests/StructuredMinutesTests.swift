@@ -2,6 +2,31 @@ import XCTest
 @testable import MeetingScribe
 
 final class StructuredMinutesTests: XCTestCase {
+    func testGeneratedMeetingTitleReplacesOnlyDefaultFilename() {
+        let source = URL(fileURLWithPath: "/tmp/Screen Recording 2026-08-08.mov")
+
+        XCTAssertEqual(MeetingTitleResolver.resolve(
+            requestedTitle: "Screen Recording 2026-08-08", sourceURL: source,
+            generatedTitle: "中银香港 HIDS 阶段进展双周会"),
+            "中银香港 HIDS 阶段进展双周会")
+        XCTAssertEqual(MeetingTitleResolver.resolve(
+            requestedTitle: "我手动设置的周会", sourceURL: source,
+            generatedTitle: "模型生成的名称"),
+            "我手动设置的周会")
+    }
+
+    func testGeneratedMeetingTitleRejectsGenericAndCleansDecoration() {
+        let source = URL(fileURLWithPath: "/tmp/recording.mp4")
+
+        XCTAssertEqual(MeetingTitleResolver.resolve(
+            requestedTitle: "recording", sourceURL: source, generatedTitle: "会议纪要"),
+            "recording")
+        XCTAssertEqual(MeetingTitleResolver.resolve(
+            requestedTitle: "recording", sourceURL: source,
+            generatedTitle: "标题：**日志治理方案评审与上线安排**\n补充说明"),
+            "日志治理方案评审与上线安排")
+    }
+
     private let json = #"""
     {
       "title":"会议纪要","nature":"双周会","duration":"40 分钟",

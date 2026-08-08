@@ -3,6 +3,7 @@ import SwiftUI
 struct MeetingClassificationView: View {
     let record: MeetingRecord
     let workspaces: [MeetingWorkspace]
+    let tagSuggestions: [String]
     let onSaved: (MeetingRecord) -> Void
     let onCancel: () -> Void
 
@@ -11,9 +12,10 @@ struct MeetingClassificationView: View {
     @State private var error: String?
     @State private var title: String
 
-    init(record: MeetingRecord, workspaces: [MeetingWorkspace],
+    init(record: MeetingRecord, workspaces: [MeetingWorkspace], tagSuggestions: [String],
          onSaved: @escaping (MeetingRecord) -> Void, onCancel: @escaping () -> Void) {
         self.record = record; self.workspaces = workspaces
+        self.tagSuggestions = tagSuggestions
         self.onSaved = onSaved; self.onCancel = onCancel
         _workspaceID = State(initialValue: record.workspaceID)
         _tagsText = State(initialValue: (record.tags ?? []).joined(separator: ", "))
@@ -30,7 +32,7 @@ struct MeetingClassificationView: View {
                     Text("\(workspace.kind.label) · \(workspace.name)").tag(Optional(workspace.id))
                 }
             }
-            TextField("标签，用逗号分隔", text: $tagsText)
+            TagInputView(text: $tagsText, suggestions: tagSuggestions)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()
@@ -41,15 +43,13 @@ struct MeetingClassificationView: View {
     }
 
     private func save() {
-        let tags = tagsText.split(whereSeparator: { $0 == "," || $0 == "，" })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        let tags = MeetingTags.parse(tagsText)
         do {
             let cleanedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleanedTitle.isEmpty else { error = "会议名称不能为空。"; return }
             let updated = try MeetingHistoryStore.updateClassification(
                 id: record.id, title: cleanedTitle,
-                workspaceID: workspaceID, tags: Array(Set(tags)).sorted())
+                workspaceID: workspaceID, tags: tags)
             onSaved(updated)
         } catch { self.error = "保存失败：\(error.localizedDescription)" }
     }

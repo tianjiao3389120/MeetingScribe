@@ -3,7 +3,7 @@ import Foundation
 /// Minimal WebSocket client for OpenAI Realtime Transcription.
 /// The capture service owns audio; this type only transports PCM and reports text.
 final class OpenAIRealtimeTranscriptionService: @unchecked Sendable {
-    private static let commitIntervalBytes = 24_000 * 2 * 5
+    private static let stopSilenceBytes = 24_000 * 2
 
     enum Event: Sendable {
         case delta(String)
@@ -38,7 +38,7 @@ final class OpenAIRealtimeTranscriptionService: @unchecked Sendable {
     private var bytesSent = 0
     private var uncommittedBytes = 0
 
-    init(apiKey: String, model: String = "gpt-live-transcribe",
+    init(apiKey: String, model: String = "gpt-realtime-whisper",
          language: String? = nil, prompt: String? = nil) throws {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw Failure.missingAPIKey }
@@ -70,18 +70,7 @@ final class OpenAIRealtimeTranscriptionService: @unchecked Sendable {
             // The server-created event is read by the receiver task. Send the
             // configuration immediately after the handshake so no first-event
             // timing assumption can block the session.
-            try await sendJSON([
-                "type": "session.update",
-                "session": [
-                    "type": "transcription",
-                    "audio": [
-                        "input": [
-                            "format": ["type": "audio/pcm", "rate": 24000],
-                            "transcription": transcriptionOptions,
-                        ],
-                    ],
-                ],
-            ])
+            try await sendJSON(sessionUpdatePayload)
         } catch {
             throw Failure.server("WebSocket 已打开，但发送 session.update 失败：\(describe(error))")
         }
@@ -96,9 +85,6 @@ final class OpenAIRealtimeTranscriptionService: @unchecked Sendable {
         ])
         bytesSent += data.count
         uncommittedBytes += data.count
-        if uncommittedBytes >= Self.commitIntervalBytes {
-            try await commit()
-        }
     }
 
     func commit() async throws {
@@ -107,6 +93,13 @@ final class OpenAIRealtimeTranscriptionService: @unchecked Sendable {
         guard uncommittedBytes >= 24_000 * 2 / 10 else { return }
         try await sendJSON(["type": "input_audio_buffer.commit"])
         uncommittedBytes = 0
+    }
+
+    /// Server VAD owns normal segmentation. Appending silence on shutdown lets
+    /// it close a final utterance that ended immediately before Stop was hit.
+    func finishAudio() async throws {
+        guard socket != nil, uncommittedBytes > 0 else { return }
+        try await sendAudio(Data(repeating: 0, count: Self.stopSilenceBytes))
     }
 
     func receive() async throws -> Event {
@@ -154,6 +147,27 @@ final class OpenAIRealtimeTranscriptionService: @unchecked Sendable {
     }
 
     var sentBytes: Int { bytesSent }
+
+    var sessionUpdatePayload: [String: Any] {
+        [
+            "type": "session.update",
+            "session": [
+                "type": "transcription",
+                "audio": [
+                    "input": [
+                        "format": ["type": "audio/pcm", "rate": 24000],
+                        "transcription": transcriptionOptions,
+                        "turn_detection": [
+                            "type": "server_vad",
+                            "threshold": 0.45,
+                            "prefix_padding_ms": 300,
+                            "silence_duration_ms": 800,
+                        ],
+                    ],
+                ],
+            ],
+        ]
+    }
 
     private var transcriptionOptions: [String: Any] {
         var value: [String: Any] = ["model": model]

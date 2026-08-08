@@ -130,6 +130,31 @@ enum RecognitionScenario: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+enum RealtimeTranscriptionQuality: String, CaseIterable, Identifiable, Codable {
+    case realtime
+    case accurate
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .realtime: "实时优先"
+        case .accurate: "准确优先"
+        }
+    }
+    var model: String {
+        switch self {
+        case .realtime: "gpt-realtime-whisper"
+        case .accurate: "gpt-4o-transcribe"
+        }
+    }
+    var explanation: String {
+        switch self {
+        case .realtime: "更快显示增量字幕，适合持续观看。"
+        case .accurate: "优先降低错词率，最终字幕可能稍慢。"
+        }
+    }
+}
+
 @Observable
 final class Settings {
     static let shared = Settings()
@@ -176,6 +201,9 @@ final class Settings {
     /// headcount is markedly more reliable — automatic clustering over-splits.
     var expectedSpeakerCount: Int {
         didSet { defaults.set(expectedSpeakerCount, forKey: Keys.speakerCount) }
+    }
+    var realtimeTranscriptionQuality: RealtimeTranscriptionQuality {
+        didSet { defaults.set(realtimeTranscriptionQuality.rawValue, forKey: Keys.realtimeQuality) }
     }
 
     // MARK: OpenAI-compatible providers
@@ -264,6 +292,7 @@ final class Settings {
         static let providerBaseURL = "providerBaseURL"
         static let providerModel = "providerModel"
         static let providerVision = "providerVisionOverride"
+        static let realtimeQuality = "realtimeTranscriptionQuality"
     }
 
     static let defaultGlossary = """
@@ -306,6 +335,8 @@ final class Settings {
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
         separateSpeakers = defaults.object(forKey: Keys.separateSpeakers) as? Bool ?? false
         expectedSpeakerCount = defaults.object(forKey: Keys.speakerCount) as? Int ?? 0
+        realtimeTranscriptionQuality = RealtimeTranscriptionQuality(
+            rawValue: defaults.string(forKey: Keys.realtimeQuality) ?? "") ?? .realtime
 
         let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.deepseek.id
         providerID = storedProvider

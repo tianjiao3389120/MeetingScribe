@@ -56,7 +56,7 @@ enum RuntimeDiagnostics {
         if !openAIKeyExists {
             realtimeDetail = "尚未配置独立的 OpenAI Realtime API key"
         } else {
-            realtimeDetail = "独立 OpenAI Realtime 配置已就绪"
+            realtimeDetail = "独立 OpenAI Realtime 配置已就绪 · \(settings.realtimeTranscriptionQuality.model)"
         }
         results.append(.init(
             id: "realtime",

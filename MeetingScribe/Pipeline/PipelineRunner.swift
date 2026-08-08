@@ -375,6 +375,16 @@ final class PipelineRunner {
         structuredSummary = result.structured
         usedSummaryFallback = result.usedFallback
 
+        let resolvedTitle = MeetingTitleResolver.resolve(
+            requestedTitle: bundle.title,
+            sourceURL: bundle.sourceURL,
+            generatedTitle: result.structured?.title)
+        if resolvedTitle != bundle.title {
+            var updatedAssets = bundle
+            updatedAssets.customTitle = resolvedTitle
+            assets = updatedAssets
+        }
+
         let settings = Settings.shared
         let model: String
         switch settings.backend {
@@ -383,7 +393,7 @@ final class PipelineRunner {
         case .openAICompatible: model = settings.providerModel
         }
         let record = MeetingRecord(
-            title: bundle.title,
+            title: resolvedTitle,
             sourcePath: bundle.sourceURL.path,
             duration: bundle.duration,
             backend: settings.provider.name,

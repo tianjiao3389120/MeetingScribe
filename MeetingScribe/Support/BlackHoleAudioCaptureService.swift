@@ -23,6 +23,8 @@ final class BlackHoleAudioCaptureService: @unchecked Sendable {
     private let pcmContinuation: AsyncStream<Data>.Continuation
     private let lock = NSLock()
     private var sourceFormat: AVAudioFormat?
+    private var converter: AVAudioConverter?
+    private var conversionFormat: AVAudioFormat?
     private var sourceFrames: Int64 = 0
     private var outputFrames: Int64 = 0
     private var peak: Float = 0
@@ -66,6 +68,12 @@ final class BlackHoleAudioCaptureService: @unchecked Sendable {
             throw Failure.noInputDevice
         }
         sourceFormat = format
+        let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: Double(Self.targetSampleRate),
+                                         channels: 1, interleaved: false)
+        conversionFormat = targetFormat
+        converter = targetFormat.flatMap { AVAudioConverter(from: format, to: $0) }
+        converter?.sampleRateConverterQuality = AVAudioQuality.max.rawValue
         sourceDescription = "\(device.name) (id \(device.id)) · \(Int(format.sampleRate)) Hz · \(format.channelCount) ch"
         lock.lock()
         peak = 0
@@ -75,7 +83,7 @@ final class BlackHoleAudioCaptureService: @unchecked Sendable {
         log("输入设备：\(device.name) (id \(device.id))")
         log(String(format: "源格式：%.0f Hz / %d ch / commonFormat=%d",
                    format.sampleRate, format.channelCount, Int(format.commonFormat.rawValue)))
-        log("目标格式：24,000 Hz / mono / signed 16-bit little-endian PCM")
+        log("目标格式：24,000 Hz / mono / signed 16-bit little-endian PCM（AVAudioConverter 高质量重采样）")
         log("输出文件：\(writer.url.path)")
 
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
@@ -99,6 +107,8 @@ final class BlackHoleAudioCaptureService: @unchecked Sendable {
         let outputFrames = self.outputFrames
         lock.unlock()
         writer.finish()
+        converter = nil
+        conversionFormat = nil
         pcmContinuation.finish()
 
         log("采集已停止")
@@ -137,6 +147,40 @@ final class BlackHoleAudioCaptureService: @unchecked Sendable {
     }
 
     private func pcm16MonoData(from buffer: AVAudioPCMBuffer) -> Data? {
+        if let converted = convertedPCM16MonoData(from: buffer) { return converted }
+        return linearPCM16MonoData(from: buffer)
+    }
+
+    private func convertedPCM16MonoData(from buffer: AVAudioPCMBuffer) -> Data? {
+        guard let converter, let conversionFormat else { return nil }
+        let ratio = conversionFormat.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * ratio) + 64)
+        guard let output = AVAudioPCMBuffer(pcmFormat: conversionFormat,
+                                            frameCapacity: max(capacity, 1)) else { return nil }
+        var supplied = false
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+            guard !supplied else {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, conversionError == nil, output.frameLength > 0,
+              let samples = output.floatChannelData?[0] else { return nil }
+        var result = Data(capacity: Int(output.frameLength) * 2)
+        for index in 0..<Int(output.frameLength) {
+            let value = Int16(max(-1, min(1, samples[index])) * Float(Int16.max)).littleEndian
+            withUnsafeBytes(of: value) { result.append(contentsOf: $0) }
+        }
+        return result
+    }
+
+    /// Compatibility fallback for unusual device formats rejected by
+    /// AVAudioConverter. Normal BlackHole capture uses the converter above.
+    private func linearPCM16MonoData(from buffer: AVAudioPCMBuffer) -> Data? {
         let frameCount = Int(buffer.frameLength)
         let channels = Int(buffer.format.channelCount)
         let sampleRate = buffer.format.sampleRate

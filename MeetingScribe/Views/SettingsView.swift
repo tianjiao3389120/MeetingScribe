@@ -31,6 +31,13 @@ struct SettingsView: View {
                 }
 
                 Section("实时字幕识别") {
+                    Picker("默认识别质量", selection: $settings.realtimeTranscriptionQuality) {
+                        ForEach(RealtimeTranscriptionQuality.allCases) { quality in
+                            Text("\(quality.displayName) · \(quality.model)").tag(quality)
+                        }
+                    }
+                    Text(settings.realtimeTranscriptionQuality.explanation)
+                        .font(.caption).foregroundStyle(.secondary)
                     SecureField("OpenAI Realtime API key", text: $realtimeKey,
                                 prompt: Text(hasRealtimeKey ? "已保存；输入新值可替换" : "sk-…"))
                     HStack {

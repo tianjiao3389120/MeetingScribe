@@ -85,13 +85,21 @@ struct RealtimeTranscriptionView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 16) {
+        VStack(spacing: 9) {
+            HStack(spacing: 16) {
                 Picker("识别场景", selection: $model.scenario) {
                     ForEach(RecognitionScenario.allCases) { scenario in
                         Text(scenario.displayName).tag(scenario)
                     }
                 }
                 .frame(maxWidth: 330)
+                .disabled(model.isRunning)
+                Picker("识别质量", selection: $model.quality) {
+                    ForEach(RealtimeTranscriptionQuality.allCases) { quality in
+                        Text(quality.displayName).tag(quality)
+                    }
+                }
+                .frame(width: 150)
                 .disabled(model.isRunning)
                 Toggle("简体中文翻译", isOn: $model.translationEnabled)
                     .toggleStyle(.switch)
@@ -122,8 +130,20 @@ struct RealtimeTranscriptionView: View {
                     }
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
+            HStack {
+                TextField("本场识别提示：客户、人名、产品名、英文缩写和会议主题",
+                          text: $model.sessionHint)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(model.isRunning)
+                    .onChange(of: model.sessionHint) { _, value in
+                        if value.count > 500 { model.sessionHint = String(value.prefix(500)) }
+                    }
+                Text("\(model.sessionHint.count)/500")
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
 
     }
 
@@ -317,6 +337,10 @@ private final class RealtimeTranscriptionViewModel {
     var partialText = ""
     var lines: [RealtimeSubtitleLine] = []
     var scenario = Settings.shared.recognitionScenario
+    var quality = Settings.shared.realtimeTranscriptionQuality {
+        didSet { Settings.shared.realtimeTranscriptionQuality = quality }
+    }
+    var sessionHint = ""
     var translationEnabled = true
     var subtitleSize: CGFloat = 17
     var sentBytes = 0
@@ -385,7 +409,7 @@ private final class RealtimeTranscriptionViewModel {
         Task {
             await sender?.value
             if let capture, let outputURL { capture.copyWAV(to: outputURL) }
-            try? await realtime?.commit()
+            try? await realtime?.finishAudio()
             try? await Task.sleep(for: .seconds(2))
             receiver?.cancel()
             realtime?.close()
@@ -433,10 +457,12 @@ private final class RealtimeTranscriptionViewModel {
             case .english: "en"
             case .autoMultilingual, .hongKongMixed: nil
             }
-            let prompt = [scenario.transcriptionHint, Transcriber.trimGlossary(Settings.shared.glossary)]
+            let prompt = [scenario.transcriptionHint,
+                          Transcriber.trimGlossary(Settings.shared.glossary),
+                          sessionHint.trimmingCharacters(in: .whitespacesAndNewlines)]
                 .filter { !$0.isEmpty }.joined(separator: " ")
             let realtime = try OpenAIRealtimeTranscriptionService(
-                apiKey: key, language: language, prompt: prompt)
+                apiKey: key, model: quality.model, language: language, prompt: prompt)
             if translationEnabled {
                 do {
                     translator = try RealtimeSubtitleTranslator(

@@ -208,4 +208,81 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertEqual(MeetingLibrary.filter([updated], scope: .archived).count, 1)
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).first?.isFavorite, true)
     }
+
+    func testLibrarySortingAndTimeSections() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 8, hour: 12)))
+
+        func record(_ title: String, daysAgo: Int, hour: Int = 9) throws -> MeetingRecord {
+            let day = try XCTUnwrap(calendar.date(byAdding: .day, value: -daysAgo, to: now))
+            let date = try XCTUnwrap(calendar.date(bySettingHour: hour, minute: 0, second: 0, of: day))
+            return MeetingRecord(
+                createdAt: date, title: title, sourcePath: "/\(title).mov", duration: 10,
+                backend: "测试", model: "mock", summaryMarkdown: "纪要",
+                structuredSummary: nil, transcript: Transcript(segments: []),
+                speakerNames: [:], usedSummaryFallback: false)
+        }
+
+        let records = try [
+            record("今天会议", daysAgo: 0),
+            record("昨天会议", daysAgo: 1),
+            record("较早会议", daysAgo: 20),
+        ]
+
+        XCTAssertEqual(MeetingLibrary.sorted(records, by: .newest).map(\.title),
+                       ["今天会议", "昨天会议", "较早会议"])
+        XCTAssertEqual(MeetingLibrary.sorted(records, by: .oldest).map(\.title),
+                       ["较早会议", "昨天会议", "今天会议"])
+
+        let newest = MeetingLibrary.timeSections(
+            records, sort: .newest, now: now, calendar: calendar)
+        XCTAssertEqual(newest.map(\.title), ["今天", "昨天", "更早"])
+        XCTAssertEqual(newest.flatMap(\.records).map(\.title),
+                       ["今天会议", "昨天会议", "较早会议"])
+
+        let oldest = MeetingLibrary.timeSections(
+            records, sort: .oldest, now: now, calendar: calendar)
+        XCTAssertEqual(oldest.map(\.title), ["更早", "昨天", "今天"])
+
+        let alphabetic = MeetingLibrary.timeSections(
+            records, sort: .title, now: now, calendar: calendar)
+        XCTAssertEqual(alphabetic.map(\.title), ["按名称"])
+        XCTAssertEqual(alphabetic[0].records.map(\.title), ["较早会议", "今天会议", "昨天会议"])
+    }
+
+    func testLibraryTagScopeMatchesCaseInsensitivelyAndExcludesArchived() {
+        var active = MeetingRecord(
+            title: "客户周会", sourcePath: "/active.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false, tags: ["HIDS", "双周会"])
+        var archived = active
+        archived.title = "已归档会议"
+        archived.isArchived = true
+
+        XCTAssertEqual(MeetingLibrary.filter(
+            [active, archived], scope: .meetingTag("hids")).map(\.title), ["客户周会"])
+        active.tags = []
+        XCTAssertTrue(MeetingLibrary.filter([active], scope: .meetingTag("HIDS")).isEmpty)
+    }
+
+    func testMeetingTagSuggestionsAndToggleDeduplicateCaseInsensitively() {
+        let first = MeetingRecord(
+            title: "会议一", sourcePath: "/one.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false, tags: ["HIDS", "双周会"])
+        var second = first
+        second.title = "会议二"
+        second.tags = ["hids", "客户"]
+
+        let suggestions = MeetingTags.suggestions(from: [first, second])
+        XCTAssertEqual(suggestions.first, "HIDS")
+        XCTAssertEqual(Set(suggestions.dropFirst()), Set(["客户", "双周会"]))
+        XCTAssertEqual(MeetingTags.toggling("双周会", in: "HIDS"), "HIDS, 双周会")
+        XCTAssertEqual(MeetingTags.toggling("hids", in: "HIDS, 双周会"), "双周会")
+        XCTAssertEqual(MeetingTags.parse("HIDS， hids, 双周会"), ["HIDS", "双周会"])
+    }
 }

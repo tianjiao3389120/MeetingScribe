@@ -9,6 +9,7 @@ struct MeetingPreparationView: View {
     @State private var workspaces: [MeetingWorkspace] = []
     @State private var selectedWorkspaceID: UUID?
     @State private var tagsText = ""
+    @State private var tagSuggestions: [String] = []
     @State private var materials: [SupportingMaterial] = []
     @State private var extracting = false
     @State private var materialError: String?
@@ -43,6 +44,9 @@ struct MeetingPreparationView: View {
             Form {
                 Section("本次会议") {
                     TextField("会议名称", text: $meetingTitle)
+                    Text("保持默认文件名时，分析完成后会根据会议内容自动提炼名称；手动修改的名称不会被覆盖。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Picker("纪要模板", selection: $selectedTemplateID) {
                         ForEach(MinutesTemplate.all) { Text($0.name).tag($0.id) }
                     }
@@ -99,7 +103,8 @@ struct MeetingPreparationView: View {
                             }.padding(4)
                         }
                     }
-                    TextField("标签，用逗号分隔，例如：双周会, 日志治理", text: $tagsText)
+                    TagInputView(text: $tagsText, suggestions: tagSuggestions,
+                                 placeholder: "标签，例如：双周会, 日志治理")
                 }
 
                 Section("本次会议材料") {
@@ -151,6 +156,8 @@ struct MeetingPreparationView: View {
 
     private func loadWorkspaces() {
         workspaces = (try? MeetingWorkspaceStore.load()) ?? []
+        tagSuggestions = MeetingTags.suggestions(
+            from: (try? MeetingHistoryStore.loadAll()) ?? [])
     }
 
     private func createWorkspace() {
@@ -214,15 +221,13 @@ struct MeetingPreparationView: View {
     }
 
     private func start() {
-        let tags = tagsText.split(whereSeparator: { $0 == "," || $0 == "，" })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        let tags = MeetingTags.parse(tagsText)
         let title = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { materialError = "会议名称不能为空。"; return }
         onStart(title, selectedWorkspace,
                 meetingContext.trimmingCharacters(in: .whitespacesAndNewlines),
                 selectedTemplateID,
-                Array(Set(tags)).sorted(), materials)
+                tags, materials)
     }
 
     private func icon(for kind: SupportingMaterial.Kind) -> String {
