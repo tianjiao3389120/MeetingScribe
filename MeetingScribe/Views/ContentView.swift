@@ -77,6 +77,10 @@ struct ContentView: View {
         }
         .onAppear {
             if interruptedJob == nil { interruptedJob = PendingJobStore.load() }
+            Task { await AutomaticBackupManager.runIfNeeded() }
+        }
+        .onChange(of: runner.stage) { _, stage in
+            if stage == .done { Task { await AutomaticBackupManager.runIfNeeded() } }
         }
         .alert("发现未完成的会议处理", isPresented: Binding(
             get: { interruptedJob != nil },

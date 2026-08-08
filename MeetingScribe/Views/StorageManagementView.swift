@@ -1,9 +1,16 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct StorageManagementView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var overview = StorageOverview.load()
     @State private var confirmRealtimeRemoval = false
+    @State private var pendingRestore: URL?
+    @State private var backupMessage: String?
+    @State private var backupError: String?
+    @State private var backupBusy = false
+    @State private var automaticBackup = AutomaticBackupConfiguration.load()
+    @State private var automaticBackupMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,6 +34,56 @@ struct StorageManagementView: View {
                             at: MeetingHistoryStore.defaultDirectory, withIntermediateDirectories: true)
                         NSWorkspace.shared.open(MeetingHistoryStore.defaultDirectory)
                     }
+                }
+                Section("备份与恢复") {
+                    HStack {
+                        Button("创建完整备份…") { chooseBackupDestination() }
+                        Button("从备份恢复…") { chooseRestoreArchive() }
+                    }
+                    .disabled(backupBusy)
+                    if backupBusy { ProgressView().controlSize(.small) }
+                    if let message = backupError ?? backupMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(backupError == nil ? Color.secondary : Color.red)
+                            .textSelection(.enabled)
+                    }
+                    Text("备份包含会议、托管材料、会议空间、反馈、实时字幕和声纹档案；不包含缓存、识别引擎或 API Key。恢复只合并新项目，不覆盖现有数据。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("自动备份") {
+                    Toggle("启用自动备份", isOn: Binding(
+                        get: { automaticBackup.enabled },
+                        set: { automaticBackup.enabled = $0; saveAutomaticBackup() }
+                    ))
+                    Picker("频率", selection: Binding(
+                        get: { automaticBackup.frequency },
+                        set: { automaticBackup.frequency = $0; saveAutomaticBackup() }
+                    )) {
+                        ForEach(AutomaticBackupFrequency.allCases) { value in
+                            Text(value.label).tag(value)
+                        }
+                    }
+                    Stepper("保留最近 \(automaticBackup.retentionCount) 份",
+                            value: Binding(
+                                get: { automaticBackup.retentionCount },
+                                set: { automaticBackup.retentionCount = $0; saveAutomaticBackup() }
+                            ), in: 1...30)
+                    LabeledContent("备份目录") {
+                        Text(automaticBackup.directoryPath.isEmpty
+                             ? "尚未选择" : automaticBackup.directoryPath)
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    }
+                    HStack {
+                        Button("选择 iCloud Drive 文件夹…") { chooseAutomaticBackupDirectory() }
+                        Button("立即备份") { runAutomaticBackupNow() }
+                            .disabled(automaticBackup.directoryPath.isEmpty || backupBusy)
+                    }
+                    if let automaticBackupMessage {
+                        Text(automaticBackupMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("应用启动或完成一场会议后检查备份周期。软件关闭时不会在后台运行；iCloud 离线时下次启动会自动重试。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("处理缓存") {
                     LabeledContent("转录与说话人缓存") {
@@ -62,7 +119,8 @@ struct StorageManagementView: View {
             Divider()
             HStack { Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.defaultAction) }
                 .padding(14)
-        }.frame(width: 540, height: 500)
+        }.frame(width: 580, height: 720)
+        .onAppear { automaticBackupMessage = AutomaticBackupManager.lastMessage }
         .alert("删除全部实时字幕记录？", isPresented: $confirmRealtimeRemoval) {
             Button("取消", role: .cancel) {}
             Button("全部删除", role: .destructive) {
@@ -72,10 +130,88 @@ struct StorageManagementView: View {
         } message: {
             Text("所有实时字幕原文、译文和 WAV 音频都会删除，无法恢复；会议资料库不受影响。")
         }
+        .alert("从备份恢复？", isPresented: Binding(
+            get: { pendingRestore != nil },
+            set: { if !$0 { pendingRestore = nil } }
+        )) {
+            Button("取消", role: .cancel) { pendingRestore = nil }
+            Button("合并恢复") { restoreSelectedArchive() }
+        } message: {
+            Text("恢复会添加备份中不存在于当前资料库的项目；已有会议、空间和文件不会被覆盖。")
+        }
     }
 
     private func refresh() { overview = StorageOverview.load() }
     private func bytes(_ value: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
+
+    private func chooseBackupDestination() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        let day = ISO8601DateFormatter().string(from: Date()).prefix(10)
+        panel.nameFieldStringValue = "MeetingScribe 备份 \(day).zip"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        backupBusy = true; backupError = nil; backupMessage = nil
+        Task {
+            do {
+                try await Task.detached { try LibraryBackup.createArchive(at: url) }.value
+                backupMessage = "备份已保存到：\(url.path)"
+            } catch { backupError = error.localizedDescription }
+            backupBusy = false
+        }
+    }
+
+    private func chooseRestoreArchive() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.zip]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK else { return }
+        pendingRestore = panel.url
+    }
+
+    private func restoreSelectedArchive() {
+        guard let url = pendingRestore else { return }
+        pendingRestore = nil
+        backupBusy = true; backupError = nil; backupMessage = nil
+        Task {
+            do {
+                let result = try await Task.detached {
+                    try LibraryBackup.restoreArchive(from: url)
+                }.value
+                backupMessage = result.message
+                refresh()
+            } catch { backupError = error.localizedDescription }
+            backupBusy = false
+        }
+    }
+
+    private func saveAutomaticBackup() {
+        automaticBackup.save()
+    }
+
+    private func chooseAutomaticBackupDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "选择备份目录"
+        let iCloud = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        if FileManager.default.fileExists(atPath: iCloud.path) { panel.directoryURL = iCloud }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        automaticBackup.directoryPath = url.path
+        saveAutomaticBackup()
+    }
+
+    private func runAutomaticBackupNow() {
+        saveAutomaticBackup()
+        backupBusy = true
+        Task {
+            automaticBackupMessage = await AutomaticBackupManager.runIfNeeded(force: true)
+            backupBusy = false
+        }
     }
 }
