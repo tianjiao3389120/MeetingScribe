@@ -7,10 +7,14 @@ struct StorageOverview {
     let cacheBytes: Int64
     let speakerRuntimeBytes: Int64
     let missingSourceCount: Int
+    let realtimeCount: Int
+    let realtimeBytes: Int64
 
-    static func load(historyRoot: URL = MeetingHistoryStore.defaultDirectory) -> StorageOverview {
+    static func load(historyRoot: URL = MeetingHistoryStore.defaultDirectory,
+                     realtimeRoot: URL = RealtimeTranscriptStore.directory) -> StorageOverview {
         let records = (try? MeetingHistoryStore.loadAll(root: historyRoot)) ?? []
         let transcript = TranscriptCache.summary
+        let realtime = RealtimeTranscriptStore.summary(in: realtimeRoot)
         return StorageOverview(
             meetingCount: records.count,
             historyBytes: directorySize(historyRoot),
@@ -19,7 +23,9 @@ struct StorageOverview {
             speakerRuntimeBytes: Diarizer.installedSize,
             missingSourceCount: records.filter {
                 !FileManager.default.fileExists(atPath: $0.sourcePath)
-            }.count)
+            }.count,
+            realtimeCount: realtime.count,
+            realtimeBytes: realtime.bytes)
     }
 
     private static func directorySize(_ url: URL) -> Int64 {

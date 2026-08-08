@@ -262,6 +262,7 @@ private final class BlackHoleWAVWriter: @unchecked Sendable {
     init(url: URL, sampleRate: Int, channels: Int) throws {
         self.url = url; self.sampleRate = sampleRate; self.channels = channels
         FileManager.default.createFile(atPath: url.path, contents: nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         handle = try FileHandle(forWritingTo: url)
         try handle.write(contentsOf: Data(repeating: 0, count: 44))
     }

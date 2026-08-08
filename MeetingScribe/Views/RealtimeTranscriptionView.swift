@@ -301,8 +301,8 @@ struct RealtimeTranscriptionView: View {
     }
 
     private var visibleLines: [RealtimeSubtitleLine] {
-        guard displayMode == .translation else { return model.lines }
-        return model.lines.filter {
+        guard displayMode == .translation else { return model.displayLines }
+        return model.displayLines.filter {
             if let translation = $0.translation { return !translation.isEmpty }
             return $0.translationError != nil
         }
@@ -344,9 +344,14 @@ private final class RealtimeTranscriptionViewModel {
     private var translator: RealtimeSubtitleTranslator?
     private var outputURL: URL?
     private var isStopping = false
+    private var displayStartIndex = 0
 
     var finalText: String { RealtimeSubtitleTranslator.originalText(from: lines) }
     var translatedText: String { RealtimeSubtitleTranslator.translatedText(from: lines) }
+    var displayLines: [RealtimeSubtitleLine] {
+        guard displayStartIndex < lines.count else { return [] }
+        return Array(lines.dropFirst(displayStartIndex))
+    }
     var pendingTranslationCount: Int {
         guard translationEnabled else { return 0 }
         return lines.filter { $0.translation == nil && $0.translationError == nil }.count
@@ -360,6 +365,7 @@ private final class RealtimeTranscriptionViewModel {
         needsAudioPermissionHelp = false
         partialText = ""
         lines = []
+        displayStartIndex = 0
         sentBytes = 0
         serverEventCount = 0
         transcriptEventCount = 0
@@ -384,16 +390,24 @@ private final class RealtimeTranscriptionViewModel {
             receiver?.cancel()
             realtime?.close()
             _ = await receiver?.value
+            var translationFinished = true
             if let translationTask {
                 status = "正在完成剩余翻译…"
+                let timeout = Task {
+                    try? await Task.sleep(for: .seconds(12))
+                    guard !Task.isCancelled else { return }
+                    translationTask.cancel()
+                }
                 await translationTask.value
+                timeout.cancel()
+                translationFinished = !translationTask.isCancelled
             }
             if let outputURL {
                 persistTranscripts(outputURL: outputURL)
             }
             isRunning = false
             isStopping = false
-            status = "已停止"
+            status = translationFinished ? "已停止" : "已停止（部分译文未完成）"
             capture = nil
             self.realtime = nil
             senderTask = nil
@@ -411,8 +425,8 @@ private final class RealtimeTranscriptionViewModel {
             }
             let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("MeetingScribe/realtime", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let output = directory.appendingPathComponent("realtime-\(Int(Date().timeIntervalSince1970)).wav")
+            try RealtimeTranscriptStore.prepareDirectory(directory)
+            let output = directory.appendingPathComponent("realtime-\(UUID().uuidString).wav")
             let capture = BlackHoleAudioSocketClient(outputURL: output)
             let language: String? = switch scenario {
             case .mandarin: "zh"
@@ -545,7 +559,8 @@ private final class RealtimeTranscriptionViewModel {
             // Let a few adjacent final segments accumulate. Translating them
             // together produces much more coherent pronouns and sentence
             // boundaries while original deltas continue to render instantly.
-            try? await Task.sleep(for: .seconds(2))
+            do { try await Task.sleep(for: .seconds(2)) } catch { break }
+            guard !Task.isCancelled else { break }
             let indexes = lines.indices.filter {
                 lines[$0].translation == nil && lines[$0].translationError == nil
             }.prefix(3)
@@ -579,11 +594,14 @@ private final class RealtimeTranscriptionViewModel {
     private func persistTranscripts(outputURL: URL) {
         let originalURL = outputURL.deletingPathExtension().appendingPathExtension("txt")
         try? finalText.write(to: originalURL, atomically: true, encoding: .utf8)
+        RealtimeTranscriptStore.secureFile(originalURL)
+        RealtimeTranscriptStore.secureFile(outputURL)
         var names = [originalURL.lastPathComponent, outputURL.lastPathComponent]
         if translationEnabled, !translatedText.isEmpty {
             let translatedURL = outputURL.deletingPathExtension()
                 .appendingPathExtension("translated.txt")
             try? translatedText.write(to: translatedURL, atomically: true, encoding: .utf8)
+            RealtimeTranscriptStore.secureFile(translatedURL)
             names.insert(translatedURL.lastPathComponent, at: 1)
         }
         outputDescription = "已保存：" + names.joined(separator: "、")
@@ -610,7 +628,7 @@ private final class RealtimeTranscriptionViewModel {
     }
 
     func clearSubtitles() {
-        lines = []
+        displayStartIndex = lines.count
         partialText = ""
     }
 
