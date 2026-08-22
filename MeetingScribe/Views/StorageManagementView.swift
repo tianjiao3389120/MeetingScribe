@@ -10,6 +10,7 @@ struct StorageManagementView: View {
     @State private var backupBusy = false
     @State private var automaticBackup = AutomaticBackupConfiguration.load()
     @State private var automaticBackupMessage: String?
+    @State private var confirmSpeakerRuntimeRemoval = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -96,7 +97,11 @@ struct StorageManagementView: View {
                 }
                 Section("说话人运行环境") {
                     LabeledContent("占用空间") { Text(bytes(overview.speakerRuntimeBytes)) }
-                    Text("如不再使用说话人分离，可在设置的“说话人分离”区域卸载。")
+                    Button("卸载说话人运行环境", role: .destructive) {
+                        confirmSpeakerRuntimeRemoval = true
+                    }
+                    .disabled(overview.speakerRuntimeBytes == 0)
+                    Text("仅用于释放磁盘空间。卸载后会议仍可转录和生成纪要，但不会区分发言人；可随时在设置中重新安装。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.formStyle(.grouped)
@@ -105,6 +110,16 @@ struct StorageManagementView: View {
                 .padding(14)
         }.frame(width: 580, height: 720)
         .onAppear { automaticBackupMessage = AutomaticBackupManager.lastMessage }
+        .alert("卸载说话人运行环境？", isPresented: $confirmSpeakerRuntimeRemoval) {
+            Button("取消", role: .cancel) {}
+            Button("卸载", role: .destructive) {
+                Diarizer.uninstall()
+                DiarizationCache.clear()
+                refresh()
+            }
+        } message: {
+            Text("将删除本地说话人分离模型和缓存。会议资料与已登记声纹不会删除，需要时可重新安装。")
+        }
         .alert("从备份恢复？", isPresented: Binding(
             get: { pendingRestore != nil },
             set: { if !$0 { pendingRestore = nil } }

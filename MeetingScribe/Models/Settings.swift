@@ -143,11 +143,6 @@ final class Settings {
     var glossary: String {
         didSet { defaults.set(glossary, forKey: Keys.glossary) }
     }
-    /// Background fed to the analysis prompt — team names, product names, what
-    /// this meeting series is. Cheap to fill in, noticeably improves the summary.
-    var contextHint: String {
-        didSet { defaults.set(contextHint, forKey: Keys.contextHint) }
-    }
     var minutesInstructions: String {
         didSet { defaults.set(minutesInstructions, forKey: Keys.minutesInstructions) }
     }
@@ -168,22 +163,10 @@ final class Settings {
     var providerModel: String {
         didSet { defaults.set(providerModel, forKey: Keys.providerModel) }
     }
-    /// Set when the user types a model the preset doesn't list.
-    var providerVisionOverride: Bool? {
-        didSet {
-            if let value = providerVisionOverride {
-                defaults.set(value, forKey: Keys.providerVision)
-            } else {
-                defaults.removeObject(forKey: Keys.providerVision)
-            }
-        }
-    }
-
     var provider: ProviderPreset { ProviderPreset.preset(id: providerID) }
 
     /// Whether the currently selected model can accept images.
     var providerSupportsVision: Bool {
-        if let override = providerVisionOverride { return override }
         return provider.models.first { $0.id == providerModel }?.supportsVision ?? false
     }
 
@@ -193,7 +176,6 @@ final class Settings {
         providerID = preset.id
         providerBaseURL = preset.baseURL
         providerModel = preset.models.first?.id ?? ""
-        providerVisionOverride = nil
     }
 
     var providerKey: String? {
@@ -212,13 +194,11 @@ final class Settings {
         static let backend = "backend"
         static let frameDensity = "frameDensity"
         static let glossary = "glossary"
-        static let contextHint = "contextHint"
         static let minutesInstructions = "minutesInstructions"
         static let keepIntermediates = "keepIntermediates"
         static let providerID = "providerID"
         static let providerBaseURL = "providerBaseURL"
         static let providerModel = "providerModel"
-        static let providerVision = "providerVisionOverride"
     }
 
     static let defaultGlossary = """
@@ -247,7 +227,6 @@ final class Settings {
         }
         frameDensity = FrameDensity(rawValue: defaults.string(forKey: Keys.frameDensity) ?? "") ?? .normal
         glossary = defaults.string(forKey: Keys.glossary) ?? Settings.defaultGlossary
-        contextHint = defaults.string(forKey: Keys.contextHint) ?? ""
         minutesInstructions = defaults.string(forKey: Keys.minutesInstructions)
             ?? Settings.defaultMinutesInstructions
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
@@ -260,8 +239,6 @@ final class Settings {
         providerModel = providerWasRemoved
             ? (preset.models.first?.id ?? "")
             : (defaults.string(forKey: Keys.providerModel) ?? (preset.models.first?.id ?? ""))
-        providerVisionOverride = providerWasRemoved
-            ? nil : defaults.object(forKey: Keys.providerVision) as? Bool
     }
 
 }

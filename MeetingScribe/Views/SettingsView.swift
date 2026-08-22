@@ -117,16 +117,6 @@ struct SettingsView: View {
                             settings.minutesInstructions = Settings.defaultMinutesInstructions
                         }.buttonStyle(.link)
                     }
-                    DisclosureGroup("查看内置完整提示词（只读）") {
-                        ScrollView {
-                            Text(PromptBuilder.systemPrompt)
-                                .font(.system(.caption2, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }.frame(height: 150)
-                    }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 Section("识别学习") {
@@ -173,15 +163,27 @@ struct SettingsView: View {
                     Button("管理存储…") { showStorageManagement = true }
                 }
 
-                Section("调试") {
-                    Button("运行环境诊断…", systemImage: "stethoscope") {
-                        showRuntimeDiagnostics = true
+                Section("高级诊断") {
+                    DisclosureGroup("展开诊断选项") {
+                        Button("运行环境诊断…", systemImage: "stethoscope") {
+                            showRuntimeDiagnostics = true
+                        }
+                        Text("检查本地转录引擎、模型和大模型配置，不会调用接口。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Toggle("保留临时音轨", isOn: $settings.keepIntermediates)
+                        Text("仅用于排查转录问题，会持续占用临时目录空间；正常使用建议关闭。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        DisclosureGroup("查看内置完整提示词（只读）") {
+                            ScrollView {
+                                Text(PromptBuilder.systemPrompt)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }.frame(height: 150)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
-                    Text("检查本地转录引擎、模型和大模型配置，不会调用接口。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Toggle("保留临时音轨", isOn: $settings.keepIntermediates)
-                    Text("仅用于排查转录问题，会持续占用临时目录空间；正常使用建议关闭。")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -246,19 +248,10 @@ private struct SpeakerSection: View {
 
         switch readiness {
         case .ready:
-            HStack {
-                Label("已安装（\(ByteCountFormatter.string(fromByteCount: Diarizer.installedSize, countStyle: .file))）",
-                      systemImage: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-                Spacer()
-                Button("卸载") {
-                    Diarizer.uninstall()
-                    DiarizationCache.clear()
-                    readiness = Diarizer.readiness()
-                }
+            Label("已安装（\(ByteCountFormatter.string(fromByteCount: Diarizer.installedSize, countStyle: .file))）",
+                  systemImage: "checkmark.circle.fill")
                 .font(.caption)
-            }
+                .foregroundStyle(.green)
 
         case .noPython:
             Label("需要 python3，可通过 brew install python 安装",
@@ -319,7 +312,6 @@ private struct SpeakerSection: View {
 private struct ProviderSection: View {
     @Binding var settings: Settings
     @State private var key: String = ""
-    @State private var customModel: String = ""
     @State private var probe: ProbeState = .idle
     @State private var hasStoredKey = false
 
@@ -334,7 +326,6 @@ private struct ProviderSection: View {
                 settings.selectProvider(ProviderPreset.preset(id: id))
                 key = ""
                 hasStoredKey = settings.providerKeyExists
-                customModel = ""
                 probe = .idle
             }
         )) {
@@ -376,18 +367,8 @@ private struct ProviderSection: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
 
-        if settings.provider.models.isEmpty {
-            TextField("模型名", text: $settings.providerModel, prompt: Text("按服务商文档填写"))
-                .font(.system(.callout, design: .monospaced))
-            Toggle("该模型支持读图", isOn: Binding(
-                get: { settings.providerVisionOverride ?? false },
-                set: { settings.providerVisionOverride = $0 }
-            ))
-        } else {
-            Picker("模型", selection: $settings.providerModel) {
-                ForEach(settings.provider.models) { Text($0.label).tag($0.id) }
-                if !customModel.isEmpty { Text(customModel).tag(customModel) }
-            }
+        Picker("模型", selection: $settings.providerModel) {
+            ForEach(settings.provider.models) { Text($0.label).tag($0.id) }
         }
 
         HStack {

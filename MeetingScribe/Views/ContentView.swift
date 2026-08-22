@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var isTargeted = false
     @State private var savedPath: String?
     @State private var pendingInput: MeetingInput?
+    @State private var systemRecordingMonitor = SystemRecordingMonitor()
     @State private var interruptedJob: PendingMeetingJob?
 
     var body: some View {
@@ -21,6 +22,7 @@ struct ContentView: View {
             case .idle, .failed:
                 DropZone(isTargeted: $isTargeted,
                          error: runner.error,
+                         recordingMonitor: systemRecordingMonitor,
                          recentMeetings: recentMeetings,
                          onOpenMeeting: { id in
                              historySelection = id
@@ -174,27 +176,47 @@ struct ContentView: View {
 private struct DropZone: View {
     @Binding var isTargeted: Bool
     let error: String?
+    let recordingMonitor: SystemRecordingMonitor
     let recentMeetings: [MeetingRecord]
     let onOpenMeeting: (UUID) -> Void
     let onPick: (MeetingInput) -> Void
 
     @State private var rejection: String?
 
-    private var modelReadiness: (String, Bool) {
+    private struct ReadinessItem: Identifiable {
+        let id: String
+        let text: String
+        let ready: Bool
+    }
+
+    private var runtimeReadiness: [ReadinessItem] {
         let settings = Settings.shared
+        let transcriptionReady = ToolLocator.path(for: .whisper) != nil
+            && ToolLocator.modelPath() != nil
+            && ToolLocator.vadModelPath() != nil
+        let speakerReady = Diarizer.readiness().isReady
+        let model: ReadinessItem
         switch settings.backend {
         case .codexCLI:
-            return ToolLocator.path(for: .codex) == nil
-                ? ("Codex CLI 未安装", false) : ("Codex CLI 已就绪", true)
+            model = ToolLocator.path(for: .codex) == nil
+                ? ReadinessItem(id: "model", text: "纪要引擎 · Codex CLI 未安装", ready: false)
+                : ReadinessItem(id: "model", text: "纪要引擎 · Codex CLI", ready: true)
         case .claudeCLI:
-            return ToolLocator.path(for: .claude) == nil
-                ? ("Claude Code 未安装", false) : ("Claude Code 已就绪", true)
+            model = ToolLocator.path(for: .claude) == nil
+                ? ReadinessItem(id: "model", text: "纪要引擎 · Claude Code 未安装", ready: false)
+                : ReadinessItem(id: "model", text: "纪要引擎 · Claude Code", ready: true)
         case .openAICompatible:
             let ready = !settings.providerModel.isEmpty
                 && (!settings.provider.requiresKey || settings.providerKeyExists)
-            return ready ? ("\(settings.provider.name) 已就绪", true)
-                : ("请完成 \(settings.provider.name) 配置", false)
+            model = ready
+                ? ReadinessItem(id: "model", text: "纪要引擎 · \(settings.provider.name)", ready: true)
+                : ReadinessItem(id: "model", text: "纪要引擎 · 请配置 \(settings.provider.name)", ready: false)
         }
+        return [
+            ReadinessItem(id: "transcription", text: transcriptionReady ? "转录引擎 · Whisper" : "转录引擎 · 未就绪", ready: transcriptionReady),
+            ReadinessItem(id: "speakers", text: speakerReady ? "声纹引擎 · 已就绪" : "声纹引擎 · 未安装", ready: speakerReady),
+            model,
+        ]
     }
 
     var body: some View {
@@ -213,11 +235,30 @@ private struct DropZone: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button { pick() } label: {
-                Label("导入会议", systemImage: "square.and.arrow.down")
+            HStack(spacing: 10) {
+                Button { pick() } label: {
+                    Label("导入会议", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.borderedProminent)
+                Button { openSystemScreenshot() } label: {
+                    Label("录制会议", systemImage: "record.circle")
+                }
             }
-            .buttonStyle(.borderedProminent)
             .controlSize(.large)
+
+            if let recording = recordingMonitor.detectedURL {
+                Button {
+                    if let url = recordingMonitor.consume() { accept([url]) }
+                } label: {
+                    Label("导入刚录制的 \(recording.lastPathComponent)",
+                          systemImage: "square.and.arrow.down")
+                }
+            } else if recordingMonitor.isWatching {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("等待系统录制完成…").lineLimit(1)
+                }.font(.caption).foregroundStyle(.secondary)
+            }
 
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -258,10 +299,14 @@ private struct DropZone: View {
                 .frame(maxWidth: 500, alignment: .leading)
             }
 
-            HStack(spacing: 6) {
-                Circle().fill(modelReadiness.1 ? Color.green : Color.orange)
-                    .frame(width: 7, height: 7)
-                Text(modelReadiness.0)
+            HStack(spacing: 14) {
+                ForEach(runtimeReadiness) { item in
+                    HStack(spacing: 5) {
+                        Circle().fill(item.ready ? Color.green : Color.orange)
+                            .frame(width: 7, height: 7)
+                        Text(item.text)
+                    }
+                }
             }
             .font(.caption).foregroundStyle(.secondary)
 
@@ -320,6 +365,17 @@ private struct DropZone: View {
         panel.allowsMultipleSelection = true
         panel.message = "可选择单个录音/录像，或同时选择妙记 SRT、TXT 和原始音频"
         if panel.runModal() == .OK { accept(panel.urls) }
+    }
+
+    private func openSystemScreenshot() {
+        recordingMonitor.begin()
+        let workspace = NSWorkspace.shared
+        let url = workspace.urlForApplication(withBundleIdentifier: "com.apple.screenshot.launcher")
+            ?? URL(fileURLWithPath: "/System/Applications/Utilities/Screenshot.app")
+        if !workspace.open(url) {
+            recordingMonitor.stop()
+            rejection = "无法启动 macOS 系统截屏工具。也可以按 Shift–Command–5 打开。"
+        }
     }
 
 }
@@ -415,9 +471,11 @@ private struct ProgressPanel: View {
 
                 if runner.progress > 0 {
                     ProgressView(value: runner.progress)
+                        .progressViewStyle(.linear)
                         .frame(width: 320)
                 } else {
                     ProgressView()
+                        .progressViewStyle(.linear)
                         .frame(width: 320)
                 }
 
@@ -442,7 +500,8 @@ private struct StageTrack: View {
     let current: PipelineRunner.Stage
 
     private let ordered: [PipelineRunner.Stage] = [
-        .probing, .extractingAudio, .transcribing, .extractingFrames, .readingScreen, .analyzing,
+        .probing, .extractingAudio, .transcribing, .separatingSpeakers,
+        .extractingFrames, .readingScreen, .analyzing,
     ]
 
     var body: some View {

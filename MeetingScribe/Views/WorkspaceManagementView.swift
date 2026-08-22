@@ -4,7 +4,6 @@ struct WorkspaceManagementView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var workspaces: [MeetingWorkspace] = []
     @State private var error: String?
-    @State private var saved = false
     @State private var originalIDs: Set<UUID> = []
     @State private var pendingDelete: MeetingWorkspace?
 
@@ -68,7 +67,6 @@ struct WorkspaceManagementView: View {
             Divider()
             HStack {
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
-                else if saved { Label("已保存", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.green) }
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("保存并关闭") { saveAndClose() }.keyboardShortcut(.defaultAction)
@@ -87,7 +85,6 @@ struct WorkspaceManagementView: View {
             Button("删除", role: .destructive) {
                 if let value = pendingDelete { workspaces.removeAll { $0.id == value.id } }
                 pendingDelete = nil
-                saved = false
             }
         } message: {
             Text("保存后，历史会议仍保留已填写的客户、项目名称和会议类型；仅解除项目资料关联。")
@@ -103,21 +100,19 @@ struct WorkspaceManagementView: View {
             let removedIDs = originalIDs.subtracting(workspaces.map(\.id))
             try MeetingHistoryStore.clearWorkspaceReferences(removedIDs)
             originalIDs = Set(workspaces.map(\.id))
-            error = nil; saved = true
+            error = nil
             dismiss()
         } catch { self.error = "保存失败：\(error.localizedDescription)" }
     }
 
     private func addCustomer() {
         workspaces.append(MeetingWorkspace(name: "新客户", kind: .customer))
-        saved = false
     }
 
     private func addProject() {
         guard let customer = customers.first else { return }
         workspaces.append(MeetingWorkspace(
             name: "新项目", kind: .project, customerID: customer.id))
-        saved = false
     }
 
     private func kindBinding(for id: UUID) -> Binding<MeetingWorkspace.Kind> {
@@ -132,7 +127,6 @@ struct WorkspaceManagementView: View {
             } else if workspaces[index].customerID == nil {
                 workspaces[index].customerID = customers.first(where: { $0.id != id })?.id
             }
-            saved = false
         }
     }
 }
