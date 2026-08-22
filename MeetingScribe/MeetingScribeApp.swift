@@ -43,16 +43,11 @@ struct MeetingScribeApp: App {
         WindowGroup {
             ContentView()
         }
+        .defaultSize(width: 760, height: 540)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
-
-        Window("实时字幕", id: "realtime-transcription") {
-            RealtimeTranscriptionView()
-        }
-        .defaultSize(width: 760, height: 600)
-        .windowResizability(.contentMinSize)
     }
 }
 
@@ -89,7 +84,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func isMainWindow(_ window: NSWindow) -> Bool {
         window.canBecomeKey
             && window.styleMask.contains(.titled)
-            && window.title != "实时字幕"
     }
 }
 

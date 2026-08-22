@@ -41,4 +41,31 @@ final class EndpointSecurityTests: XCTestCase {
                        "https://api.openai.com/v1/chat/completions")
         XCTAssertTrue(client.usesOpenAICompletionTokenParameter)
     }
+
+    func testOnlyVerifiedAPIProvidersAreExposed() {
+        XCTAssertEqual(ProviderPreset.all.map(\.id), ["openai", "zhipu"])
+        XCTAssertEqual(ProviderPreset.preset(id: "unsupported").id, "openai")
+    }
+
+    func testResponsesCompletedEventTextCanBeRecovered() {
+        let response: [String: Any] = [
+            "output": [[
+                "type": "message",
+                "content": [["type": "output_text", "text": "生成完成"]],
+            ]],
+        ]
+        XCTAssertEqual(OpenAICompatibleClient.responseOutputText(from: response), "生成完成")
+    }
+
+    func testResponsesCompletedEventIgnoresNonTextOutputItems() {
+        let response: [String: Any] = [
+            "output": [
+                ["type": "reasoning", "summary": []],
+                ["type": "message", "content": [
+                    ["type": "output_text", "text": "最终纪要"],
+                ]],
+            ],
+        ]
+        XCTAssertEqual(OpenAICompatibleClient.responseOutputText(from: response), "最终纪要")
+    }
 }

@@ -2,13 +2,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @Environment(\.openWindow) private var openWindow
     @State private var runner = PipelineRunner()
     @State private var showSettings = false
     @State private var showHistory = false
+    @State private var historySelection: UUID?
+    @State private var recentMeetings: [MeetingRecord] = []
     @State private var isTargeted = false
     @State private var savedPath: String?
-    @State private var pendingMedia: URL?
+    @State private var pendingInput: MeetingInput?
     @State private var systemRecordingMonitor = SystemRecordingMonitor()
     @State private var interruptedJob: PendingMeetingJob?
 
@@ -22,21 +23,20 @@ struct ContentView: View {
                 DropZone(isTargeted: $isTargeted,
                          error: runner.error,
                          recordingMonitor: systemRecordingMonitor,
-                         onPick: { pendingMedia = $0 })
+                         recentMeetings: recentMeetings,
+                         onOpenMeeting: { id in
+                             historySelection = id
+                             showHistory = true
+                         },
+                         onPick: { pendingInput = $0 })
             case .done:
                 ResultView(runner: runner, savedPath: $savedPath)
             default:
                 ProgressPanel(runner: runner)
             }
         }
-        .frame(minWidth: 720, minHeight: 520)
+        .frame(minWidth: 680, minHeight: 460)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { openWindow(id: "realtime-transcription") } label: {
-                    Label("实时字幕", systemImage: "waveform.and.mic")
-                }
-                .disabled(runner.isRunning)
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button { showHistory = true } label: {
                     Label("历史会议", systemImage: "clock.arrow.circlepath")
@@ -51,8 +51,11 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
-        .sheet(isPresented: $showHistory) {
-            MeetingHistoryView(onReprocess: { record in
+        .sheet(isPresented: $showHistory, onDismiss: {
+            historySelection = nil
+            loadRecentMeetings()
+        }) {
+            MeetingHistoryView(initialSelection: historySelection, onReprocess: { record in
                 showHistory = false
                 reprocess(record)
             }, onAnalyzeTranscript: { record, transcript in
@@ -61,21 +64,31 @@ struct ContentView: View {
             })
         }
         .sheet(isPresented: Binding(
-            get: { pendingMedia != nil },
-            set: { if !$0 { pendingMedia = nil } }
+            get: { pendingInput != nil },
+            set: { if !$0 { pendingInput = nil } }
         )) {
-            if let url = pendingMedia {
-                MeetingPreparationView(mediaURL: url) { title, workspace, context, templateID, tags, materials in
-                    pendingMedia = nil
-                    runner.run(url: url, title: title, meetingContext: context,
-                               minutesTemplateID: templateID,
-                               workspace: workspace, tags: tags, materials: materials)
+            if let input = pendingInput {
+                MeetingPreparationView(input: input) { title, scenario, workspace, context, templateID, tags, materials in
+                    pendingInput = nil
+                    switch input {
+                    case .media(let url):
+                        runner.run(url: url, title: title, meetingContext: context,
+                                   minutesTemplateID: templateID,
+                                   recognitionScenario: scenario,
+                                   workspace: workspace, tags: tags, materials: materials)
+                    case .externalTranscript(let package):
+                        runner.run(imported: package, title: title, meetingContext: context,
+                                   minutesTemplateID: templateID,
+                                   recognitionScenario: scenario,
+                                   workspace: workspace, tags: tags, materials: materials)
+                    }
                 } onCancel: {
-                    pendingMedia = nil
+                    pendingInput = nil
                 }
             }
         }
         .onAppear {
+            loadRecentMeetings()
             if interruptedJob == nil { interruptedJob = PendingJobStore.load() }
             Task { await AutomaticBackupManager.runIfNeeded() }
         }
@@ -99,6 +112,12 @@ struct ContentView: View {
         }
     }
 
+    private func loadRecentMeetings() {
+        recentMeetings = Array(((try? MeetingHistoryStore.loadAll()) ?? [])
+            .filter { $0.isArchived != true }
+            .prefix(3))
+    }
+
     private func reprocess(_ record: MeetingRecord, editedTranscript: Transcript? = nil) {
         Task {
             let workspace = (try? MeetingWorkspaceStore.load())?
@@ -112,6 +131,9 @@ struct ContentView: View {
             }
             if let editedTranscript {
                 runner.analyzeEditedTranscript(record: record, transcript: editedTranscript,
+                                               workspace: workspace, materials: materials)
+            } else if record.sourceKind == MeetingAssets.SourceKind.importedTranscript.rawValue {
+                runner.analyzeEditedTranscript(record: record, transcript: record.transcript,
                                                workspace: workspace, materials: materials)
             } else {
                 runner.run(url: record.sourceURL, title: record.title,
@@ -140,6 +162,7 @@ struct ContentView: View {
             }
             runner.run(url: source, title: job.title, meetingContext: job.meetingContext ?? "",
                        minutesTemplateID: job.minutesTemplateID ?? MinutesTemplate.general.id,
+                       recognitionScenario: job.recognitionScenario ?? .autoMultilingual,
                        workspace: workspace, tags: job.tags, materials: materials)
         }
     }
@@ -151,40 +174,59 @@ private struct DropZone: View {
     @Binding var isTargeted: Bool
     let error: String?
     let recordingMonitor: SystemRecordingMonitor
-    let onPick: (URL) -> Void
+    let recentMeetings: [MeetingRecord]
+    let onOpenMeeting: (UUID) -> Void
+    let onPick: (MeetingInput) -> Void
 
     @State private var rejection: String?
 
+    private var modelReadiness: (String, Bool) {
+        let settings = Settings.shared
+        switch settings.backend {
+        case .codexCLI:
+            return ToolLocator.path(for: .codex) == nil
+                ? ("Codex CLI 未安装", false) : ("Codex CLI 已就绪", true)
+        case .claudeCLI:
+            return ToolLocator.path(for: .claude) == nil
+                ? ("Claude Code 未安装", false) : ("Claude Code 已就绪", true)
+        case .openAICompatible:
+            let ready = !settings.providerModel.isEmpty
+                && (!settings.provider.requiresKey || settings.providerKeyExists)
+            return ready ? ("\(settings.provider.name) 已就绪", true)
+                : ("请完成 \(settings.provider.name) 配置", false)
+        }
+    }
+
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 18) {
             Spacer()
 
             Image(systemName: "wave.3.right.circle")
-                .font(.system(size: 56, weight: .thin))
+                .font(.system(size: 44, weight: .thin))
                 .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
 
             VStack(spacing: 6) {
-                Text("把会议录像或录音拖到这里")
-                    .font(.title3.weight(.medium))
-                Text("支持 mov / mp4 / m4a / mp3 / wav —— 视频会自动提取音轨与屏幕画面")
+                Text(isTargeted ? "松开即可导入" : "开始一次会议")
+                    .font(.title2.weight(.semibold))
+                Text("拖入录音、录像，或妙记导出的逐字稿")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
 
-            HStack {
-                Button { openSystemScreenshot() } label: {
-                    Label("使用系统截屏录制", systemImage: "record.circle")
+            HStack(spacing: 10) {
+                Button { pick() } label: {
+                    Label("导入会议", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel("使用系统截屏录制")
-                Button("选择文件…") { pick() }
-                    .accessibilityLabel("选择会议录像或录音文件")
+                Button { openSystemScreenshot() } label: {
+                    Label("录制会议", systemImage: "record.circle")
+                }
             }
             .controlSize(.large)
 
             if let recording = recordingMonitor.detectedURL {
                 Button {
-                    if let url = recordingMonitor.consume() { accept(url) }
+                    if let url = recordingMonitor.consume() { accept([url]) }
                 } label: {
                     Label("导入刚录制的 \(recording.lastPathComponent)",
                           systemImage: "square.and.arrow.down")
@@ -192,7 +234,7 @@ private struct DropZone: View {
             } else if recordingMonitor.isWatching {
                 HStack(spacing: 7) {
                     ProgressView().controlSize(.small)
-                    Text("等待系统录制完成，将自动发现保存到 \(recordingMonitor.folder.path) 的视频…")
+                    Text("等待系统录制完成…")
                         .lineLimit(1)
                 }.font(.caption).foregroundStyle(.secondary)
             }
@@ -206,26 +248,75 @@ private struct DropZone: View {
                     .textSelection(.enabled)
             }
 
-            Spacer()
+            if !recentMeetings.isEmpty {
+                Divider().frame(maxWidth: 500)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("最近会议").font(.headline)
+                    ForEach(recentMeetings) { record in
+                        Button { onOpenMeeting(record.id) } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: "doc.text").foregroundStyle(Color.accentColor)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(record.title).lineLimit(1)
+                                    Text(record.createdAt.formatted(date: .abbreviated,
+                                                                   time: .shortened))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if record.openActionCount > 0 {
+                                    Text("\(record.openActionCount) 项待办")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Image(systemName: "chevron.right")
+                                    .font(.caption).foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 3)
+                        }.buttonStyle(.plain)
+                    }
+                }
+                .frame(maxWidth: 500, alignment: .leading)
+            }
 
-            Text("音频与画面全程在本机处理；仅生成纪要这一步会调用模型。")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .padding(.bottom, 16)
+            HStack(spacing: 6) {
+                Circle().fill(modelReadiness.1 ? Color.green : Color.orange)
+                    .frame(width: 7, height: 7)
+                Text(modelReadiness.0)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+
+            Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: 560, maxHeight: .infinity)
+        .padding(.horizontal, 28)
+        .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [7, 5]))
-                .foregroundStyle(isTargeted ? Color.accentColor : Color.secondary.opacity(0.35))
-                .padding(20)
+            RoundedRectangle(cornerRadius: 14)
+                .fill(isTargeted ? Color.accentColor.opacity(0.06) : Color.clear)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [7, 5]))
+                        .foregroundStyle(isTargeted ? Color.accentColor : Color.secondary.opacity(0.3))
+                }
+                .padding(.vertical, 18)
         )
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in accept(url) }
+            guard !providers.isEmpty else { return false }
+            let group = DispatchGroup()
+            let lock = NSLock()
+            var urls: [URL] = []
+            for provider in providers {
+                group.enter()
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    if let url {
+                        lock.lock()
+                        urls.append(url)
+                        lock.unlock()
+                    }
+                    group.leave()
+                }
             }
+            group.notify(queue: .main) { accept(urls) }
             return true
         }
         .alert("无法处理这个文件", isPresented: Binding(
@@ -237,28 +328,18 @@ private struct DropZone: View {
         }
     }
 
-    /// Reject non-media up front — otherwise the failure surfaces minutes later
-    /// as an opaque AVFoundation error.
-    private func accept(_ url: URL) {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            rejection = "文件不存在或已被移动。"
-            return
-        }
-        let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
-        guard let type, type.conforms(to: .audiovisualContent) else {
-            let name = url.lastPathComponent
-            rejection = "「\(name)」不是音频或视频文件。\n"
-                + "支持的格式：mov、mp4、m4a、mp3、wav 等。"
-            return
-        }
-        onPick(url)
+    private func accept(_ urls: [URL]) {
+        do { onPick(try MeetingInput.classify(urls)) }
+        catch { rejection = error.localizedDescription }
     }
 
     private func pick() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.audiovisualContent]
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { accept(url) }
+        panel.allowedContentTypes = [.audiovisualContent, .plainText,
+                                     UTType(filenameExtension: "srt")!]
+        panel.allowsMultipleSelection = true
+        panel.message = "可选择单个录音/录像，或同时选择妙记 SRT、TXT 和原始音频"
+        if panel.runModal() == .OK { accept(panel.urls) }
     }
 
     private func openSystemScreenshot() {
@@ -424,6 +505,8 @@ private struct ResultView: View {
     @State private var showNaming = false
     @State private var showFeedback = false
     @State private var showEmail = false
+    @State private var showRecognitionLearning = false
+    @State private var showSpeakerRetry = false
 
     private enum Mode: String, CaseIterable {
         case rendered = "预览"
@@ -479,39 +562,15 @@ private struct ResultView: View {
             Divider()
 
             HStack(spacing: 12) {
-                Picker("", selection: $mode) {
-                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 140)
-
-                if let assets = runner.assets {
-                    Label("\(assets.transcript.segments.count) 段语音", systemImage: "waveform")
+                if let stats = runner.assets?.adaptiveScreenReviewStats {
+                    Label(stats.summary, systemImage: "viewfinder")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if !assets.captures.isEmpty {
-                        Label("\(assets.captures.count) 个画面", systemImage: "photo.on.rectangle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if runner.structuredSummary != nil {
-                        Label("结构化", systemImage: "checkmark.seal")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .help("已生成可供历史和跨会议分析使用的结构化 JSON")
-                    } else if runner.usedSummaryFallback {
-                        Label("格式回退", systemImage: "arrow.uturn.backward")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .help("模型未返回合法 JSON，已保留其原始输出")
-                    }
-                    if !assets.tags.isEmpty {
-                        Text(assets.tags.map { "#\($0)" }.joined(separator: "  "))
-                            .font(.caption)
-                            .foregroundStyle(Color.accentColor)
-                            .lineLimit(1)
-                    }
+                        .foregroundStyle(stats.citedScreenEvidence > 0 ? Color.green : Color.secondary)
+                        .help("逐字稿驱动的补充画面分析链路统计")
+                }
+                if runner.usedSummaryFallback {
+                    Label("纪要格式不完整，已保留模型原文", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
                 }
 
                 Spacer()
@@ -535,49 +594,46 @@ private struct ResultView: View {
                         .truncationMode(.head)
                 }
 
-                if let diarization = runner.assets?.diarization {
-                    if !diarization.embeddings.isEmpty {
-                        Button {
-                            showNaming = true
-                        } label: {
-                            Label("登记/更新 \(diarization.speakerCount) 位说话人声纹", systemImage: "person.wave.2")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.link)
-                        .help("试听并确认姓名；确认后才会加入声纹档案")
-                    }
-
-                    Button("重新分离") {
-                        runner.rerunSpeakerSeparation()
-                    }
-                    .font(.caption)
-                    .buttonStyle(.link)
-                    .help("按设置中的实际发言人数重新分离；复用转录缓存")
-                }
-
                 if runner.savedRecordID != nil {
-                    Button("同步邮件") { showEmail = true }
-                    Button("反馈") { showFeedback = true }
-                        .help("评价纪要并提交待审核的术语候选")
+                    Button("生成邮件") { showEmail = true }
                 }
 
-                Button("复制") {
+                Button("纠正并学习") { showRecognitionLearning = true }
+
+                Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(runner.summary, forType: .string)
+                } label: {
+                    Label("复制", systemImage: "doc.on.doc")
                 }
 
-                Button("保存") {
+                Button {
                     if let url = save() {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
+                } label: {
+                    Label("导出", systemImage: "square.and.arrow.up")
                 }
                 .keyboardShortcut("s")
 
-                // Hands the file to whatever the user's default .md app is —
-                // Typora, Obsidian, MacDown, VS Code…
-                Button("用其他应用打开") {
-                    if let url = savedURL ?? save() {
-                        NSWorkspace.shared.open(url)
+                Menu("更多", systemImage: "ellipsis.circle") {
+                    Button(mode == .rendered ? "查看 Markdown 源码" : "返回纪要预览") {
+                        mode = mode == .rendered ? .source : .rendered
+                    }
+                    if let diarization = runner.assets?.diarization {
+                        Divider()
+                        if !diarization.embeddings.isEmpty {
+                            Button("登记或更新说话人声纹…") { showNaming = true }
+                        }
+                        Button("重新分离说话人…") { showSpeakerRetry = true }
+                    }
+                    if runner.savedRecordID != nil {
+                        Divider()
+                        Button("反馈并改进纪要…") { showFeedback = true }
+                    }
+                    Divider()
+                    Button("用其他应用打开") {
+                        if let url = savedURL ?? save() { NSWorkspace.shared.open(url) }
                     }
                 }
             }
@@ -594,11 +650,29 @@ private struct ResultView: View {
                 }
             }
         }
+        .sheet(isPresented: $showSpeakerRetry) {
+            SpeakerRetryView(detectedCount: runner.assets?.diarization?.speakerCount ?? 0) { count in
+                showSpeakerRetry = false
+                runner.rerunSpeakerSeparation(speakerCount: count)
+            } onCancel: {
+                showSpeakerRetry = false
+            }
+        }
         .sheet(isPresented: $showFeedback) {
             if let id = runner.savedRecordID, let title = runner.assets?.title {
                 MeetingFeedbackView(meetingID: id, title: title) { request in
                     runner.regenerate(withFeedback: request)
                 }
+            }
+        }
+        .sheet(isPresented: $showRecognitionLearning) {
+            if let assets = runner.assets {
+                RecognitionLearningView(
+                    workspaceID: assets.workspace?.id,
+                    sourceTitle: assets.title,
+                    uncertainties: runner.structuredSummary?.uncertainties ?? []) {
+                        runner.applyRecognitionMemoryAndRegenerate()
+                    }
             }
         }
         .sheet(isPresented: $showEmail) {
@@ -610,5 +684,35 @@ private struct ResultView: View {
                                  minutes: runner.summary)
             }
         }
+    }
+}
+
+private struct SpeakerRetryView: View {
+    let detectedCount: Int
+    let onRun: (Int) -> Void
+    let onCancel: () -> Void
+    @State private var count = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("重新分离说话人").font(.title3.weight(.medium))
+            Text("通常保持自动判断即可。如果当前结果人数明显不对，可以指定这段录音中真正开口的人数。")
+                .font(.callout).foregroundStyle(.secondary)
+            Picker("实际发言人数", selection: $count) {
+                Text("自动判断").tag(0)
+                ForEach(2...30, id: \.self) { Text("\($0) 人").tag($0) }
+            }
+            if detectedCount > 0 {
+                Text("当前识别结果：\(detectedCount) 人")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Button("取消", action: onCancel)
+                Button("重新分离") { onRun(count) }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 430)
     }
 }

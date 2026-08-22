@@ -47,8 +47,15 @@ struct StructuredMinutes: Codable, Sendable, Equatable {
     }
 
     struct EvidenceItem: Codable, Sendable, Equatable {
+        enum UncertaintyKind: String, Codable, Sendable {
+            case speechRecognition = "speech_recognition"
+            case unclearMeaning = "unclear_meaning"
+        }
+
         var content: String
         var evidence: [String]
+        /// Only used by uncertainties. Nil keeps older saved minutes compatible.
+        var uncertaintyKind: UncertaintyKind? = nil
     }
 
     /// Rejects an empty shell while tolerating naturally absent sections.

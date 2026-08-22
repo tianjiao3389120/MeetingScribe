@@ -28,6 +28,8 @@ enum LibraryBackup {
         var feedback: URL { root.appendingPathComponent("Feedback", isDirectory: true) }
         var realtime: URL { root.appendingPathComponent("realtime", isDirectory: true) }
         var voiceProfiles: URL { root.appendingPathComponent("voice-profiles.json") }
+        var voiceProfileClips: URL { root.appendingPathComponent("voice-profile-clips", isDirectory: true) }
+        var projectLedger: URL { root.appendingPathComponent("project-ledger.json") }
 
         static var live: Paths { Paths(root: Diarizer.supportDirectory) }
     }
@@ -74,11 +76,13 @@ enum LibraryBackup {
         try manager.createDirectory(at: package, withIntermediateDirectories: true)
         for (from, name) in [(source.meetings, "Meetings"),
                              (source.feedback, "Feedback"),
-                             (source.realtime, "realtime")] where manager.fileExists(atPath: from.path) {
+                             (source.realtime, "realtime"),
+                             (source.voiceProfileClips, "voice-profile-clips")] where manager.fileExists(atPath: from.path) {
             try manager.copyItem(at: from, to: package.appendingPathComponent(name, isDirectory: true))
         }
         for (from, name) in [(source.workspaces, "workspaces.json"),
-                             (source.voiceProfiles, "voice-profiles.json")]
+                             (source.voiceProfiles, "voice-profiles.json"),
+                             (source.projectLedger, "project-ledger.json")]
         where manager.fileExists(atPath: from.path) {
             try manager.copyItem(at: from, to: package.appendingPathComponent(name))
         }
@@ -131,7 +135,7 @@ enum LibraryBackup {
             try MeetingWorkspaceStore.save(existing, to: destination.workspaces)
         }
 
-        for name in ["Feedback", "realtime"] {
+        for name in ["Feedback", "realtime", "voice-profile-clips"] {
             let source = package.appendingPathComponent(name, isDirectory: true)
             let target = destination.root.appendingPathComponent(name, isDirectory: true)
             let result = try mergeFiles(from: source, to: target)
@@ -154,6 +158,21 @@ enum LibraryBackup {
                                           ofItemAtPath: destination.voiceProfiles.path)
                 filesAdded += additions.count
             }
+        }
+        let ledgerSource = package.appendingPathComponent("project-ledger.json")
+        if manager.fileExists(atPath: ledgerSource.path) {
+            let incoming = try ProjectLedgerStore.load(from: ledgerSource)
+            var existing = try ProjectLedgerStore.load(from: destination.projectLedger)
+            let actionIDs = Set(existing.actions.map(\.id))
+            let proposalIDs = Set(existing.proposals.map(\.id))
+            let newActions = incoming.actions.filter { !actionIDs.contains($0.id) }
+            let newProposals = incoming.proposals.filter { !proposalIDs.contains($0.id) }
+            existing.actions.append(contentsOf: newActions)
+            existing.proposals.append(contentsOf: newProposals)
+            try ProjectLedgerStore.save(existing, to: destination.projectLedger)
+            filesAdded += newActions.count + newProposals.count
+            skipped += incoming.actions.count - newActions.count
+                + incoming.proposals.count - newProposals.count
         }
         return RestoreResult(meetingsAdded: meetingsAdded, workspacesAdded: workspacesAdded,
                              filesAdded: filesAdded, skipped: skipped)

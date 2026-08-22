@@ -49,18 +49,53 @@ enum ActionTracking {
     }
 
     static func promptContext(for workspaceID: UUID?) -> String {
-        guard let workspaceID,
-              let records = try? MeetingHistoryStore.loadAll() else { return "" }
-        let actions = currentOpenActions(in: records.filter { $0.workspaceID == workspaceID })
-        guard !actions.isEmpty else { return "" }
-        let rows = actions.prefix(50).map {
-            "- [\($0.actionID)] \($0.action.task)；责任方：\($0.action.owner.isEmpty ? "待明确" : $0.action.owner)；当前状态：\($0.action.status.isEmpty ? "待确认" : $0.action.status)"
-        }.joined(separator: "\n")
+        guard let workspaceID else { return "" }
+        let ledgerActions = (try? ProjectLedgerStore.load().actions(for: workspaceID)) ?? []
+        let rows: String
+        if !ledgerActions.isEmpty {
+            rows = ledgerActions.filter { !$0.isClosed }.prefix(50).map {
+                "- [\($0.id)] \($0.task)；责任方：\($0.owner.isEmpty ? "待明确" : $0.owner)；当前状态：\($0.status.isEmpty ? "待确认" : $0.status)；截止：\($0.due.isEmpty ? "待明确" : $0.due)"
+            }.joined(separator: "\n")
+        } else {
+            guard let records = try? MeetingHistoryStore.loadAll() else { return "" }
+            rows = currentOpenActions(in: records.filter { $0.workspaceID == workspaceID }).prefix(50).map {
+                "- [\($0.actionID)] \($0.action.task)；责任方：\($0.action.owner.isEmpty ? "待明确" : $0.action.owner)；当前状态：\($0.action.status.isEmpty ? "待确认" : $0.action.status)"
+            }.joined(separator: "\n")
+        }
+        guard !rows.isEmpty else { return "" }
         return """
-        历史未完成待办如下：
+        项目行动项台账中当前未完成事项如下：
         \(rows)
-        若本次会议明确更新了其中某项，必须在 actionItems 中再次输出，task 尽量保持原文，填写本次明确状态和证据时间码；未提及的事项不要推断状态，不要输出。
+        若本次会议明确更新了其中某项，必须在 actionItems 中再次输出，并把方括号中的 ID 原样填写到该项独立的 `trackingID` 字段；`task` 只写可执行任务，严禁包含 `[MS-...]` 或任何内部 ID。填写本次明确状态和证据时间码；未提及的事项不要推断状态，不要输出。
         """
+    }
+
+    /// Models occasionally copy the private ledger identifier into `task`
+    /// despite the schema. Recover it into the structured field and guarantee
+    /// that internal IDs never reach rendered minutes or task matching.
+    static func normalizeModelOutput(_ structured: inout StructuredMinutes) {
+        let pattern = #"\[\s*(MS-[A-Za-z0-9-]+)\s*\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        var normalized: [StructuredMinutes.ActionItem] = []
+        for var action in structured.actionItems {
+            if action.trackingID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                action.trackingID = nil
+            }
+            let original = action.task
+            let range = NSRange(original.startIndex..., in: original)
+            let matches = regex.matches(in: original, range: range)
+            if action.trackingID == nil, let match = matches.first,
+               match.numberOfRanges > 1,
+               let idRange = Range(match.range(at: 1), in: original) {
+                action.trackingID = String(original[idRange])
+            }
+            action.task = regex.stringByReplacingMatches(
+                in: original, range: range, withTemplate: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // An ID without an actual task is not a usable action item.
+            if !action.task.isEmpty { normalized.append(action) }
+        }
+        structured.actionItems = normalized
     }
 
     static func id(for action: StructuredMinutes.ActionItem,

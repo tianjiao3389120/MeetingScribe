@@ -7,13 +7,14 @@ struct SettingsView: View {
     @State private var download: ModelDownloader?
     @State private var cacheSummary = SettingsView.describeCache()
     @State private var showVoiceProfiles = false
+    @State private var showRecognitionMemory = false
+    @State private var recognitionMemoryCount = RecognitionMemoryStore.load().count
     @State private var voiceProfileCount = VoiceProfileStore.load().count
     @State private var showStorageManagement = false
     @State private var showRuntimeDiagnostics = false
+    @State private var showRealtimeHistory = false
     @State private var glossaryCandidates = FeedbackStore.loadCandidates()
     @State private var glossaryCandidateError: String?
-    @State private var realtimeKey = ""
-    @State private var hasRealtimeKey = Settings.shared.realtimeOpenAIKeyExists
 
     static func describeCache() -> String {
         let (count, bytes) = TranscriptCache.summary
@@ -27,39 +28,28 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             Form {
                 Section("大模型") {
-                    ProviderSection(settings: $settings)
-                }
+                    Picker("运行方式", selection: $settings.backend) {
+                        Text(BackendKind.codexCLI.displayName).tag(BackendKind.codexCLI)
+                        Text(BackendKind.claudeCLI.displayName).tag(BackendKind.claudeCLI)
+                        Text(BackendKind.openAICompatible.displayName).tag(BackendKind.openAICompatible)
+                    }
+                    Text(settings.backend.explanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-                Section("实时字幕识别") {
-                    Picker("默认识别质量", selection: $settings.realtimeTranscriptionQuality) {
-                        ForEach(RealtimeTranscriptionQuality.allCases) { quality in
-                            Text("\(quality.displayName) · \(quality.model)").tag(quality)
-                        }
+                    if settings.backend == .codexCLI {
+                        ToolRow(tool: .codex)
+                        Text("请先在终端运行 codex login 完成登录。生成任务不会保存到 Codex 会话历史。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if settings.backend == .claudeCLI {
+                        ToolRow(tool: .claude)
+                        Text("请先在终端完成 Claude Code 登录。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProviderSection(settings: $settings)
                     }
-                    Text(settings.realtimeTranscriptionQuality.explanation)
-                        .font(.caption).foregroundStyle(.secondary)
-                    SecureField("OpenAI Realtime API key", text: $realtimeKey,
-                                prompt: Text(hasRealtimeKey ? "已保存；输入新值可替换" : "sk-…"))
-                    HStack {
-                        Button(hasRealtimeKey ? "保存新的识别 key" : "保存识别 key") {
-                            let value = realtimeKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                            guard !value.isEmpty else { return }
-                            settings.realtimeOpenAIKey = value
-                            realtimeKey = ""
-                            hasRealtimeKey = true
-                        }
-                        .disabled(realtimeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if hasRealtimeKey {
-                            Button("清除识别 key", role: .destructive) {
-                                settings.realtimeOpenAIKey = nil
-                                realtimeKey = ""
-                                hasRealtimeKey = false
-                            }
-                        }
-                    }
-                    .font(.caption)
-                    Text("只用于 OpenAI Realtime 语音识别；会议纪要和字幕翻译继续使用上方的大模型配置，两者的账号和额度互不影响。")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("转录") {
@@ -89,20 +79,12 @@ struct SettingsView: View {
                         }
                     }
 
-                    Picker("识别场景", selection: $settings.recognitionScenario) {
-                        ForEach(RecognitionScenario.allCases) { scenario in
-                            Text(scenario.displayName).tag(scenario)
-                        }
-                    }
-                    Text(settings.recognitionScenario.explanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     Text("Whisper large-v3-turbo 和静音检测模型会随“识别模型”一起下载；OCR 使用 macOS 系统能力，大模型通过接口调用，均无需另外安装。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("说话人分离") {
-                    SpeakerSection(settings: $settings)
+                    SpeakerSection()
                     LabeledContent("已登记声纹") {
                         HStack(spacing: 10) {
                             Text("\(voiceProfileCount) 人")
@@ -148,18 +130,15 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("领域词表") {
-                    TextEditor(text: $settings.glossary)
-                        .frame(height: 110)
-                        .font(.system(.caption, design: .monospaced))
-                    HStack {
-                        Text("仅手工维护，不会自动增删。写成通顺句子，170 字以内；客户专用词优先通过会议材料提供。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("恢复默认") { settings.glossary = Settings.defaultGlossary }
-                            .buttonStyle(.link)
+                Section("识别学习") {
+                    LabeledContent("已学习") {
+                        HStack(spacing: 10) {
+                            Text("\(recognitionMemoryCount) 条").foregroundStyle(.secondary)
+                            Button("管理…") { showRecognitionMemory = true }
+                        }
                     }
+                    Text("在会议结果中纠正术语或登记姓名后，后续会议会自动使用；项目词不会影响其他会议。")
+                        .font(.caption).foregroundStyle(.secondary)
                     if !glossaryCandidates.isEmpty {
                         DisclosureGroup("待审核术语（\(glossaryCandidates.count)）") {
                             ForEach(glossaryCandidates) { candidate in
@@ -182,18 +161,27 @@ struct SettingsView: View {
                             Text(glossaryCandidateError).font(.caption).foregroundStyle(.red)
                         }
                     }
+                    DisclosureGroup("兼容旧版手工词表") {
+                        TextEditor(text: $settings.glossary)
+                            .frame(height: 80).font(.system(.caption, design: .monospaced))
+                        Text("旧词表仍参与识别；新内容建议通过“纠正并学习”录入。")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("存储") {
                     LabeledContent("处理缓存") { Text(cacheSummary).foregroundStyle(.secondary) }
                     Button("管理存储…") { showStorageManagement = true }
+                    Button("查看旧实时字幕记录…") { showRealtimeHistory = true }
+                    Text("实时字幕已从主流程下架；既有记录仍可在这里查看和导出。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("调试") {
                     Button("运行环境诊断…", systemImage: "stethoscope") {
                         showRuntimeDiagnostics = true
                     }
-                    Text("检查转录引擎、模型、BlackHole、Audio Helper 和大模型配置，不会调用接口。")
+                    Text("检查本地转录引擎、模型和大模型配置，不会调用接口。")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("保留临时音轨", isOn: $settings.keepIntermediates)
                     Text("仅用于排查转录问题，会持续占用临时目录空间；正常使用建议关闭。")
@@ -217,22 +205,27 @@ struct SettingsView: View {
         }) {
             VoiceProfileManagementView()
         }
+        .sheet(isPresented: $showRecognitionMemory, onDismiss: {
+            recognitionMemoryCount = RecognitionMemoryStore.load().count
+        }) { RecognitionMemoryManagementView() }
         .sheet(isPresented: $showStorageManagement, onDismiss: {
             cacheSummary = Self.describeCache()
         }) { StorageManagementView() }
         .sheet(isPresented: $showRuntimeDiagnostics) { RuntimeDiagnosticsView() }
+        .sheet(isPresented: $showRealtimeHistory) { RealtimeTranscriptHistoryView() }
     }
 
     private func canAccept(_ candidate: GlossaryCandidate) -> Bool {
-        let separator = settings.glossary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : "，"
-        return settings.glossary.count + separator.count + candidate.term.count <= 170
+        !candidate.term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func accept(_ candidate: GlossaryCandidate) {
-        guard canAccept(candidate) else { glossaryCandidateError = "词表已接近 170 字上限，请先精简。"; return }
-        let base = settings.glossary.trimmingCharacters(in: .whitespacesAndNewlines)
-        settings.glossary = base.isEmpty ? candidate.term : "\(base)，\(candidate.term)"
-        discard(candidate)
+        do {
+            try RecognitionMemoryStore.upsert(RecognitionMemoryEntry(
+                canonical: candidate.term, sourceTitle: candidate.sourceTitle))
+            recognitionMemoryCount = RecognitionMemoryStore.load().count
+            discard(candidate)
+        } catch { glossaryCandidateError = error.localizedDescription }
     }
 
     private func discard(_ candidate: GlossaryCandidate) {
@@ -246,29 +239,15 @@ struct SettingsView: View {
 
 /// Install, enable and tune speaker separation.
 private struct SpeakerSection: View {
-    @Binding var settings: Settings
     @State private var readiness = Diarizer.readiness()
     @State private var installing = false
     @State private var installDetail = ""
     @State private var installError: String?
 
     var body: some View {
-        Toggle("为纪要区分说话人", isOn: $settings.separateSpeakers)
-            .disabled(!readiness.isReady)
-
-        Text("会额外增加约一倍处理时间（40 分钟会议约 4 分钟），换来纪要里「谁汇报、谁提要求、谁承诺」的归属信息。结果会缓存，重复处理同一文件不再重算。")
+        Text("处理会议时会自动区分实际发言人，让纪要保留「谁汇报、谁提要求、谁承诺」的归属信息。结果会缓存，重复处理同一文件不再重算。")
             .font(.caption)
             .foregroundStyle(.secondary)
-
-        if settings.separateSpeakers, readiness.isReady {
-            Picker("实际发言人数", selection: $settings.expectedSpeakerCount) {
-                Text("不知道，自动判断").tag(0)
-                ForEach(2...30, id: \.self) { Text("\($0) 人").tag($0) }
-            }
-            Text("只计算真正开口的人，不是参会名单人数。30 人参会但约 5 人发言，就填 5；无法判断时选自动。压缩音频下自动结果可能偏多，可在结果页调整后重新分离。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
 
         switch readiness {
         case .ready:
@@ -281,7 +260,6 @@ private struct SpeakerSection: View {
                 Button("卸载") {
                     Diarizer.uninstall()
                     DiarizationCache.clear()
-                    settings.separateSpeakers = false
                     readiness = Diarizer.readiness()
                 }
                 .font(.caption)
@@ -463,7 +441,9 @@ private struct ProviderSection: View {
             baseURL: settings.providerBaseURL,
             apiKey: settings.providerKey,
             model: settings.providerModel,
-            supportsVision: false
+            supportsVision: false,
+            apiStyle: settings.provider.apiStyle,
+            httpHeaders: settings.provider.httpHeaders
         )
         Task {
             do {

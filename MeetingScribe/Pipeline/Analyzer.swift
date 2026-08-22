@@ -5,9 +5,8 @@ import UniformTypeIdentifiers
 
 /// Turns the assembled timeline into a meeting summary.
 ///
-/// Two backends: the local `claude` CLI (uses an existing subscription, costs
-/// nothing extra) and the Anthropic API (works on any machine with a key).
-/// Same prompt either way, so output is comparable.
+/// Supports local subscription-backed CLIs and remote model APIs. The same
+/// prompt is used for each backend so output remains comparable.
 struct Analyzer {
 
     struct Result: Sendable {
@@ -22,39 +21,45 @@ struct Analyzer {
     let settings: Settings
 
     func run(progress: @escaping @Sendable (String) -> Void) async throws -> Result {
+        let selectedAdaptiveIDs = Self.selectAdaptiveOCRCaptures(
+            from: assets.captures, limit: 6)
+        var modelAssets = assets
+        modelAssets.captures = assets.captures.filter {
+            $0.evidenceReason == nil || selectedAdaptiveIDs.contains($0.id)
+        }
         // Only offer images to a backend that can actually take them; otherwise
         // every capture goes in as OCR text and nothing is silently dropped.
         let canSendImages: Bool
         switch settings.backend {
+        case .codexCLI:         canSendImages = false
         case .claudeCLI:        canSendImages = false   // `claude -p` takes stdin text only
-        case .anthropicAPI:     canSendImages = true
         case .openAICompatible: canSendImages = settings.providerSupportsVision
         }
 
         let imageIDs = canSendImages
-            ? PromptBuilder.selectImageCaptures(from: assets.captures, limit: 12)
+            ? PromptBuilder.selectImageCaptures(from: modelAssets.captures, limit: 12)
             : []
-        let combinedContext = [settings.recognitionScenario.analysisGuidance,
-                               assets.workspace?.context ?? "",
-                               assets.meetingContext,
-                               ActionTracking.promptContext(for: assets.workspace?.id),
-                               "纪要模板（\(MinutesTemplate.template(id: assets.minutesTemplateID).name)）：\(MinutesTemplate.template(id: assets.minutesTemplateID).instructions)",
+        let combinedContext = [modelAssets.recognitionScenario.analysisGuidance,
+                               modelAssets.workspace?.context ?? "",
+                               modelAssets.meetingContext,
+                               ActionTracking.promptContext(for: modelAssets.workspace?.id),
+                               "纪要模板（\(MinutesTemplate.template(id: modelAssets.minutesTemplateID).name)）：\(MinutesTemplate.template(id: modelAssets.minutesTemplateID).instructions)",
                                "本次纪要附加要求：\(settings.minutesInstructions)"]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: "\n")
-        let builder = PromptBuilder(assets: assets,
+        let builder = PromptBuilder(assets: modelAssets,
                                     contextHint: combinedContext,
                                     imageCaptureIDs: imageIDs)
         let timeline = builder.buildTimeline()
 
         let raw: String
         switch settings.backend {
+        case .codexCLI:
+            progress("正在通过本机 Codex CLI 生成纪要…")
+            raw = try await runLocalCLI(timeline: timeline)
         case .claudeCLI:
             progress("正在通过本机 Claude Code 生成纪要…")
-            raw = try await runCLI(timeline: timeline)
-        case .anthropicAPI:
-            progress("正在调用 Anthropic API 生成纪要…")
-            raw = try await runAPI(timeline: timeline, imageIDs: imageIDs)
+            raw = try await runLocalCLI(timeline: timeline)
         case .openAICompatible:
             let preset = settings.provider
             progress("正在调用 \(preset.name)（\(settings.providerModel)）生成纪要…")
@@ -64,10 +69,122 @@ struct Analyzer {
         }
 
         if let structured = Self.parseStructured(raw) {
-            return Result(markdown: StructuredMinutesRenderer.markdown(from: structured),
-                          structured: structured, usedFallback: false)
+            let reviewed = await repairScreenEvidenceIfNeeded(
+                structured, progress: progress)
+            return Result(markdown: StructuredMinutesRenderer.markdown(from: reviewed),
+                          structured: reviewed, usedFallback: false)
         }
         return Result(markdown: raw, structured: nil, usedFallback: true)
+    }
+
+    /// IDs of adaptive frames that survive backend capability filtering and
+    /// therefore appear in the model request, either as pixels or OCR text.
+    static func screenFramesSentToModel(assets: MeetingAssets, settings: Settings) -> Set<Int> {
+        let selected = selectAdaptiveOCRCaptures(from: assets.captures, limit: 6)
+        let adaptive = assets.captures.filter {
+            $0.evidenceReason != nil && selected.contains($0.id)
+        }
+        switch settings.backend {
+        case .codexCLI, .claudeCLI:
+            return Set(adaptive.filter { !$0.recognizedText.isEmpty }.map(\.id))
+        case .openAICompatible:
+            guard settings.providerSupportsVision else {
+                return Set(adaptive.filter { !$0.recognizedText.isEmpty }.map(\.id))
+            }
+            let imageIDs = PromptBuilder.selectImageCaptures(from: assets.captures, limit: 12)
+            return Set(adaptive.filter {
+                imageIDs.contains($0.id) || !$0.recognizedText.isEmpty
+            }.map(\.id))
+        }
+    }
+
+    /// Select one information-rich view around each event rather than sending
+    /// the before/at/after probe triplet. Eight seconds of separation folds a
+    /// single requested node while still allowing nearby, distinct events.
+    static func selectAdaptiveOCRCaptures(from captures: [ScreenCapture],
+                                          limit: Int) -> Set<Int> {
+        guard limit > 0 else { return [] }
+        let ranked = captures.filter {
+            $0.evidenceReason != nil && !$0.recognizedText.isEmpty
+        }.sorted {
+            let lhs = $0.textBlock.count + $0.recognizedText.count * 40
+            let rhs = $1.textBlock.count + $1.recognizedText.count * 40
+            return lhs == rhs ? $0.time < $1.time : lhs > rhs
+        }
+        var selected: [ScreenCapture] = []
+        for capture in ranked {
+            guard !selected.contains(where: { abs($0.time - capture.time) < 8 }) else { continue }
+            selected.append(capture)
+            if selected.count == limit { break }
+        }
+        return Set(selected.map(\.id))
+    }
+
+    static func screenCitationCount(in minutes: StructuredMinutes?) -> Int {
+        guard let minutes else { return 0 }
+        var evidence: [String] = []
+        evidence.append(contentsOf: minutes.issues.flatMap(\.evidence))
+        evidence.append(contentsOf: minutes.requirements.flatMap(\.evidence))
+        evidence.append(contentsOf: minutes.actionItems.flatMap(\.evidence))
+        evidence.append(contentsOf: minutes.agreements.flatMap(\.evidence))
+        evidence.append(contentsOf: minutes.afterMeeting.flatMap(\.evidence))
+        evidence.append(contentsOf: minutes.uncertainties.flatMap(\.evidence))
+        return Set(evidence.filter { $0.localizedCaseInsensitiveContains("屏幕") }).count
+    }
+
+    static func shouldRepairScreenEvidence(minutes: StructuredMinutes,
+                                           assets: MeetingAssets,
+                                           settings: Settings) -> Bool {
+        !screenFramesSentToModel(assets: assets, settings: settings).isEmpty
+            && screenCitationCount(in: minutes) == 0
+    }
+
+    /// A cheap second pass used only when adaptive OCR reached the model but
+    /// none of it survived into evidence fields. It cannot make the primary
+    /// analysis fail and never repeats transcription, extraction, or OCR.
+    private func repairScreenEvidenceIfNeeded(
+        _ minutes: StructuredMinutes,
+        progress: @escaping @Sendable (String) -> Void
+    ) async -> StructuredMinutes {
+        guard Self.shouldRepairScreenEvidence(minutes: minutes,
+                                              assets: assets,
+                                              settings: settings) else { return minutes }
+        let sentIDs = Self.screenFramesSentToModel(assets: assets, settings: settings)
+        let evidence = assets.captures
+            .filter { sentIDs.contains($0.id) && !$0.recognizedText.isEmpty }
+            .sorted { $0.time < $1.time }
+            .map { capture in
+                let reason = capture.evidenceReason ?? "核对逐字稿疑点"
+                let text = String(capture.textBlock.prefix(1_500))
+                return "【屏幕 \(capture.timecode)，核对原因：\(reason)】\n\(text)"
+            }
+            .joined(separator: "\n\n")
+        guard !evidence.isEmpty,
+              let encoded = try? JSONEncoder().encode(minutes),
+              let minutesJSON = String(data: encoded, encoding: .utf8) else { return minutes }
+
+        progress("补充画面已送达但未被引用，正在校验证据…")
+        do {
+            let raw = try await ModelTextClient(settings: settings).complete(
+                system: "你负责校验会议纪要中的屏幕证据。只输出完整合法 JSON，不要解释。",
+                user: """
+                对照补充屏幕OCR，修订下面的结构化纪要：
+                1. 只在OCR确实支持、纠正或补充某条事实时修改该条，并在 evidence 加入 `屏幕 MM:SS`。
+                2. 屏幕与逐字稿冲突时，以屏幕文字为准；可纠正名称、数字、日期、版本、报错和配置项。
+                3. OCR没有提供有效新事实时保持原文，不得为了产生引用而牵强引用或删除不确定项。
+                4. 保留原JSON全部字段和无关内容，不要新增结构外字段。
+
+                初版纪要JSON：
+                \(minutesJSON)
+
+                补充屏幕OCR：
+                \(String(evidence.prefix(14_000)))
+                """,
+                timeout: 300)
+            return Self.parseStructured(raw) ?? minutes
+        } catch {
+            return minutes
+        }
     }
 
     static func parseStructured(_ raw: String) -> StructuredMinutes? {
@@ -82,8 +199,10 @@ struct Analyzer {
             candidate = String(candidate[first...last])
         }
         guard let data = candidate.data(using: .utf8),
-              let value = try? JSONDecoder().decode(StructuredMinutes.self, from: data),
-              value.isMeaningful else { return nil }
+              var value = try? JSONDecoder().decode(StructuredMinutes.self, from: data)
+        else { return nil }
+        ActionTracking.normalizeModelOutput(&value)
+        guard value.isMeaningful else { return nil }
         return value
     }
 
@@ -98,14 +217,17 @@ struct Analyzer {
             baseURL: settings.providerBaseURL,
             apiKey: settings.providerKey,
             model: settings.providerModel,
-            supportsVision: settings.providerSupportsVision
+            supportsVision: settings.providerSupportsVision,
+            apiStyle: settings.provider.apiStyle,
+            httpHeaders: settings.provider.httpHeaders
         )
 
         let attachments = assets.captures
             .filter { imageIDs.contains($0.id) }
             .compactMap { capture -> OpenAICompatibleClient.Attachment? in
                 guard let jpeg = jpegData(from: capture.image) else { return nil }
-                return .init(caption: "图片 #\(capture.id)（屏幕画面，时间 \(capture.timecode)）：",
+                let reason = capture.evidenceReason.map { "；补充核对原因：\($0)" } ?? ""
+                return .init(caption: "图片 #\(capture.id)（屏幕画面，时间 \(capture.timecode)\(reason)）：",
                              jpeg: jpeg)
             }
 
@@ -127,125 +249,14 @@ struct Analyzer {
     /// The CLI is an agentic tool, not a plain inference endpoint — it can only
     /// take text on stdin. Screen captures therefore reach it as OCR text; the
     /// diagram images are dropped. That is the tradeoff for using this backend.
-    private func runCLI(timeline: String) async throws -> String {
-        let claude = try ToolLocator.require(.claude)
+    private func runLocalCLI(timeline: String) async throws -> String {
         let prompt = """
-        \(PromptBuilder.systemPrompt)
-
-        ---
-
         以下是会议材料，请按上述要求输出结构化 JSON。不要有任何前言、说明或追问。
 
         \(timeline)
         """
-
-        let result = try await Shell.check(
-            claude,
-            ["-p", "--output-format", "text"],
-            stdin: prompt,
-            timeout: 900
-        )
-        let text = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw Failure.emptyResponse }
-        return text
-    }
-
-    // MARK: - Anthropic API
-
-    private func runAPI(timeline: String, imageIDs: Set<Int>) async throws -> String {
-        guard let key = settings.apiKey, !key.isEmpty else { throw ToolError.noAPIKey }
-
-        var content: [[String: Any]] = []
-
-        for material in assets.materials {
-            guard let data = material.imageJPEG else { continue }
-            content.append(["type": "text", "text": "会议材料图片《\(material.name)》："])
-            content.append([
-                "type": "image",
-                "source": ["type": "base64", "media_type": "image/jpeg",
-                           "data": data.base64EncodedString()],
-            ])
-        }
-
-        // Diagrams first so the model has them in view while reading the timeline.
-        for capture in assets.captures where imageIDs.contains(capture.id) {
-            guard let data = jpegData(from: capture.image) else { continue }
-            content.append([
-                "type": "text",
-                "text": "图片 #\(capture.id)（屏幕画面，时间 \(capture.timecode)）：",
-            ])
-            content.append([
-                "type": "image",
-                "source": [
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": data.base64EncodedString(),
-                ],
-            ])
-        }
-
-        content.append(["type": "text", "text": timeline])
-
-        let body: [String: Any] = [
-            "model": settings.apiModel,
-            "max_tokens": 16000,
-            "system": PromptBuilder.systemPrompt,
-            "thinking": ["type": "adaptive"],
-            "messages": [["role": "user", "content": content]],
-            "stream": true,
-        ]
-
-        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(key, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        request.timeoutInterval = 900
-
-        // Streaming keeps the connection alive on long generations, which a
-        // 40-minute meeting with a dozen screenshots reliably is.
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            var detail = ""
-            for try await line in bytes.lines { detail += line }
-            throw APIError.http(http.statusCode, detail)
-        }
-
-        var text = ""
-        var refused = false
-
-        for try await line in bytes.lines {
-            guard line.hasPrefix("data: ") else { continue }
-            let payload = String(line.dropFirst(6))
-            guard payload != "[DONE]",
-                  let data = payload.data(using: .utf8),
-                  let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
-
-            switch event["type"] as? String {
-            case "content_block_delta":
-                if let delta = event["delta"] as? [String: Any],
-                   delta["type"] as? String == "text_delta",
-                   let chunk = delta["text"] as? String {
-                    text += chunk
-                }
-            case "message_delta":
-                if let delta = event["delta"] as? [String: Any],
-                   delta["stop_reason"] as? String == "refusal" {
-                    refused = true
-                }
-            case "error":
-                let message = (event["error"] as? [String: Any])?["message"] as? String
-                throw APIError.stream(message ?? "未知的流式错误")
-            default:
-                break
-            }
-        }
-
-        if refused, text.isEmpty { throw APIError.refused }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await ModelTextClient(settings: settings).complete(
+            system: PromptBuilder.systemPrompt, user: prompt)
     }
 
     private func jpegData(from image: CGImage, quality: CGFloat = 0.72) -> Data? {
@@ -269,22 +280,4 @@ struct Analyzer {
         }
     }
 
-    enum APIError: LocalizedError {
-        case http(Int, String)
-        case stream(String)
-        case refused
-
-        var errorDescription: String? {
-            switch self {
-            case .http(401, _):     return "API key 无效或已过期。"
-            case .http(429, _):     return "触发速率限制，请稍后重试。"
-            case .http(let code, let detail):
-                return "API 返回 \(code)：\(detail.prefix(300))"
-            case .stream(let message):
-                return "生成中断：\(message)"
-            case .refused:
-                return "模型拒绝了本次请求。"
-            }
-        }
-    }
 }

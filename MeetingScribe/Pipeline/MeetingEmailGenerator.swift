@@ -57,11 +57,6 @@ struct MeetingEmailGenerator {
     """
 
     private func complete(system: String, user: String) async throws -> String {
-        try await OpenAICompatibleClient(
-            baseURL: settings.providerBaseURL,
-            apiKey: settings.providerKey,
-            model: settings.providerModel,
-            supportsVision: false
-        ).complete(system: system, user: user, images: [])
+        try await ModelTextClient(settings: settings).complete(system: system, user: user)
     }
 }

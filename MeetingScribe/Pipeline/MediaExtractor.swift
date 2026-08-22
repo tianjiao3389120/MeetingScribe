@@ -197,6 +197,36 @@ struct MediaExtractor {
         return captures.sorted { $0.time < $1.time }
     }
 
+    /// Extracts exact frames requested after transcript review. Unlike the
+    /// regular sampler, these are evidence probes and are not dwell-time
+    /// filtered: a briefly shown number or diagram may be the important part.
+    func extractFrames(at probes: [(time: TimeInterval, reason: String)],
+                       startingID: Int) async throws -> [ScreenCapture] {
+        let asset = AVURLAsset(url: url)
+        guard try await !asset.loadTracks(withMediaType: .video).isEmpty else { return [] }
+        let duration = try await asset.load(.duration).seconds
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
+        generator.maximumSize = CGSize(width: 1600, height: 1600)
+
+        var captures: [ScreenCapture] = []
+        for (offset, probe) in probes.enumerated() {
+            try Task.checkCancellation()
+            let bounded = min(max(probe.time, 0), max(duration - 0.1, 0))
+            let time = CMTime(seconds: bounded, preferredTimescale: 600)
+            guard let image = try? await generator.image(at: time).image else { continue }
+            captures.append(ScreenCapture(
+                // Give evidence probes enough selection weight to reach the
+                // vision model even though they were not measured by dwell time.
+                id: startingID + offset, time: bounded, duration: 30,
+                image: image, evidenceReason: probe.reason,
+                fingerprint: PerceptualHash.compute(image)))
+        }
+        return captures
+    }
+
     /// Fixed-capacity selection by dwell time. Releasing displaced images keeps
     /// peak memory proportional to the configured frame limit.
     private func retain(_ candidate: ScreenCapture,

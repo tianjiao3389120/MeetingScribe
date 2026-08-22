@@ -27,10 +27,8 @@ struct HistoricalActionReviewService {
             return Result(reviewedMeetings: 0, suggestions: 0, updatedRecords: [])
         }
 
-        // Read the key once. Repeated keychain reads can otherwise show one prompt per meeting.
-        let client = OpenAICompatibleClient(
-            baseURL: settings.providerBaseURL, apiKey: settings.providerKey,
-            model: settings.providerModel, supportsVision: false)
+        // Construct once so API-backed runs read their key at most once.
+        let client = try ModelTextClient(settings: settings)
         var working = records
         var changed: [MeetingRecord] = []
         var reviewed = 0
@@ -44,8 +42,7 @@ struct HistoricalActionReviewService {
             progress("正在回溯第 \(index + 1)/\(working.count) 场会议…")
             let raw = try await client.complete(
                 system: Self.systemPrompt,
-                user: Self.userPrompt(meeting: working[index], openActions: open),
-                images: [])
+                user: Self.userPrompt(meeting: working[index], openActions: open))
             let proposed = Self.parse(raw)
             let additions = Self.validatedSuggestions(proposed, openActions: open)
             guard !additions.isEmpty else { continue }

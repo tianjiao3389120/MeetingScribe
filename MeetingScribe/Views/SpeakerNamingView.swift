@@ -17,6 +17,7 @@ struct SpeakerNamingView: View {
     @State private var clipURL: URL?
     @State private var playbackTask: Task<Void, Never>?
     @State private var saveError: String?
+    @State private var isSaving = false
 
     private var diarization: Diarization? { assets.diarization }
 
@@ -69,7 +70,7 @@ struct SpeakerNamingView: View {
                 Button("跳过") { stop(); onCancel() }
                 Button("保存并重新生成纪要") { enroll() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(names.values.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty })
+                    .disabled(isSaving || names.values.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty })
             }
             .padding(16)
         }
@@ -162,20 +163,40 @@ struct SpeakerNamingView: View {
             saveError = "姓名“\(duplicate)”被分配给多位说话人。"
             return
         }
-        do {
-            var samples: [(name: String, embedding: [Float], note: String)] = []
+        isSaving = true
+        Task {
+          do {
+            var samples: [(name: String, embedding: [Float], note: String, referenceClipURL: URL?)] = []
+            var temporaryClips: [URL] = []
+            defer { temporaryClips.forEach { try? FileManager.default.removeItem(at: $0) } }
             for (speaker, name) in entered {
                 guard let embedding = diarization.embeddings["\(speaker)"] else { continue }
-                samples.append((name: name, embedding: embedding, note: ""))
+                var reference: URL?
+                if let turn = diarization.segments.filter({ $0.speaker == speaker })
+                    .max(by: { ($0.end - $0.start) < ($1.end - $1.start) }) {
+                    let clip = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("meetingscribe-reference-\(UUID().uuidString).m4a")
+                    try await MediaExtractor(url: assets.sourceURL)
+                        .exportClip(from: turn.start, duration: min(turn.end - turn.start, 12), to: clip)
+                    temporaryClips.append(clip)
+                    reference = clip
+                }
+                samples.append((name, embedding, "", reference))
                 applied[speaker] = name
             }
             try VoiceProfileStore.enroll(samples: samples)
-        } catch {
+            for (_, name) in entered {
+                try RecognitionMemoryStore.upsert(RecognitionMemoryEntry(
+                    canonical: name, kind: .person,
+                    workspaceID: assets.workspace?.id, sourceTitle: assets.title))
+            }
+            stop()
+            onSaved(applied)
+          } catch {
             saveError = "保存失败：\(error.localizedDescription)"
-            return
+            isSaving = false
+          }
         }
-        stop()
-        onSaved(applied)
     }
 }
 

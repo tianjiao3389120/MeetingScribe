@@ -9,6 +9,8 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
     var sampleCount: Int = 1
     var updatedAt: Date = Date()
     var note: String = ""
+    /// Filename of a short, local reference clip used for manual identification.
+    var referenceClip: String? = nil
 
     /// Folds a new sample into the running mean, so a person's profile improves
     /// as they appear in more meetings rather than being replaced by the latest
@@ -31,6 +33,14 @@ enum VoiceProfileStore {
     private static let fileURL: URL = {
         Diarizer.supportDirectory.appendingPathComponent("voice-profiles.json")
     }()
+    private static let clipsDirectory = Diarizer.supportDirectory
+        .appendingPathComponent("voice-profile-clips", isDirectory: true)
+
+    static func referenceClipURL(for profile: VoiceProfile) -> URL? {
+        guard let filename = profile.referenceClip, !filename.isEmpty else { return nil }
+        let url = clipsDirectory.appendingPathComponent(filename)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
 
     /// Cosine similarity above which a cluster is considered the same person.
     ///
@@ -86,8 +96,15 @@ enum VoiceProfileStore {
 
     /// Enrols a meeting's confirmed speakers in one atomic file update. Either
     /// every name is persisted or none are, avoiding a half-saved meeting.
-    static func enroll(samples: [(name: String, embedding: [Float], note: String)]) throws {
+    static func enroll(samples: [(name: String, embedding: [Float], note: String,
+                                  referenceClipURL: URL?)]) throws {
         var profiles = try loadChecked()
+        var newlyCopied: [URL] = []
+        var supersededClips: [URL] = []
+        var committed = false
+        defer {
+            if !committed { newlyCopied.forEach { try? FileManager.default.removeItem(at: $0) } }
+        }
         for sample in samples {
             let trimmed = sample.name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { throw Failure.invalidName }
@@ -96,12 +113,40 @@ enum VoiceProfileStore {
             if let index = profiles.firstIndex(where: { $0.name == trimmed }) {
                 profiles[index].merge(sample.embedding)
                 if !sample.note.isEmpty { profiles[index].note = sample.note }
+                if let source = sample.referenceClipURL {
+                    let oldClip = referenceClipURL(for: profiles[index])
+                    let stored = try storeReferenceClip(from: source)
+                    newlyCopied.append(stored)
+                    profiles[index].referenceClip = stored.lastPathComponent
+                    if let oldClip { supersededClips.append(oldClip) }
+                }
             } else {
-                profiles.append(VoiceProfile(name: trimmed, embedding: sample.embedding,
-                                             note: sample.note))
+                var profile = VoiceProfile(name: trimmed, embedding: sample.embedding,
+                                           note: sample.note)
+                if let source = sample.referenceClipURL {
+                    let stored = try storeReferenceClip(from: source)
+                    newlyCopied.append(stored)
+                    profile.referenceClip = stored.lastPathComponent
+                }
+                profiles.append(profile)
             }
         }
         try save(profiles)
+        committed = true
+        supersededClips.forEach { try? FileManager.default.removeItem(at: $0) }
+    }
+
+    static func enroll(samples: [(name: String, embedding: [Float], note: String)]) throws {
+        try enroll(samples: samples.map { ($0.name, $0.embedding, $0.note, nil) })
+    }
+
+    private static func storeReferenceClip(from source: URL) throws -> URL {
+        try FileManager.default.createDirectory(at: clipsDirectory, withIntermediateDirectories: true)
+        let destination = clipsDirectory.appendingPathComponent("\(UUID().uuidString).m4a")
+        try FileManager.default.copyItem(at: source, to: destination)
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o600))],
+                                              ofItemAtPath: destination.path)
+        return destination
     }
 
     static func replace(_ profiles: [VoiceProfile]) throws {
@@ -118,12 +163,17 @@ enum VoiceProfileStore {
     }
 
     static func remove(id: UUID) throws {
-        try save(try loadChecked().filter { $0.id != id })
+        let profiles = try loadChecked()
+        if let profile = profiles.first(where: { $0.id == id }), let clip = referenceClipURL(for: profile) {
+            try? FileManager.default.removeItem(at: clip)
+        }
+        try save(profiles.filter { $0.id != id })
     }
 
     static func removeAll() throws {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         try FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: clipsDirectory)
     }
 
     static func similarity(_ a: [Float], _ b: [Float]) -> Float {

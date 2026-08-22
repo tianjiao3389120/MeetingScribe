@@ -1,13 +1,20 @@
 import Foundation
 
-/// Finds whisper-cli, the claude CLI, and the whisper models on disk.
+/// Finds whisper-cli, local model CLIs, and the whisper models on disk.
 ///
 /// A missing tool is a normal state, not a crash: the UI reports what is
 /// missing and how to install it.
 enum ToolLocator {
 
+    /// Keep meeting analysis isolated from repository instructions, personal
+    /// skills and saved sessions while retaining the CLI's existing login.
+    static let codexExecArguments = [
+        "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+        "--sandbox", "read-only", "--skip-git-repo-check", "--color", "never", "-",
+    ]
+
     enum Tool: String, CaseIterable, Identifiable {
-        case whisper, claude
+        case whisper, claude, codex
 
         var id: String { rawValue }
 
@@ -15,6 +22,7 @@ enum ToolLocator {
             switch self {
             case .whisper: return "whisper-cli"
             case .claude:  return "claude"
+            case .codex:   return "codex"
             }
         }
 
@@ -26,6 +34,10 @@ enum ToolLocator {
             case .claude:
                 return [NSString(string: "~/.local/bin/claude").expandingTildeInPath,
                         "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+            case .codex:
+                return [NSString(string: "~/.local/bin/codex").expandingTildeInPath,
+                        NSString(string: "~/.npm-global/bin/codex").expandingTildeInPath,
+                        "/opt/homebrew/bin/codex", "/usr/local/bin/codex"]
             }
         }
 
@@ -33,6 +45,7 @@ enum ToolLocator {
             switch self {
             case .whisper: return "brew install whisper-cpp"
             case .claude:  return "claude.com/claude-code"
+            case .codex:   return "npm install -g @openai/codex，然后运行 codex login"
             }
         }
     }

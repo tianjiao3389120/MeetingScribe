@@ -1,7 +1,213 @@
 import XCTest
+import CoreGraphics
 @testable import MeetingScribe
 
 final class WorkspaceMaterialTests: XCTestCase {
+    func testAdaptiveFramePlannerParsesBoundsDeduplicatesAndCapsRequests() {
+        let raw = #"prefix {"requests":[{"seconds":12.1,"reason":"数字","radius":3},{"seconds":12.4,"reason":"重复","radius":3},{"seconds":-1,"reason":"越界","radius":3},{"seconds":20,"reason":"A","radius":3},{"seconds":30,"reason":"B","radius":3},{"seconds":40,"reason":"C","radius":3},{"seconds":50,"reason":"D","radius":3},{"seconds":60,"reason":"E","radius":3},{"seconds":70,"reason":"F","radius":3}]} suffix"#
+        let requests = AdaptiveFramePlanner.parse(raw, duration: 100)
+
+        XCTAssertEqual(requests.count, 6)
+        XCTAssertEqual(requests.first?.seconds, 12.1)
+        XCTAssertFalse(requests.contains { $0.seconds < 0 })
+    }
+
+    func testAdaptiveFramePlannerOnlySelectsLocallyRelevantSegmentsAcrossTimeline() {
+        let transcript = Transcript(segments: [
+            TranscriptSegment(id: 0, start: 1, end: 2, text: "大家好，今天开始开会。"),
+            TranscriptSegment(id: 1, start: 100, end: 101, text: "大家看一下这里的架构图。"),
+            TranscriptSegment(id: 2, start: 900, end: 901, text: "最终数据是 12345 条，截止日期为 8 月 30 日。")
+        ])
+        let timeline = AdaptiveFramePlanner.candidateTimeline(from: transcript)
+
+        XCTAssertFalse(timeline.contains("今天开始开会"))
+        XCTAssertTrue(timeline.contains("架构图"))
+        XCTAssertTrue(timeline.contains("12345"))
+        XCTAssertTrue(timeline.contains("15:00"))
+    }
+
+    func testAdaptiveFramePlannerFallbackKeepsExplicitScreenDemonstrations() {
+        let transcript = Transcript(segments: [
+            TranscriptSegment(id: 0, start: 10, end: 12, text: "大家看一下这里的告警列表。"),
+            TranscriptSegment(id: 1, start: 12, end: 14, text: "这个也是同一页。"),
+            TranscriptSegment(id: 2, start: 60, end: 62, text: "版本号是 091，结果有 24 项。")
+        ])
+
+        let requests = AdaptiveFramePlanner.fallbackRequests(from: transcript, duration: 90)
+
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests.first?.seconds, 10)
+        XCTAssertEqual(requests.last?.seconds, 60)
+    }
+
+    func testPromptTimelineExplainsWhyAdaptiveFrameWasCaptured() {
+        let image = CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
+                            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                            provider: CGDataProvider(data: Data([0, 0, 0, 255]) as CFData)!,
+                            decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+        let capture = ScreenCapture(id: 7, time: 12, duration: 30, image: image,
+                                    recognizedText: ["版本 5.1.7"],
+                                    evidenceReason: "核对版本号", fingerprint: 0)
+        let assets = MeetingAssets(sourceURL: URL(fileURLWithPath: "/tmp/test.mov"),
+                                   duration: 20, transcript: Transcript(segments: []),
+                                   captures: [capture], hasVideo: true)
+        let timeline = PromptBuilder(assets: assets, contextHint: "", imageCaptureIDs: [])
+            .buildTimeline()
+
+        XCTAssertTrue(timeline.contains("补充核对原因：核对版本号"))
+        XCTAssertTrue(timeline.contains("版本 5.1.7"))
+    }
+
+    func testAdaptiveScreenStatsCountUniqueCitations() {
+        let minutes = StructuredMinutes(
+            title: "测试会议", nature: "", duration: "", agenda: ["核对"],
+            participantAssessment: [],
+            issues: [.init(title: "版本", status: "待确认", rootCause: "", solution: "",
+                           progress: "", evidence: ["屏幕 08:20", "[08:22]"])],
+            requirements: [],
+            actionItems: [.init(owner: "张三", task: "核对", status: "待办", due: "",
+                               evidence: ["屏幕 08:20", "屏幕 09:10"])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+
+        XCTAssertEqual(Analyzer.screenCitationCount(in: minutes), 2)
+    }
+
+    func testScreenEvidenceRepairRunsOnlyAfterUncitedAdaptiveOCRWasSent() {
+        let image = CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
+                            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                            provider: CGDataProvider(data: Data([0, 0, 0, 255]) as CFData)!,
+                            decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+        let capture = ScreenCapture(id: 1, time: 10, duration: 1, image: image,
+                                    recognizedText: ["OCS 232台"],
+                                    evidenceReason: "核对主机范围", fingerprint: 0)
+        let assets = MeetingAssets(sourceURL: URL(fileURLWithPath: "/tmp/test.mov"),
+                                   duration: 20, transcript: Transcript(segments: []),
+                                   captures: [capture], hasVideo: true)
+        let minutes = StructuredMinutes(
+            title: "测试会议", nature: "", duration: "", agenda: ["核对"],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [.init(owner: "张三", task: "核对范围", status: "待办",
+                               due: "", evidence: ["[10:00]"])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+
+        XCTAssertTrue(Analyzer.shouldRepairScreenEvidence(
+            minutes: minutes, assets: assets, settings: Settings.shared))
+        var cited = minutes
+        cited.actionItems[0].evidence.append("屏幕 00:10")
+        XCTAssertFalse(Analyzer.shouldRepairScreenEvidence(
+            minutes: cited, assets: assets, settings: Settings.shared))
+    }
+
+    func testAdaptiveOCRSelectionFoldsProbeTripletsAndCapsPayload() {
+        let image = CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
+                            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                            provider: CGDataProvider(data: Data([0, 0, 0, 255]) as CFData)!,
+                            decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+        let captures = [0.0, 3.0, 6.0, 30.0, 33.0, 36.0, 60.0].enumerated().map {
+            ScreenCapture(id: $0.offset, time: $0.element, duration: 1, image: image,
+                          recognizedText: [String(repeating: "字", count: $0.offset + 1)],
+                          evidenceReason: "核对", fingerprint: UInt64($0.offset))
+        }
+
+        let selected = Analyzer.selectAdaptiveOCRCaptures(from: captures, limit: 6)
+
+        XCTAssertEqual(selected.count, 3)
+        XCTAssertTrue(selected.contains(2))
+        XCTAssertTrue(selected.contains(5))
+        XCTAssertTrue(selected.contains(6))
+    }
+    func testModelTrackingIDsAreRecoveredButNeverRemainInTaskText() {
+        var value = StructuredMinutes(
+            title: "项目例会", nature: "", duration: "", agenda: ["进展"],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [
+                .init(owner: "张三", task: "[MS-ABC-123] 提交上线方案", status: "进行中", due: "", evidence: []),
+                .init(owner: "李四", task: "[MS-ONE] [MS-TWO]", status: "", due: "", evidence: [])
+            ], agreements: [], afterMeeting: [], uncertainties: [])
+        ActionTracking.normalizeModelOutput(&value)
+        XCTAssertEqual(value.actionItems.count, 1)
+        XCTAssertEqual(value.actionItems[0].trackingID, "MS-ABC-123")
+        XCTAssertEqual(value.actionItems[0].task, "提交上线方案")
+    }
+
+    func testProjectLedgerRequiresConfirmationAndKeepsEvidenceHistory() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("project-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workspaceID = UUID()
+        let meetingID = UUID()
+        let minutes = StructuredMinutes(
+            title: "项目周会", nature: "", duration: "", agenda: ["进展"],
+            participantAssessment: [], issues: [], requirements: [],
+            actionItems: [.init(trackingID: "MS-ACTION-1", owner: "张三",
+                                task: "提交实施方案", status: "进行中",
+                                due: "2026-08-20", evidence: ["[12:30]"])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+        let record = MeetingRecord(
+            id: meetingID, createdAt: Date(timeIntervalSince1970: 100),
+            title: "项目周会", sourcePath: "/meeting.srt", duration: 60,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: minutes, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
+
+        var ledger = try ProjectLedgerStore.prepareProposals(for: record, at: url)
+        XCTAssertTrue(ledger.actions.isEmpty)
+        let proposal = try XCTUnwrap(ledger.pendingProposals(for: workspaceID).first)
+        XCTAssertEqual(proposal.kind, .create)
+
+        ledger = try ProjectLedgerStore.accept(proposalID: proposal.id, at: url)
+        let action = try XCTUnwrap(ledger.actions(for: workspaceID).first)
+        XCTAssertEqual(action.id, "MS-ACTION-1")
+        XCTAssertEqual(action.events.first?.meetingID, meetingID)
+        XCTAssertEqual(action.events.first?.evidence, ["[12:30]"])
+        XCTAssertTrue(ledger.pendingProposals(for: workspaceID).isEmpty)
+    }
+
+    func testProjectLedgerUpdatesExistingActionButNeverInfersOmittedCompletion() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("project-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workspaceID = UUID()
+        func record(id: UUID = UUID(), date: TimeInterval, status: String,
+                    includeAction: Bool = true) -> MeetingRecord {
+            let items: [StructuredMinutes.ActionItem] = includeAction ? [
+                .init(trackingID: "MS-ACTION-1", owner: "张三", task: "提交实施方案",
+                      status: status, due: "2026-08-20", evidence: ["[08:20]"])
+            ] : []
+            let minutes = StructuredMinutes(
+                title: "周会", nature: "", duration: "", agenda: ["进展"],
+                participantAssessment: [], issues: [], requirements: [], actionItems: items,
+                agreements: [], afterMeeting: [], uncertainties: [])
+            return MeetingRecord(id: id, createdAt: Date(timeIntervalSince1970: date),
+                                 title: "周会", sourcePath: "/meeting.srt", duration: 60,
+                                 backend: "测试", model: "mock", summaryMarkdown: "纪要",
+                                 structuredSummary: minutes, transcript: Transcript(segments: []),
+                                 speakerNames: [:], usedSummaryFallback: false,
+                                 workspaceID: workspaceID)
+        }
+
+        var ledger = try ProjectLedgerStore.prepareProposals(
+            for: record(date: 100, status: "进行中"), at: url)
+        ledger = try ProjectLedgerStore.accept(
+            proposalID: try XCTUnwrap(ledger.pendingProposals(for: workspaceID).first?.id), at: url)
+
+        ledger = try ProjectLedgerStore.prepareProposals(
+            for: record(date: 200, status: "已完成"), at: url)
+        let update = try XCTUnwrap(ledger.pendingProposals(for: workspaceID).first)
+        XCTAssertEqual(update.kind, .update)
+        XCTAssertEqual(update.previousStatus, "进行中")
+        ledger = try ProjectLedgerStore.accept(proposalID: update.id, at: url)
+        XCTAssertTrue(try XCTUnwrap(ledger.actions.first).isClosed)
+        XCTAssertEqual(ledger.actions.first?.events.count, 2)
+
+        let count = ledger.proposals.count
+        ledger = try ProjectLedgerStore.prepareProposals(
+            for: record(date: 300, status: "", includeAction: false), at: url)
+        XCTAssertEqual(ledger.proposals.count, count)
+    }
     func testActionTrackingSuggestsOnlyExactEvidenceBackedStatusChanges() {
         let workspaceID = UUID()
         let oldMinutes = StructuredMinutes(

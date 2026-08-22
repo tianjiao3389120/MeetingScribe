@@ -36,7 +36,10 @@ struct PromptBuilder {
     （抄给谁、找谁、走哪个渠道），不要概括成「注意邮件沟通」这种没法执行的话。\
     只要发生在会议进行中，就归入正式待办，不要因为靠近结尾而误判为会后闲谈。
     7. 待办事项必须写明**责任方**。责任方不明确时标注「待明确」，不要臆造。
-    8. 不确定的人名、术语，在其后标注〔音〕。
+    8. 不确定的人名、术语，在其后标注〔音〕。所有需要人工核对的内容必须进一步区分：
+    `speech_recognition` 只用于疑似语音识别错误（人名、公司名、产品名、术语、缩写、同音词）；
+    `unclear_meaning` 用于原话本身含义不清、数字关系不明、时间表达矛盾或上下文不足。
+    不要因为一句话需要核对，就把其中的数字、时间或普通短语标成 `speech_recognition`。
     9. **全文不要使用 emoji 或任何图标符号。** 状态一律用方括号文字标注，\
     提醒用「注意：」开头的普通句子，不要用 ⚠️ ✅ 🔴 等符号。
     10. **若材料带有【说话人X】标记**，用它来判断责任归属：谁在汇报、谁在提要求、\
@@ -45,6 +48,9 @@ struct PromptBuilder {
     请结合发言内容推断角色（如「厂商工程师」「客户方」），并在纪要开头用一两句\
     说明判断依据；若某人自报姓名或被他人称呼，可对应起来并标注〔音〕。\
     分离结果可能有误，遇到与内容明显矛盾处以内容为准。
+    11. **带“补充核对原因”的屏幕是根据逐字稿疑点定向抽取的证据。** 画面确实提供了\
+    数字、版本、名称、报错或图表结论时，应以画面纠正逐字稿，并在相关条目的 `evidence` 中\
+    引用 `屏幕 MM:SS`。如果画面没有解决疑点，不要勉强得出结论，继续放入 `uncertainties`。
 
     只输出一个合法 JSON 对象，不要 Markdown 代码围栏、前言或解释。所有字段必须出现，
     没有内容的数组用 `[]`，没有内容的字符串用 `""`。`evidence` 填支持该条结论的时间码，
@@ -66,12 +72,17 @@ struct PromptBuilder {
         "evidence": ["[12:34]"]
       }],
       "actionItems": [{
+        "trackingID": "关联历史待办时填写其 MS-... ID，否则为 null；严禁把 ID 写入 task 或其他正文",
         "owner": "责任方或待明确", "task": "可执行任务", "status": "状态",
         "due": "截止时间", "evidence": ["[12:34]"]
       }],
       "agreements": [{"content": "协作约定", "evidence": ["[12:34]"]}],
       "afterMeeting": [{"content": "会后非正式内容", "evidence": ["[12:34]"]}],
-      "uncertainties": [{"content": "需要人工核对的内容", "evidence": ["[12:34]"]}]
+      "uncertainties": [{
+        "content": "需要人工核对的内容",
+        "evidence": ["[12:34]"],
+        "uncertaintyKind": "speech_recognition 或 unclear_meaning"
+      }]
     }
     """
 
@@ -184,6 +195,7 @@ struct PromptBuilder {
         entries.sort { $0.time < $1.time }
 
         var lastSpeaker: Int?
+        var lastImportedSpeaker: String?
 
         for entry in entries {
             switch entry {
@@ -200,7 +212,13 @@ struct PromptBuilder {
                         lines.append("[\(segment.timecode)] \(segment.text)")
                     }
                 } else {
-                    lines.append("[\(segment.timecode)] \(segment.text)")
+                    if let speaker = segment.speaker, speaker != lastImportedSpeaker {
+                        lines.append("")
+                        lines.append("[\(segment.timecode)] 【\(speaker)】\(segment.text)")
+                        lastImportedSpeaker = speaker
+                    } else {
+                        lines.append("[\(segment.timecode)] \(segment.text)")
+                    }
                 }
 
             case .screen(let capture):
@@ -209,11 +227,13 @@ struct PromptBuilder {
                     : ""
                 if imageCaptureIDs.contains(capture.id) {
                     lines.append("")
-                    lines.append("【屏幕 \(capture.timecode)\(held)】见随附图片 #\(capture.id)")
+                    let reason = capture.evidenceReason.map { "，补充核对原因：\($0)" } ?? ""
+                    lines.append("【屏幕 \(capture.timecode)\(held)\(reason)】见随附图片 #\(capture.id)")
                     lines.append("")
                 } else if includingScreenText, !capture.recognizedText.isEmpty {
                     lines.append("")
-                    lines.append("【屏幕 \(capture.timecode)\(held)】")
+                    let reason = capture.evidenceReason.map { "，补充核对原因：\($0)" } ?? ""
+                    lines.append("【屏幕 \(capture.timecode)\(held)\(reason)】")
                     lines.append("```")
                     lines.append(capture.textBlock)
                     lines.append("```")
@@ -233,7 +253,9 @@ struct PromptBuilder {
     /// Text-heavy frames go as OCR text.
     static func selectImageCaptures(from captures: [ScreenCapture], limit: Int) -> Set<Int> {
         let diagrams = captures
-            .filter { !$0.isTextDominant && !$0.recognizedText.isEmpty }
+            // Empty OCR is also meaningful: photos, charts and architecture
+            // drawings are precisely the frames where pixels matter most.
+            .filter { !$0.isTextDominant }
             .sorted { $0.duration > $1.duration }
             .prefix(limit)
         return Set(diagrams.map(\.id))

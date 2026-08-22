@@ -2,28 +2,28 @@ import Foundation
 import Observation
 
 enum BackendKind: String, CaseIterable, Identifiable, Codable {
+    case codexCLI
     case claudeCLI
-    case anthropicAPI
     case openAICompatible
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
+        case .codexCLI:          return "本机 Codex CLI"
         case .claudeCLI:         return "本机 Claude Code"
-        case .anthropicAPI:      return "Anthropic API"
-        case .openAICompatible:  return "其他大模型"
+        case .openAICompatible:  return "API（OpenAI / 智谱）"
         }
     }
 
     var explanation: String {
         switch self {
+        case .codexCLI:
+            return "调用本机已登录的 codex 命令，使用现有订阅。任务以临时、只读模式运行，不保留 Codex 会话；画面以 OCR 文字传入。"
         case .claudeCLI:
             return "调用本机已安装的 claude 命令，使用现有订阅，不额外计费。屏幕画面以文字形式传入，架构图等图片会被跳过。"
-        case .anthropicAPI:
-            return "直接调用 Anthropic API，需要 API key，按量计费。支持把架构图作为图片传入。"
         case .openAICompatible:
-            return "DeepSeek、智谱、Kimi、通义、硅基流动，或任意 OpenAI 兼容接口（含本地 Ollama）。选了不支持读图的模型时，画面只以 OCR 文字传入。"
+            return "调用已经验证过的 OpenAI API 或智谱 GLM，需要对应 API key。支持视觉的模型会直接接收筛选后的会议画面。"
         }
     }
 }
@@ -162,18 +162,6 @@ final class Settings {
     var backend: BackendKind {
         didSet { defaults.set(backend.rawValue, forKey: Keys.backend) }
     }
-    var apiModel: String {
-        didSet { defaults.set(apiModel, forKey: Keys.apiModel) }
-    }
-    var language: String {
-        didSet { defaults.set(language, forKey: Keys.language) }
-    }
-    var recognitionScenario: RecognitionScenario {
-        didSet {
-            defaults.set(recognitionScenario.rawValue, forKey: Keys.recognitionScenario)
-            language = recognitionScenario.whisperLanguage
-        }
-    }
     var frameDensity: FrameDensity {
         didSet { defaults.set(frameDensity.rawValue, forKey: Keys.frameDensity) }
     }
@@ -192,16 +180,6 @@ final class Settings {
         didSet { defaults.set(keepIntermediates, forKey: Keys.keepIntermediates) }
     }
 
-    /// Off by default: it roughly doubles processing time, and is only worth it
-    /// when the summary needs to say who committed to what.
-    var separateSpeakers: Bool {
-        didSet { defaults.set(separateSpeakers, forKey: Keys.separateSpeakers) }
-    }
-    /// 0 lets clustering decide. On compressed conference audio an explicit
-    /// headcount is markedly more reliable — automatic clustering over-splits.
-    var expectedSpeakerCount: Int {
-        didSet { defaults.set(expectedSpeakerCount, forKey: Keys.speakerCount) }
-    }
     var realtimeTranscriptionQuality: RealtimeTranscriptionQuality {
         didSet { defaults.set(realtimeTranscriptionQuality.rawValue, forKey: Keys.realtimeQuality) }
     }
@@ -278,16 +256,11 @@ final class Settings {
 
     private enum Keys {
         static let backend = "backend"
-        static let apiModel = "apiModel"
-        static let language = "language"
-        static let recognitionScenario = "recognitionScenario"
         static let frameDensity = "frameDensity"
         static let glossary = "glossary"
         static let contextHint = "contextHint"
         static let minutesInstructions = "minutesInstructions"
         static let keepIntermediates = "keepIntermediates"
-        static let separateSpeakers = "separateSpeakers"
-        static let speakerCount = "expectedSpeakerCount"
         static let providerID = "providerID"
         static let providerBaseURL = "providerBaseURL"
         static let providerModel = "providerModel"
@@ -312,49 +285,33 @@ final class Settings {
     private let defaults = UserDefaults.standard
 
     private init() {
-        // Legacy Claude CLI / Anthropic selections migrate to the unified
-        // OpenAI-compatible provider configuration.
-        backend = .openAICompatible
-        apiModel = defaults.string(forKey: Keys.apiModel) ?? "claude-opus-5"
-        let storedLanguage = defaults.string(forKey: Keys.language) ?? "zh"
-        let migratedScenario: RecognitionScenario = switch storedLanguage {
-        case "en": .english
-        case "auto": .autoMultilingual
-        default: .mandarin
+        // Keep the supported local CLIs; removed legacy backends migrate to API.
+        let storedBackend = BackendKind(rawValue: defaults.string(forKey: Keys.backend) ?? "")
+        backend = switch storedBackend {
+        case .codexCLI: .codexCLI
+        case .claudeCLI: .claudeCLI
+        default: .openAICompatible
         }
-        let selectedScenario = RecognitionScenario(
-            rawValue: defaults.string(forKey: Keys.recognitionScenario) ?? ""
-        ) ?? migratedScenario
-        recognitionScenario = selectedScenario
-        language = selectedScenario.whisperLanguage
         frameDensity = FrameDensity(rawValue: defaults.string(forKey: Keys.frameDensity) ?? "") ?? .normal
         glossary = defaults.string(forKey: Keys.glossary) ?? Settings.defaultGlossary
         contextHint = defaults.string(forKey: Keys.contextHint) ?? ""
         minutesInstructions = defaults.string(forKey: Keys.minutesInstructions)
             ?? Settings.defaultMinutesInstructions
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
-        separateSpeakers = defaults.object(forKey: Keys.separateSpeakers) as? Bool ?? false
-        expectedSpeakerCount = defaults.object(forKey: Keys.speakerCount) as? Int ?? 0
         realtimeTranscriptionQuality = RealtimeTranscriptionQuality(
             rawValue: defaults.string(forKey: Keys.realtimeQuality) ?? "") ?? .realtime
 
-        let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.deepseek.id
-        providerID = storedProvider
+        let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.openAI.id
         let preset = ProviderPreset.preset(id: storedProvider)
-        providerBaseURL = defaults.string(forKey: Keys.providerBaseURL) ?? preset.baseURL
-        providerModel = defaults.string(forKey: Keys.providerModel) ?? (preset.models.first?.id ?? "")
-        providerVisionOverride = defaults.object(forKey: Keys.providerVision) as? Bool
+        let providerWasRemoved = !ProviderPreset.all.contains { $0.id == storedProvider }
+        providerID = preset.id
+        providerBaseURL = providerWasRemoved
+            ? preset.baseURL : (defaults.string(forKey: Keys.providerBaseURL) ?? preset.baseURL)
+        providerModel = providerWasRemoved
+            ? (preset.models.first?.id ?? "")
+            : (defaults.string(forKey: Keys.providerModel) ?? (preset.models.first?.id ?? ""))
+        providerVisionOverride = providerWasRemoved
+            ? nil : defaults.object(forKey: Keys.providerVision) as? Bool
     }
 
-    /// Kept in the keychain, never in UserDefaults.
-    var apiKey: String? {
-        get { Keychain.read(account: "anthropic-api-key") }
-        set {
-            if let newValue, !newValue.isEmpty {
-                Keychain.write(account: "anthropic-api-key", value: newValue)
-            } else {
-                Keychain.delete(account: "anthropic-api-key")
-            }
-        }
-    }
 }

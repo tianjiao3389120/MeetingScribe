@@ -12,6 +12,8 @@ struct OpenAICompatibleClient {
     let model: String
     /// Text-only models get OCR text; images are skipped rather than sent and rejected.
     let supportsVision: Bool
+    var apiStyle: ProviderAPIStyle = .chatCompletions
+    var httpHeaders: [String: String] = [:]
 
     struct Attachment {
         let caption: String
@@ -29,30 +31,42 @@ struct OpenAICompatibleClient {
 
         if supportsVision {
             for image in images {
-                content.append(["type": "text", "text": image.caption])
-                content.append([
-                    "type": "image_url",
-                    "image_url": ["url": "data:image/jpeg;base64,\(image.jpeg.base64EncodedString())"],
-                ])
+                content.append(["type": apiStyle == .responses ? "input_text" : "text", "text": image.caption])
+                let dataURL = "data:image/jpeg;base64,\(image.jpeg.base64EncodedString())"
+                if apiStyle == .responses {
+                    content.append(["type": "input_image", "image_url": dataURL])
+                } else {
+                    content.append(["type": "image_url", "image_url": ["url": dataURL]])
+                }
             }
         }
-        content.append(["type": "text", "text": user])
+        content.append(["type": apiStyle == .responses ? "input_text" : "text", "text": user])
 
         // A model with no image parts is happier with a plain string body —
         // some gateways reject the array form when it holds only text.
         let userContent: Any = content.count == 1 ? user : content
 
-        var body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user", "content": userContent],
-            ],
-            "stream": true,
-        ]
-        // OpenAI's current Chat Completions schema uses max_completion_tokens;
-        // most compatible vendors still implement the older max_tokens name.
-        body[usesOpenAICompletionTokenParameter ? "max_completion_tokens" : "max_tokens"] = 8192
+        var body: [String: Any]
+        if apiStyle == .responses {
+            body = [
+                "model": model,
+                "instructions": system,
+                "input": [["role": "user", "content": content]],
+                "reasoning": ["effort": "xhigh"],
+                "store": false,
+                "stream": true,
+            ]
+        } else {
+            body = [
+                "model": model,
+                "messages": [
+                    ["role": "system", "content": system],
+                    ["role": "user", "content": userContent],
+                ],
+                "stream": true,
+            ]
+            body[usesOpenAICompletionTokenParameter ? "max_completion_tokens" : "max_tokens"] = 8192
+        }
 
         var request = URLRequest(url: try endpoint())
         request.httpMethod = "POST"
@@ -60,6 +74,7 @@ struct OpenAICompatibleClient {
         if let apiKey, !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
+        for (name, value) in httpHeaders { request.setValue(value, forHTTPHeaderField: name) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.timeoutInterval = 900
 
@@ -73,6 +88,7 @@ struct OpenAICompatibleClient {
 
         var text = ""
         var reportedAt = Date.distantPast
+        var outputFinished = false
 
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
@@ -84,6 +100,55 @@ struct OpenAICompatibleClient {
 
             if let error = event["error"] as? [String: Any] {
                 throw Failure.stream(error["message"] as? String ?? "未知错误")
+            }
+
+            if apiStyle == .responses {
+                let type = event["type"] as? String
+                if type == "response.output_text.delta",
+                   let chunk = event["delta"] as? String, !chunk.isEmpty {
+                    text += chunk
+                    if Date().timeIntervalSince(reportedAt) > 1.5 {
+                        reportedAt = Date()
+                        onProgress("已生成 \(text.count) 字…")
+                    }
+                } else if type == "response.reasoning_summary_text.delta",
+                          Date().timeIntervalSince(reportedAt) > 1.5 {
+                    reportedAt = Date()
+                    onProgress("模型思考中…")
+                } else if type == "response.in_progress" || type == "response.output_item.added" {
+                    if Date().timeIntervalSince(reportedAt) > 1.5 {
+                        reportedAt = Date()
+                        onProgress("模型正在处理较长内容…")
+                    }
+                } else if type == "response.completed",
+                          text.isEmpty,
+                          let response = event["response"] as? [String: Any] {
+                    text = Self.responseOutputText(from: response)
+                    outputFinished = !text.isEmpty
+                } else if type == "response.output_text.done" {
+                    if text.isEmpty, let finalText = event["text"] as? String {
+                        text = finalText
+                    }
+                    outputFinished = !text.isEmpty
+                } else if type == "response.content_part.done",
+                          let part = event["part"] as? [String: Any],
+                          part["type"] as? String == "output_text" {
+                    if text.isEmpty, let finalText = part["text"] as? String {
+                        text = finalText
+                    }
+                    outputFinished = !text.isEmpty
+                } else if type == "response.failed" {
+                    let response = event["response"] as? [String: Any]
+                    let failure = response?["error"] as? [String: Any]
+                    throw Failure.stream(failure?["message"] as? String ?? "模型生成失败")
+                } else if type == "response.incomplete" {
+                    let response = event["response"] as? [String: Any]
+                    let details = response?["incomplete_details"] as? [String: Any]
+                    let reason = details?["reason"] as? String ?? "未知原因"
+                    throw Failure.stream("模型未完成生成：\(reason)")
+                }
+                if outputFinished { break }
+                continue
             }
 
             guard let choices = event["choices"] as? [[String: Any]],
@@ -109,12 +174,26 @@ struct OpenAICompatibleClient {
         return result
     }
 
+    /// Some Responses-compatible gateways buffer deltas and only include text
+    /// in the final `response.completed` event.
+    static func responseOutputText(from response: [String: Any]) -> String {
+        guard let output = response["output"] as? [[String: Any]] else { return "" }
+        return output.compactMap { item -> String? in
+            guard let content = item["content"] as? [[String: Any]] else { return nil }
+            return content.compactMap { part in
+                guard part["type"] as? String == "output_text" else { return nil }
+                return part["text"] as? String
+            }.joined()
+        }.joined()
+    }
+
     func endpoint() throws -> URL {
         var base = baseURL.trimmingCharacters(in: .whitespaces)
         guard !base.isEmpty else { throw Failure.noBaseURL }
         while base.hasSuffix("/") { base.removeLast() }
         // Accept either a bare base ("…/v1") or a full path pasted from docs.
-        let path = base.hasSuffix("/chat/completions") ? base : base + "/chat/completions"
+        let suffix = apiStyle == .responses ? "/responses" : "/chat/completions"
+        let path = base.hasSuffix(suffix) ? base : base + suffix
         guard let url = URL(string: path),
               let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
               url.host != nil else { throw Failure.badBaseURL(path) }

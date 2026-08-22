@@ -336,7 +336,7 @@ private final class RealtimeTranscriptionViewModel {
     var status = "未开始"
     var partialText = ""
     var lines: [RealtimeSubtitleLine] = []
-    var scenario = Settings.shared.recognitionScenario
+    var scenario: RecognitionScenario = .autoMultilingual
     var quality = Settings.shared.realtimeTranscriptionQuality {
         didSet { Settings.shared.realtimeTranscriptionQuality = quality }
     }

@@ -28,6 +28,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var isArchived: Bool?
     var actionStatusSuggestions: [ActionStatusSuggestion]?
     var appliedActionSuggestionIDs: [UUID]?
+    var sourceKind: String?
+    var relatedSourcePaths: [String]?
+    var adaptiveScreenReviewStats: AdaptiveScreenReviewStats?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
@@ -61,6 +64,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.isArchived = nil
         self.actionStatusSuggestions = nil
         self.appliedActionSuggestionIDs = nil
+        self.sourceKind = nil
+        self.relatedSourcePaths = nil
+        self.adaptiveScreenReviewStats = nil
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }

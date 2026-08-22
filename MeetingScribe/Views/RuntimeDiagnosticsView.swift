@@ -35,9 +35,6 @@ struct RuntimeDiagnosticsView: View {
 
             Divider()
             HStack {
-                Button("打开录音权限设置", systemImage: "lock.shield") {
-                    NSWorkspace.shared.open(BlackHoleAudioSocketClient.audioPrivacySettingsURL)
-                }
                 Spacer()
                 Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
             }

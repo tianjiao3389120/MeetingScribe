@@ -37,6 +37,13 @@ final class SpeakerTests: XCTestCase {
         XCTAssertEqual(profile.embedding[1], 0.7071, accuracy: 0.001)
     }
 
+    func testLegacyVoiceProfileDecodesWithoutReferenceClip() throws {
+        let data = Data(#"{"id":"00000000-0000-0000-0000-000000000001","name":"测试","embedding":[1,0],"sampleCount":1,"updatedAt":0,"note":""}"#.utf8)
+        let profile = try JSONDecoder().decode(VoiceProfile.self, from: data)
+
+        XCTAssertNil(profile.referenceClip)
+    }
+
     func testLegacyDiarizationCacheDecodesWithoutVoiceprints() throws {
         let data = Data(#"{"segments":[{"start":0,"end":2,"speaker":4}]}"#.utf8)
         let value = try JSONDecoder().decode(Diarization.self, from: data)

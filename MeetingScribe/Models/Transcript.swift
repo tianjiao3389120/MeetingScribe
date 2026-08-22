@@ -5,6 +5,7 @@ struct TranscriptSegment: Identifiable, Codable, Sendable {
     let id: Int
     let start: TimeInterval
     let end: TimeInterval
+    var speaker: String? = nil
     var text: String
 
     var timecode: String { TranscriptSegment.timecode(start) }
@@ -44,7 +45,10 @@ struct Transcript: Codable, Sendable {
     /// Transcript with a timecode on every line — this is what the analysis
     /// prompt receives, so the model can cross-reference screen captures.
     var timecodedText: String {
-        segments.map { "[\($0.timecode)] \($0.text)" }.joined(separator: "\n")
+        segments.map {
+            let speaker = $0.speaker.map { "【\($0)】" } ?? ""
+            return "[\($0.timecode)] \(speaker)\($0.text)"
+        }.joined(separator: "\n")
     }
 
     var duration: TimeInterval { segments.last?.end ?? 0 }
@@ -63,9 +67,13 @@ struct Transcript: Codable, Sendable {
             } else {
                 value = line.trimmingCharacters(in: .whitespaces)
             }
-            guard !value.isEmpty else { return nil }
+            let speakerPrefix = segment.speaker.map { "【\($0)】" } ?? ""
+            let cleaned = !speakerPrefix.isEmpty && value.hasPrefix(speakerPrefix)
+                ? String(value.dropFirst(speakerPrefix.count)) : value
+            guard !cleaned.isEmpty else { return nil }
             values.append(TranscriptSegment(id: segment.id, start: segment.start,
-                                            end: segment.end, text: value))
+                                            end: segment.end, speaker: segment.speaker,
+                                            text: cleaned))
         }
         return Transcript(segments: values)
     }
@@ -80,9 +88,11 @@ struct Transcript: Codable, Sendable {
             guard bounds.count == 2,
                   let start = parseTimecode(bounds[0]),
                   let end = parseTimecode(bounds[1]) else { continue }
-            let text = lines[2...].joined(separator: " ").trimmingCharacters(in: .whitespaces)
-            guard !text.isEmpty else { continue }
-            segments.append(TranscriptSegment(id: segments.count, start: start, end: end, text: text))
+            let rawText = lines[2...].joined(separator: " ").trimmingCharacters(in: .whitespaces)
+            guard !rawText.isEmpty else { continue }
+            let (speaker, text) = splitSpeaker(from: rawText)
+            segments.append(TranscriptSegment(id: segments.count, start: start, end: end,
+                                              speaker: speaker, text: text))
         }
         return Transcript(segments: segments)
     }
@@ -96,5 +106,15 @@ struct Transcript: Codable, Sendable {
               let h = Double(parts[0]), let m = Double(parts[1]), let s = Double(parts[2])
         else { return nil }
         return h * 3600 + m * 60 + s
+    }
+
+    private static func splitSpeaker(from raw: String) -> (String?, String) {
+        guard let colon = raw.firstIndex(of: ":") else { return (nil, raw) }
+        let candidate = raw[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty, candidate.count <= 40,
+              !candidate.contains("//"), !candidate.contains("。"), !candidate.contains("，")
+        else { return (nil, raw) }
+        let body = raw[raw.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return body.isEmpty ? (nil, raw) : (candidate, body)
     }
 }

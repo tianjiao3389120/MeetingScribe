@@ -2,8 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct MeetingPreparationView: View {
-    let mediaURL: URL
-    let onStart: (String, MeetingWorkspace?, String, String, [String], [SupportingMaterial]) -> Void
+    let input: MeetingInput
+    let onStart: (String, RecognitionScenario, MeetingWorkspace?, String, String, [String], [SupportingMaterial]) -> Void
     let onCancel: () -> Void
 
     @State private var workspaces: [MeetingWorkspace] = []
@@ -20,12 +20,15 @@ struct MeetingPreparationView: View {
     @State private var meetingTitle: String
     @State private var meetingContext = ""
     @State private var selectedTemplateID = MinutesTemplate.general.id
+    @State private var recognitionScenario: RecognitionScenario
+    @State private var showAdvanced = false
 
-    init(mediaURL: URL,
-         onStart: @escaping (String, MeetingWorkspace?, String, String, [String], [SupportingMaterial]) -> Void,
+    init(input: MeetingInput,
+         onStart: @escaping (String, RecognitionScenario, MeetingWorkspace?, String, String, [String], [SupportingMaterial]) -> Void,
          onCancel: @escaping () -> Void) {
-        self.mediaURL = mediaURL; self.onStart = onStart; self.onCancel = onCancel
-        _meetingTitle = State(initialValue: mediaURL.deletingPathExtension().lastPathComponent)
+        self.input = input; self.onStart = onStart; self.onCancel = onCancel
+        _meetingTitle = State(initialValue: input.primaryURL.deletingPathExtension().lastPathComponent)
+        _recognitionScenario = State(initialValue: .autoMultilingual)
     }
 
     private var selectedWorkspace: MeetingWorkspace? {
@@ -36,7 +39,7 @@ struct MeetingPreparationView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("准备会议分析").font(.title3.weight(.medium))
-                Text(mediaURL.lastPathComponent).font(.callout).foregroundStyle(.secondary)
+                Text(input.displayName).font(.callout).foregroundStyle(.secondary).lineLimit(2)
             }
             .frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Divider()
@@ -44,47 +47,26 @@ struct MeetingPreparationView: View {
             Form {
                 Section("本次会议") {
                     TextField("会议名称", text: $meetingTitle)
-                    Text("保持默认文件名时，分析完成后会根据会议内容自动提炼名称；手动修改的名称不会被覆盖。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Picker("纪要模板", selection: $selectedTemplateID) {
-                        ForEach(MinutesTemplate.all) { Text($0.name).tag($0.id) }
+                    Text("使用文件名开始，完成后会自动优化名称。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Picker("本次识别场景", selection: $recognitionScenario) {
+                        ForEach(RecognitionScenario.allCases) { scenario in
+                            Text(scenario.displayName).tag(scenario)
+                        }
                     }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("本次背景（可选）")
-                            .font(.callout.weight(.medium))
-                        TextEditor(text: $meetingContext)
-                            .frame(minHeight: 72)
-                            .padding(5)
-                            .background(.background)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.secondary.opacity(0.3))
-                            }
-                            .overlay(alignment: .topLeading) {
-                                if meetingContext.isEmpty {
-                                    Text("例如：本次目标、当前阶段、需要重点确认的问题或特殊情况")
-                                        .font(.callout)
-                                        .foregroundStyle(.tertiary)
-                                        .padding(11)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                    }
-                    Text("客户的长期信息放在会议空间背景；这里只填写本次会议独有的信息。")
+                    Text(recognitionScenario.explanation)
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Section("会议空间") {
-                    Picker("归入", selection: $selectedWorkspaceID) {
-                        Text("不归组").tag(UUID?.none)
+                Section("项目") {
+                    Picker("归入项目", selection: $selectedWorkspaceID) {
+                        Text("暂不归入项目").tag(UUID?.none)
                         ForEach(workspaces) { workspace in
                             Text("\(workspace.kind.label) · \(workspace.name)")
                                 .tag(Optional(workspace.id))
                         }
                     }
                     HStack {
-                        Button("新建空间…") { showNewWorkspace.toggle() }
+                        Button("新建项目…") { showNewWorkspace.toggle() }
                         if let workspace = selectedWorkspace, !workspace.context.isEmpty {
                             Text(workspace.context).font(.caption).foregroundStyle(.secondary)
                                 .lineLimit(2)
@@ -103,8 +85,6 @@ struct MeetingPreparationView: View {
                             }.padding(4)
                         }
                     }
-                    TagInputView(text: $tagsText, suggestions: tagSuggestions,
-                                 placeholder: "标签，例如：双周会, 日志治理")
                 }
 
                 Section("本次会议材料") {
@@ -134,6 +114,28 @@ struct MeetingPreparationView: View {
                         }
                     }
                 }
+
+                Section {
+                    DisclosureGroup("更多选项", isExpanded: $showAdvanced) {
+                        Picker("纪要模板", selection: $selectedTemplateID) {
+                            ForEach(MinutesTemplate.all) { Text($0.name).tag($0.id) }
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("本次背景（可选）").font(.callout.weight(.medium))
+                            TextEditor(text: $meetingContext)
+                                .frame(minHeight: 72)
+                                .padding(5)
+                                .background(.background)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.secondary.opacity(0.3))
+                                }
+                        }
+                        TagInputView(text: $tagsText, suggestions: tagSuggestions,
+                                     placeholder: "标签，例如：双周会, 日志治理")
+                    }
+                }
             }
             .formStyle(.grouped)
 
@@ -145,7 +147,7 @@ struct MeetingPreparationView: View {
                     .keyboardShortcut(.defaultAction).disabled(extracting)
             }.padding(14)
         }
-        .frame(width: 620, height: 590)
+        .frame(width: 600, height: 510)
         .onAppear(perform: loadWorkspaces)
         .onChange(of: selectedWorkspaceID) { _, id in
             if let workspace = workspaces.first(where: { $0.id == id }) {
@@ -224,7 +226,7 @@ struct MeetingPreparationView: View {
         let tags = MeetingTags.parse(tagsText)
         let title = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { materialError = "会议名称不能为空。"; return }
-        onStart(title, selectedWorkspace,
+        onStart(title, recognitionScenario, selectedWorkspace,
                 meetingContext.trimmingCharacters(in: .whitespacesAndNewlines),
                 selectedTemplateID,
                 tags, materials)

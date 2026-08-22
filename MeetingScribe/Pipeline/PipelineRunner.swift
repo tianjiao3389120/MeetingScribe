@@ -68,6 +68,8 @@ final class PipelineRunner {
              forceSpeakerSeparation: Bool = false,
              title: String? = nil, meetingContext: String = "",
              minutesTemplateID: String = MinutesTemplate.general.id,
+             recognitionScenario: RecognitionScenario = .autoMultilingual,
+             speakerCount: Int = 0,
              workspace: MeetingWorkspace? = nil,
              tags: [String] = [], materials: [SupportingMaterial] = []) {
         task?.cancel()
@@ -85,6 +87,7 @@ final class PipelineRunner {
         let pendingJob = PendingMeetingJob(
             sourcePath: url.path, title: title ?? "", meetingContext: meetingContext,
             minutesTemplateID: minutesTemplateID,
+            recognitionScenario: recognitionScenario,
             workspaceID: workspace?.id, tags: tags,
             materialPaths: materials.map { $0.sourceURL.path })
         pendingJobID = pendingJob.id
@@ -95,6 +98,8 @@ final class PipelineRunner {
             do {
                 try await self.execute(url: url, title: title, meetingContext: meetingContext,
                                        minutesTemplateID: minutesTemplateID,
+                                       recognitionScenario: recognitionScenario,
+                                       speakerCount: speakerCount,
                                        workspace: workspace,
                                        tags: tags, materials: materials)
             } catch is CancellationError {
@@ -109,14 +114,76 @@ final class PipelineRunner {
         }
     }
 
+    func run(imported package: ExternalTranscriptPackage,
+             title: String? = nil, meetingContext: String = "",
+             minutesTemplateID: String = MinutesTemplate.general.id,
+             recognitionScenario: RecognitionScenario = .autoMultilingual,
+             workspace: MeetingWorkspace? = nil,
+             tags: [String] = [], materials: [SupportingMaterial] = []) {
+        task?.cancel()
+        error = nil
+        summary = ""
+        structuredSummary = nil
+        usedSummaryFallback = false
+        assets = nil
+        isRunning = true
+        speakerWarning = nil
+        historyWarning = nil
+        savedRecordID = nil
+        usedCachedTranscript = true
+
+        task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.stage = .probing
+                self.progress = 1
+                self.detail = "读取外部逐字稿（\(package.transcript.segments.count) 段）"
+                var related = [package.transcriptURL]
+                if let textURL = package.textURL { related.append(textURL) }
+                if let audioURL = package.audioURL { related.append(audioURL) }
+                let duration = max(package.transcript.duration,
+                                   package.metadata.declaredDuration ?? 0)
+                let bundle = MeetingAssets(
+                    sourceURL: package.transcriptURL,
+                    sourceKind: .importedTranscript,
+                    relatedSourceURLs: related,
+                    recordedAt: package.metadata.recordedAt
+                        ?? MeetingDateResolver.recordedAt(for: package.transcriptURL),
+                    customTitle: title,
+                    meetingContext: meetingContext,
+                    minutesTemplateID: minutesTemplateID,
+                    recognitionScenario: recognitionScenario,
+                    duration: duration,
+                    transcript: package.transcript,
+                    captures: [],
+                    hasVideo: false,
+                    diarization: nil,
+                    materials: materials,
+                    workspace: workspace,
+                    tags: tags)
+                self.assets = bundle
+                try await self.analyze(bundle)
+            } catch is CancellationError {
+                self.stage = .idle
+                self.detail = "已取消"
+            } catch {
+                self.stage = .failed
+                self.error = error.localizedDescription
+            }
+            self.isRunning = false
+        }
+    }
+
     /// Re-runs diarization with the current speaker-count setting while still
     /// reusing the cached transcript. Useful when automatic clustering guessed
     /// poorly; transcription is not paid for again.
-    func rerunSpeakerSeparation() {
+    func rerunSpeakerSeparation(speakerCount: Int = 0) {
         guard let bundle = assets, !isRunning else { return }
         run(url: bundle.sourceURL, forceSpeakerSeparation: true,
             title: bundle.title, meetingContext: bundle.meetingContext,
             minutesTemplateID: bundle.minutesTemplateID,
+            recognitionScenario: bundle.recognitionScenario,
+            speakerCount: speakerCount,
             workspace: bundle.workspace, tags: bundle.tags, materials: bundle.materials)
     }
 
@@ -188,15 +255,30 @@ final class PipelineRunner {
         retryAnalysis()
     }
 
+    func applyRecognitionMemoryAndRegenerate() {
+        guard var bundle = assets, !isRunning else { return }
+        bundle.transcript = RecognitionMemoryStore.apply(
+            to: bundle.transcript, workspaceID: bundle.workspace?.id)
+        assets = bundle
+        retryAnalysis()
+    }
+
     private func execute(url: URL, title: String?, meetingContext: String,
                          minutesTemplateID: String,
+                         recognitionScenario: RecognitionScenario,
+                         speakerCount: Int,
                          workspace: MeetingWorkspace?,
                          tags: [String], materials: [SupportingMaterial]) async throws {
         let settings = Settings.shared
+        let learningContext = ([meetingContext, workspace?.name, workspace?.context]
+            + materials.prefix(3).map(\.extractedText)).compactMap { $0 }.joined(separator: " ")
+        let learnedVocabulary = RecognitionMemoryStore.prompt(
+            workspaceID: workspace?.id, context: learningContext)
         let extractor = MediaExtractor(url: url)
         let transcriptionPrompt = Self.transcriptionPrompt(
-            scenario: settings.recognitionScenario,
-            glossary: settings.glossary,
+            scenario: recognitionScenario,
+            glossary: [learnedVocabulary, settings.glossary]
+                .filter { !$0.isEmpty }.joined(separator: "，"),
             materials: materials)
 
         stage = .probing
@@ -207,12 +289,12 @@ final class PipelineRunner {
 
         // --- transcription and diarization ---------------------------------
         let transcriptKey = TranscriptCache.key(for: url,
-                                                language: settings.language,
+                                                language: recognitionScenario.whisperLanguage,
                                                 glossary: transcriptionPrompt)
-        let wantsSpeakers = settings.separateSpeakers && Diarizer.readiness().isReady
+        let wantsSpeakers = Diarizer.readiness().isReady
         let speakerKey = wantsSpeakers
             ? TranscriptCache.key(for: url,
-                                  language: "speakers-\(settings.expectedSpeakerCount)",
+                                  language: "speakers-\(speakerCount)",
                                   glossary: "",
                                   version: TranscriptCache.diarizationVersion)
             : nil
@@ -258,10 +340,12 @@ final class PipelineRunner {
             usedCachedTranscript = false
             stage = .transcribing
             progress = 0
+            RecognitionMemoryStore.recordPromptUsage(
+                workspaceID: workspace?.id, context: learningContext)
             let transcriber = Transcriber(audioURL: audioURL,
-                                          language: settings.language,
+                                          language: recognitionScenario.whisperLanguage,
                                           glossary: transcriptionPrompt)
-            let fresh = try await transcriber.run { [weak self] seconds, _ in
+            let raw = try await transcriber.run { [weak self] seconds, _ in
                 Task { @MainActor in
                     guard let self else { return }
                     self.progress = min(seconds / max(info.duration, 1), 1)
@@ -269,6 +353,7 @@ final class PipelineRunner {
                 }
             }
             try Task.checkCancellation()
+            let fresh = RecognitionMemoryStore.apply(to: raw, workspaceID: workspace?.id)
             if let transcriptKey { TranscriptCache.save(fresh, key: transcriptKey) }
             transcript = fresh
         }
@@ -284,7 +369,7 @@ final class PipelineRunner {
             do {
                 let result = try await Diarizer.run(
                     audioURL: audioURL,
-                    speakerCount: settings.expectedSpeakerCount
+                    speakerCount: speakerCount
                 ) { [weak self] fraction in
                     Task { @MainActor in
                         self?.progress = fraction
@@ -336,6 +421,7 @@ final class PipelineRunner {
                                    customTitle: title,
                                    meetingContext: meetingContext,
                                    minutesTemplateID: minutesTemplateID,
+                                   recognitionScenario: recognitionScenario,
                                    duration: info.duration,
                                    transcript: transcript,
                                    captures: captures,
@@ -363,10 +449,18 @@ final class PipelineRunner {
             .joined(separator: " ")
     }
 
-    private func analyze(_ bundle: MeetingAssets) async throws {
+    private func analyze(_ originalBundle: MeetingAssets) async throws {
         stage = .analyzing
         progress = 0
         detail = ""
+
+        var bundle = await addAdaptiveScreenEvidence(to: originalBundle)
+        if var stats = bundle.adaptiveScreenReviewStats {
+            stats.framesSentToModel = Analyzer.screenFramesSentToModel(
+                assets: bundle, settings: Settings.shared).count
+            bundle.adaptiveScreenReviewStats = stats
+        }
+        assets = bundle
 
         let analyzer = Analyzer(assets: bundle, settings: Settings.shared)
         let result = try await analyzer.run { [weak self] message in
@@ -385,6 +479,11 @@ final class PipelineRunner {
         summary = renderedMarkdown
         structuredSummary = trackedStructured
         usedSummaryFallback = result.usedFallback
+        if var stats = bundle.adaptiveScreenReviewStats {
+            stats.citedScreenEvidence = Analyzer.screenCitationCount(in: trackedStructured)
+            bundle.adaptiveScreenReviewStats = stats
+            assets?.adaptiveScreenReviewStats = stats
+        }
 
         let resolvedTitle = MeetingTitleResolver.resolve(
             requestedTitle: bundle.title,
@@ -399,8 +498,8 @@ final class PipelineRunner {
         let settings = Settings.shared
         let model: String
         switch settings.backend {
+        case .codexCLI: model = "Codex CLI"
         case .claudeCLI: model = "claude CLI"
-        case .anthropicAPI: model = settings.apiModel
         case .openAICompatible: model = settings.providerModel
         }
         let record = MeetingRecord(
@@ -408,7 +507,8 @@ final class PipelineRunner {
             title: resolvedTitle,
             sourcePath: bundle.sourceURL.path,
             duration: bundle.duration,
-            backend: settings.provider.name,
+            backend: settings.backend == .openAICompatible
+                ? settings.provider.name : settings.backend.displayName,
             model: model,
             summaryMarkdown: renderedMarkdown,
             structuredSummary: trackedStructured,
@@ -422,12 +522,16 @@ final class PipelineRunner {
                                   sourcePath: $0.sourceURL.path)
             })
         var storedRecord = record
+        storedRecord.sourceKind = bundle.sourceKind.rawValue
+        storedRecord.relatedSourcePaths = bundle.relatedSourceURLs.map(\.path)
         storedRecord.meetingContext = bundle.meetingContext
         storedRecord.minutesTemplateID = bundle.minutesTemplateID
         storedRecord.actionStatusSuggestions = actionSuggestions
+        storedRecord.adaptiveScreenReviewStats = bundle.adaptiveScreenReviewStats
         do {
             try MeetingHistoryStore.save(storedRecord, materialSources: bundle.materials)
             savedRecordID = storedRecord.id
+            try ProjectLedgerStore.prepareProposals(for: storedRecord)
         } catch {
             // History is a convenience; a valid summary remains successful.
             historyWarning = "历史记录保存失败：\(error.localizedDescription)"
@@ -436,6 +540,98 @@ final class PipelineRunner {
         stage = .done
         progress = 1
         detail = "完成"
+    }
+
+    /// A best-effort second look at the screen. Planning or image extraction
+    /// must never turn a usable transcript into a failed meeting.
+    private func addAdaptiveScreenEvidence(to bundle: MeetingAssets) async -> MeetingAssets {
+        guard bundle.hasVideo, bundle.sourceKind == .recordedMedia,
+              !bundle.adaptiveScreenReviewCompleted,
+              !bundle.transcript.segments.isEmpty else { return bundle }
+        func completed(_ value: MeetingAssets) -> MeetingAssets {
+            var copy = value
+            copy.adaptiveScreenReviewCompleted = true
+            return copy
+        }
+        var reviewStats = AdaptiveScreenReviewStats()
+        guard !AdaptiveFramePlanner.candidateTimeline(from: bundle.transcript).isEmpty else {
+            var updated = bundle
+            updated.adaptiveScreenReviewStats = reviewStats
+            return completed(updated)
+        }
+        detail = "分析逐字稿，寻找需要画面补证的节点…"
+        do {
+            let requests = try await AdaptiveFramePlanner(settings: Settings.shared)
+                .plan(transcript: bundle.transcript, duration: bundle.duration)
+            reviewStats.plannedNodes = requests.count
+            guard !requests.isEmpty else {
+                var updated = bundle
+                updated.adaptiveScreenReviewStats = reviewStats
+                return completed(updated)
+            }
+
+            // Look just before, at, and just after the requested moment. Drop
+            // probes already covered by the regular sampler.
+            let existingTimes = bundle.captures.map(\.time)
+            let probes = requests.flatMap { request in
+                [request.seconds - request.radius, request.seconds, request.seconds + request.radius]
+                    .map { (time: min(max($0, 0), bundle.duration), reason: request.reason) }
+            }.filter { probe in
+                !existingTimes.contains(where: { abs($0 - probe.time) < 1 })
+            }
+            reviewStats.requestedProbes = min(probes.count, 18)
+            guard !probes.isEmpty else {
+                var updated = bundle
+                updated.adaptiveScreenReviewStats = reviewStats
+                return completed(updated)
+            }
+
+            detail = "补充抽取 \(requests.count) 个关键节点的画面…"
+            let nextID = (bundle.captures.map(\.id).max() ?? -1) + 1
+            let extracted = try await MediaExtractor(url: bundle.sourceURL)
+                .extractFrames(at: Array(probes.prefix(18)), startingID: nextID)
+            let annotated = await TextRecognizer.annotate(extracted) { _ in }
+            let useful = Self.newEvidenceFrames(annotated, comparedWith: bundle.captures)
+
+            reviewStats.extractedFrames = extracted.count
+            reviewStats.framesWithOCR = annotated.filter { !$0.recognizedText.isEmpty }.count
+            reviewStats.acceptedFrames = useful.count
+
+            var updated = bundle
+            updated.captures.append(contentsOf: useful)
+            updated.captures.sort { $0.time < $1.time }
+            updated.adaptiveScreenReviewStats = reviewStats
+            return completed(updated)
+        } catch is CancellationError {
+            return bundle
+        } catch {
+            detail = "补充画面失败，继续使用已提取内容…"
+            var updated = bundle
+            updated.adaptiveScreenReviewStats = reviewStats
+            return completed(updated)
+        }
+    }
+
+    /// Keeps only visually distinct probes that add OCR text or genuinely new
+    /// pixels. This prevents three near-identical frames from consuming the
+    /// final image budget.
+    static func newEvidenceFrames(_ candidates: [ScreenCapture],
+                                  comparedWith existing: [ScreenCapture]) -> [ScreenCapture] {
+        var accepted: [ScreenCapture] = []
+        let existingText = Set(existing.flatMap(\.recognizedText).map {
+            $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        })
+        for candidate in candidates {
+            let references = existing + accepted
+            let visuallyNew = !references.contains {
+                PerceptualHash.distance($0.fingerprint, candidate.fingerprint) < 8
+            }
+            let hasNewText = candidate.recognizedText.contains {
+                !existingText.contains($0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            if visuallyNew || hasNewText { accepted.append(candidate) }
+        }
+        return accepted
     }
 
     enum Failure: LocalizedError {

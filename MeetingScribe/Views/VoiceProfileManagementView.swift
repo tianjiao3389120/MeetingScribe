@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 /// Reviews, renames and removes locally enrolled biometric voiceprints.
 struct VoiceProfileManagementView: View {
@@ -7,6 +8,8 @@ struct VoiceProfileManagementView: View {
     @State private var pendingDelete: VoiceProfile?
     @State private var error: String?
     @State private var saved = false
+    @State private var player: AVAudioPlayer?
+    @State private var playingID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,8 +28,14 @@ struct VoiceProfileManagementView: View {
             List {
                 ForEach($profiles) { $profile in
                     HStack(spacing: 12) {
-                        Image(systemName: "person.wave.2")
-                            .foregroundStyle(.secondary)
+                        Button { togglePlayback(profile) } label: {
+                            Image(systemName: playingID == profile.id ? "speaker.wave.2.fill" : "play.circle")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(VoiceProfileStore.referenceClipURL(for: profile) == nil)
+                        .help(VoiceProfileStore.referenceClipURL(for: profile) == nil
+                              ? "旧声纹暂无声音样本，可在会议结果页重新登记" : "播放经典声音")
                         VStack(alignment: .leading, spacing: 4) {
                             TextField("姓名", text: $profile.name)
                                 .textFieldStyle(.roundedBorder)
@@ -70,6 +79,7 @@ struct VoiceProfileManagementView: View {
         }
         .frame(width: 560, height: 440)
         .onAppear(perform: load)
+        .onDisappear { player?.stop() }
         .alert("删除“\(pendingDelete?.name ?? "")”的声纹？",
                isPresented: Binding(
                 get: { pendingDelete != nil },
@@ -79,6 +89,20 @@ struct VoiceProfileManagementView: View {
             Button("删除", role: .destructive) { removePending() }
         } message: {
             Text("此操作无法恢复，之后的会议将不再自动识别这个人。")
+        }
+    }
+
+    private func togglePlayback(_ profile: VoiceProfile) {
+        if playingID == profile.id {
+            player?.stop(); player = nil; playingID = nil
+            return
+        }
+        guard let url = VoiceProfileStore.referenceClipURL(for: profile) else { return }
+        do {
+            let audioPlayer = try AVAudioPlayer(contentsOf: url)
+            player = audioPlayer; playingID = profile.id; audioPlayer.play()
+        } catch {
+            self.error = "播放失败：\(error.localizedDescription)"
         }
     }
 

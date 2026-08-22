@@ -61,7 +61,11 @@ enum StructuredMinutesRenderer {
 
         if !value.uncertainties.isEmpty {
             lines += ["", "> 需要人工核对："]
-            lines += value.uncertainties.map { "> - \($0.content)\(evidenceSuffix($0.evidence))" }
+            lines += value.uncertainties.map {
+                let label = $0.uncertaintyKind == .speechRecognition ? "识别模糊"
+                    : ($0.uncertaintyKind == .unclearMeaning ? "含义不明" : "待确认")
+                return "> - [\(label)] \($0.content)\(evidenceSuffix($0.evidence))"
+            }
         }
         return lines.joined(separator: "\n")
     }

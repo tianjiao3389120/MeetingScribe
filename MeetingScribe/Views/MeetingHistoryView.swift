@@ -21,6 +21,7 @@ struct MeetingHistoryView: View {
     @State private var editingClassification: MeetingRecord?
     @State private var dashboardWorkspace: MeetingWorkspace?
     @State private var editingTranscript: MeetingRecord?
+    @State private var learningRecognition: MeetingRecord?
     @State private var translatingTranscript: MeetingRecord?
     @State private var emailRecord: MeetingRecord?
     @State private var editingAction: ActionEditTarget?
@@ -28,8 +29,16 @@ struct MeetingHistoryView: View {
     @State private var isReviewingActions = false
     @State private var detailTab: DetailTab = .minutes
 
+    init(initialSelection: UUID? = nil,
+         onReprocess: @escaping (MeetingRecord) -> Void,
+         onAnalyzeTranscript: @escaping (MeetingRecord, Transcript) -> Void) {
+        self.onReprocess = onReprocess
+        self.onAnalyzeTranscript = onAnalyzeTranscript
+        _selection = State(initialValue: initialSelection)
+    }
+
     private enum DetailTab: String, CaseIterable {
-        case minutes = "纪要", actions = "待办", transcript = "逐字稿", email = "邮件", info = "信息"
+        case minutes = "纪要", actions = "待办", email = "邮件", info = "信息"
     }
 
     private struct ActionEditTarget: Identifiable {
@@ -129,6 +138,17 @@ struct MeetingHistoryView: View {
                 editingTranscript = nil
                 onAnalyzeTranscript(record, transcript)
             }
+        }
+        .sheet(item: $learningRecognition) { record in
+            RecognitionLearningView(
+                workspaceID: record.workspaceID,
+                sourceTitle: record.title,
+                uncertainties: record.structuredSummary?.uncertainties ?? []) {
+                    let corrected = RecognitionMemoryStore.apply(
+                        to: record.transcript, workspaceID: record.workspaceID)
+                    learningRecognition = nil
+                    onAnalyzeTranscript(record, corrected)
+                }
         }
         .sheet(item: $translatingTranscript) { record in
             TranscriptTranslationView(record: record) { updated in
@@ -366,42 +386,63 @@ struct MeetingHistoryView: View {
     @ViewBuilder
     private func historyDetail(_ record: MeetingRecord) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(record.title).font(.headline)
+            VStack(alignment: .leading, spacing: 9) {
+                Text(detailTitle(for: record))
+                    .font(.title3.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
                     Text("\(TranscriptSegment.humanDuration(record.duration)) · \(record.createdAt.formatted())")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if let workspace = workspace(for: record) {
+                        Text("·")
+                        Label(workspace.name, systemImage: workspace.kind == .recurring ? "repeat" : "folder")
+                    }
                     if let tags = record.tags, !tags.isEmpty {
+                        Text("·")
                         Text(tags.map { "#\($0)" }.joined(separator: "  "))
-                            .font(.caption)
                             .foregroundStyle(Color.accentColor)
                     }
                 }
-                Spacer()
-                Button { toggleFavorite(record) } label: {
-                    Image(systemName: record.isFavorite == true ? "star.fill" : "star")
-                }.help(record.isFavorite == true ? "取消收藏" : "收藏")
-                if FileManager.default.fileExists(atPath: record.sourcePath) {
-                    Button("打开源文件") { NSWorkspace.shared.open(record.sourceURL) }
-                    Button("重新处理") { onReprocess(record) }
-                } else {
-                    Label("源文件已移动", systemImage: "questionmark.folder")
-                        .font(.caption).foregroundStyle(.orange)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+                if let stats = record.adaptiveScreenReviewStats {
+                    Label(stats.summary, systemImage: "viewfinder")
+                        .font(.caption)
+                        .foregroundStyle(stats.citedScreenEvidence > 0 ? Color.green : Color.secondary)
+                        .help("逐字稿驱动的补充画面分析链路统计")
                 }
-                Menu("更多操作") {
-                    Button("会议信息、归组与标签…") { editingClassification = record }
-                    Button("生成同步邮件…") { emailRecord = record }
-                    Button(record.isArchived == true ? "移出归档" : "归档") {
-                        toggleArchived(record)
+
+                HStack(spacing: 10) {
+                    Button { toggleFavorite(record) } label: {
+                        Image(systemName: record.isFavorite == true ? "star.fill" : "star")
+                    }.help(record.isFavorite == true ? "取消收藏" : "收藏")
+                    Spacer()
+                    if FileManager.default.fileExists(atPath: record.sourcePath) {
+                        Button("打开源文件") { NSWorkspace.shared.open(record.sourceURL) }
+                        Button("重新处理") { onReprocess(record) }
+                    } else {
+                        Label("源文件已移动", systemImage: "questionmark.folder")
+                            .font(.caption).foregroundStyle(.orange)
                     }
-                    Divider()
-                    Button("校正逐字稿并重新生成…") { editingTranscript = record }
-                    Button("生成双栏释义…") { translatingTranscript = record }
-                    Divider()
-                    Button("导出…") { export(record) }
-                }
-                Button(role: .destructive) { pendingDelete = record } label: {
-                    Image(systemName: "trash")
+                    Button("纠正并学习") { learningRecognition = record }
+                    Menu("更多操作") {
+                        Button("会议信息、归组与标签…") { editingClassification = record }
+                        Button("生成同步邮件…") { emailRecord = record }
+                        Button(record.isArchived == true ? "移出归档" : "归档") {
+                            toggleArchived(record)
+                        }
+                        Divider()
+                        Button("校正逐字稿、学习并重新生成…") { editingTranscript = record }
+                        Button("生成双栏释义…") { translatingTranscript = record }
+                        Divider()
+                        Button("导出…") { export(record) }
+                    }
+                    Button(role: .destructive) { pendingDelete = record } label: {
+                        Image(systemName: "trash")
+                    }
                 }
             }
             .padding(14)
@@ -476,12 +517,6 @@ struct MeetingHistoryView: View {
                 }
             } else {
                 ContentUnavailableView("没有结构化待办", systemImage: "checklist")
-            }
-        case .transcript:
-            ScrollView {
-                Text(record.transcript.timecodedText)
-                    .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(18)
             }
         case .email:
             if let drafts = record.emailDrafts, !drafts.chinese.isEmpty {
@@ -593,6 +628,12 @@ struct MeetingHistoryView: View {
 
     private func workspace(for record: MeetingRecord) -> MeetingWorkspace? {
         workspaces.first { $0.id == record.workspaceID }
+    }
+
+    private func detailTitle(for record: MeetingRecord) -> String {
+        let generated = record.structuredSummary?.title
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return generated.isEmpty ? record.title : generated
     }
 
     private var selectedFilterWorkspace: MeetingWorkspace? {

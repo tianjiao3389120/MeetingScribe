@@ -16,20 +16,11 @@ struct RealtimeSubtitleLine: Identifiable, Equatable {
 }
 
 struct RealtimeSubtitleTranslator {
-    let client: OpenAICompatibleClient
+    let client: ModelTextClient
     let scenario: RecognitionScenario
 
     init(settings: Settings, scenario: RecognitionScenario) throws {
-        let provider = settings.provider
-        let key = settings.providerKey
-        if provider.requiresKey, key?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
-            throw Failure.missingProviderKey(provider.name)
-        }
-        client = OpenAICompatibleClient(
-            baseURL: settings.providerBaseURL,
-            apiKey: key,
-            model: settings.providerModel,
-            supportsVision: false)
+        client = try ModelTextClient(settings: settings)
         self.scenario = scenario
     }
 
@@ -38,8 +29,7 @@ struct RealtimeSubtitleTranslator {
         guard !value.isEmpty else { return "" }
         return try await client.complete(
             system: Self.systemPrompt(for: scenario),
-            user: value,
-            images: [])
+            user: value)
     }
 
     static func systemPrompt(for scenario: RecognitionScenario) -> String {
@@ -72,14 +62,4 @@ struct RealtimeSubtitleTranslator {
         lines.compactMap(\.translation).joined(separator: "\n")
     }
 
-    enum Failure: LocalizedError {
-        case missingProviderKey(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .missingProviderKey(let provider):
-                return "未配置 \(provider) 的 API key，实时字幕仍会保留原文。"
-            }
-        }
-    }
 }
