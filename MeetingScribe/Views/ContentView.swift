@@ -10,7 +10,6 @@ struct ContentView: View {
     @State private var isTargeted = false
     @State private var savedPath: String?
     @State private var pendingInput: MeetingInput?
-    @State private var systemRecordingMonitor = SystemRecordingMonitor()
     @State private var interruptedJob: PendingMeetingJob?
 
     var body: some View {
@@ -22,7 +21,6 @@ struct ContentView: View {
             case .idle, .failed:
                 DropZone(isTargeted: $isTargeted,
                          error: runner.error,
-                         recordingMonitor: systemRecordingMonitor,
                          recentMeetings: recentMeetings,
                          onOpenMeeting: { id in
                              historySelection = id
@@ -176,7 +174,6 @@ struct ContentView: View {
 private struct DropZone: View {
     @Binding var isTargeted: Bool
     let error: String?
-    let recordingMonitor: SystemRecordingMonitor
     let recentMeetings: [MeetingRecord]
     let onOpenMeeting: (UUID) -> Void
     let onPick: (MeetingInput) -> Void
@@ -216,31 +213,11 @@ private struct DropZone: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 10) {
-                Button { pick() } label: {
-                    Label("导入会议", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(.borderedProminent)
-                Button { openSystemScreenshot() } label: {
-                    Label("录制会议", systemImage: "record.circle")
-                }
+            Button { pick() } label: {
+                Label("导入会议", systemImage: "square.and.arrow.down")
             }
+            .buttonStyle(.borderedProminent)
             .controlSize(.large)
-
-            if let recording = recordingMonitor.detectedURL {
-                Button {
-                    if let url = recordingMonitor.consume() { accept([url]) }
-                } label: {
-                    Label("导入刚录制的 \(recording.lastPathComponent)",
-                          systemImage: "square.and.arrow.down")
-                }
-            } else if recordingMonitor.isWatching {
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.small)
-                    Text("等待系统录制完成…")
-                        .lineLimit(1)
-                }.font(.caption).foregroundStyle(.secondary)
-            }
 
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -345,16 +322,6 @@ private struct DropZone: View {
         if panel.runModal() == .OK { accept(panel.urls) }
     }
 
-    private func openSystemScreenshot() {
-        recordingMonitor.begin()
-        let workspace = NSWorkspace.shared
-        let url = workspace.urlForApplication(withBundleIdentifier: "com.apple.screenshot.launcher")
-            ?? URL(fileURLWithPath: "/System/Applications/Utilities/Screenshot.app")
-        if !workspace.open(url) {
-            recordingMonitor.stop()
-            rejection = "无法启动 macOS 系统截屏工具。也可以按 Shift–Command–5 打开。"
-        }
-    }
 }
 
 // MARK: - Analysis failed, transcript intact

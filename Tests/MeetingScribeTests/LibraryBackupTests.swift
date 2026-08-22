@@ -25,8 +25,6 @@ final class LibraryBackupTests: XCTestCase {
         try MeetingWorkspaceStore.save([workspace], to: source.workspaces)
         try FileManager.default.createDirectory(at: source.feedback, withIntermediateDirectories: true)
         try Data("feedback".utf8).write(to: source.feedback.appendingPathComponent("feedback.json"))
-        try FileManager.default.createDirectory(at: source.realtime, withIntermediateDirectories: true)
-        try Data("subtitle".utf8).write(to: source.realtime.appendingPathComponent("session.txt"))
         let profile = VoiceProfile(name: "测试用户", embedding: [1, 0, 0])
         try JSONEncoder().encode([profile]).write(to: source.voiceProfiles)
 
@@ -34,7 +32,7 @@ final class LibraryBackupTests: XCTestCase {
         let first = try LibraryBackup.restorePackage(from: package, destination: destination)
         XCTAssertEqual(first.meetingsAdded, 1)
         XCTAssertEqual(first.workspacesAdded, 1)
-        XCTAssertEqual(first.filesAdded, 3)
+        XCTAssertEqual(first.filesAdded, 2)
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: destination.meetings).first?.title,
                        "客户双周会")
         let restoredMaterial = try XCTUnwrap(
@@ -51,7 +49,7 @@ final class LibraryBackupTests: XCTestCase {
         XCTAssertEqual(second.meetingsAdded, 0)
         XCTAssertEqual(second.workspacesAdded, 0)
         XCTAssertEqual(second.filesAdded, 0)
-        XCTAssertEqual(second.skipped, 5)
+        XCTAssertEqual(second.skipped, 4)
     }
 
     func testBackupRejectsMissingOrFutureManifest() throws {

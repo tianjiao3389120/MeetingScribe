@@ -26,7 +26,6 @@ enum LibraryBackup {
         var meetings: URL { root.appendingPathComponent("Meetings", isDirectory: true) }
         var workspaces: URL { root.appendingPathComponent("workspaces.json") }
         var feedback: URL { root.appendingPathComponent("Feedback", isDirectory: true) }
-        var realtime: URL { root.appendingPathComponent("realtime", isDirectory: true) }
         var voiceProfiles: URL { root.appendingPathComponent("voice-profiles.json") }
         var voiceProfileClips: URL { root.appendingPathComponent("voice-profile-clips", isDirectory: true) }
         var projectLedger: URL { root.appendingPathComponent("project-ledger.json") }
@@ -76,7 +75,6 @@ enum LibraryBackup {
         try manager.createDirectory(at: package, withIntermediateDirectories: true)
         for (from, name) in [(source.meetings, "Meetings"),
                              (source.feedback, "Feedback"),
-                             (source.realtime, "realtime"),
                              (source.voiceProfileClips, "voice-profile-clips")] where manager.fileExists(atPath: from.path) {
             try manager.copyItem(at: from, to: package.appendingPathComponent(name, isDirectory: true))
         }
@@ -135,7 +133,7 @@ enum LibraryBackup {
             try MeetingWorkspaceStore.save(existing, to: destination.workspaces)
         }
 
-        for name in ["Feedback", "realtime", "voice-profile-clips"] {
+        for name in ["Feedback", "voice-profile-clips"] {
             let source = package.appendingPathComponent(name, isDirectory: true)
             let target = destination.root.appendingPathComponent(name, isDirectory: true)
             let result = try mergeFiles(from: source, to: target)

@@ -12,7 +12,6 @@ struct SettingsView: View {
     @State private var voiceProfileCount = VoiceProfileStore.load().count
     @State private var showStorageManagement = false
     @State private var showRuntimeDiagnostics = false
-    @State private var showRealtimeHistory = false
     @State private var glossaryCandidates = FeedbackStore.loadCandidates()
     @State private var glossaryCandidateError: String?
 
@@ -172,9 +171,6 @@ struct SettingsView: View {
                 Section("存储") {
                     LabeledContent("处理缓存") { Text(cacheSummary).foregroundStyle(.secondary) }
                     Button("管理存储…") { showStorageManagement = true }
-                    Button("查看旧实时字幕记录…") { showRealtimeHistory = true }
-                    Text("实时字幕已从主流程下架；既有记录仍可在这里查看和导出。")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("调试") {
@@ -212,7 +208,6 @@ struct SettingsView: View {
             cacheSummary = Self.describeCache()
         }) { StorageManagementView() }
         .sheet(isPresented: $showRuntimeDiagnostics) { RuntimeDiagnosticsView() }
-        .sheet(isPresented: $showRealtimeHistory) { RealtimeTranscriptHistoryView() }
     }
 
     private func canAccept(_ candidate: GlossaryCandidate) -> Bool {

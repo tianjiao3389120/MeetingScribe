@@ -7,24 +7,14 @@ import SwiftUI
 enum Entry {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        let commands: Set<String> = [
+        let removedAudioCommands: Set<String> = [
             "--request-audio-permission",
             "--blackhole-audio-server"
         ]
-        // macOS may restore a previously launched app with its old arguments.
-        // Never let the foreground app turn into a headless audio server: these
-        // commands belong exclusively to the separately bundled helper app.
-        let isAudioHelper = Bundle.main.bundleIdentifier == "com.meetingscribe.audio-helper"
-        if isAudioHelper, let index = arguments.firstIndex(where: commands.contains) {
-            let commandArguments = ArraySlice(arguments[index...])
-            switch arguments[index] {
-            case "--request-audio-permission":
-                BlackHoleAudioSocketServer.requestPermissionOnly()
-            case "--blackhole-audio-server":
-                BlackHoleAudioSocketServer.run(arguments: commandArguments)
-            default:
-                break
-            }
+        // Ignore stale Audio Helper launch requests restored by macOS after the
+        // removed real-time subtitle feature. Always show the normal app.
+        if arguments.contains(where: removedAudioCommands.contains) {
+            MeetingScribeApp.main()
             return
         }
         let args = arguments.filter { !$0.hasPrefix("-") }
@@ -63,22 +53,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows flag: Bool) -> Bool {
-        showAnExistingWindowIfNeeded(in: sender)
+        // If a window already exists, only raise that window. Returning true
+        // here asks SwiftUI's WindowGroup to create another one, so repeated
+        // Dock/Finder open events can produce an apparent endless window loop.
+        if showAnExistingWindowIfNeeded(in: sender) { return false }
 
-        // Returning true lets SwiftUI create the WindowGroup again when its
-        // previous window was closed and therefore no NSWindow remains.
+        // No usable window remains; allow WindowGroup to create exactly one.
         return true
     }
 
-    private func showAnExistingWindowIfNeeded(in application: NSApplication) {
+    @discardableResult
+    private func showAnExistingWindowIfNeeded(in application: NSApplication) -> Bool {
         application.activate(ignoringOtherApps: true)
-        guard let window = application.windows.first(where: isMainWindow) else { return }
+        guard let window = application.windows.first(where: isMainWindow) else { return false }
 
         if window.isMiniaturized {
             window.deminiaturize(nil)
         }
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        return true
     }
 
     private func isMainWindow(_ window: NSWindow) -> Bool {

@@ -148,18 +148,10 @@ final class MeetingHistoryStoreTests: XCTestCase {
             speakerNames: [:], usedSummaryFallback: false)
         try MeetingHistoryStore.save(record, root: root)
 
-        let realtimeRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meetingscribe-realtime-empty-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: realtimeRoot) }
-        try FileManager.default.createDirectory(at: realtimeRoot, withIntermediateDirectories: true)
-        try "字幕".write(to: realtimeRoot.appendingPathComponent("realtime-test.txt"),
-                       atomically: true, encoding: .utf8)
-        let overview = StorageOverview.load(historyRoot: root, realtimeRoot: realtimeRoot)
+        let overview = StorageOverview.load(historyRoot: root)
         XCTAssertEqual(overview.meetingCount, 1)
         XCTAssertEqual(overview.missingSourceCount, 1)
         XCTAssertGreaterThan(overview.historyBytes, 0)
-        XCTAssertEqual(overview.realtimeCount, 1)
-        XCTAssertGreaterThan(overview.realtimeBytes, 0)
     }
 
     func testMeetingSearchRequiresEveryTermAcrossDifferentFields() {

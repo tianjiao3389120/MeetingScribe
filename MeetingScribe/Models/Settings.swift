@@ -130,31 +130,6 @@ enum RecognitionScenario: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-enum RealtimeTranscriptionQuality: String, CaseIterable, Identifiable, Codable {
-    case realtime
-    case accurate
-
-    var id: String { rawValue }
-    var displayName: String {
-        switch self {
-        case .realtime: "实时优先"
-        case .accurate: "准确优先"
-        }
-    }
-    var model: String {
-        switch self {
-        case .realtime: "gpt-realtime-whisper"
-        case .accurate: "gpt-4o-transcribe"
-        }
-    }
-    var explanation: String {
-        switch self {
-        case .realtime: "更快显示增量字幕，适合持续观看。"
-        case .accurate: "优先降低错词率，最终字幕可能稍慢。"
-        }
-    }
-}
-
 @Observable
 final class Settings {
     static let shared = Settings()
@@ -178,10 +153,6 @@ final class Settings {
     }
     var keepIntermediates: Bool {
         didSet { defaults.set(keepIntermediates, forKey: Keys.keepIntermediates) }
-    }
-
-    var realtimeTranscriptionQuality: RealtimeTranscriptionQuality {
-        didSet { defaults.set(realtimeTranscriptionQuality.rawValue, forKey: Keys.realtimeQuality) }
     }
 
     // MARK: OpenAI-compatible providers
@@ -237,23 +208,6 @@ final class Settings {
     }
     var providerKeyExists: Bool { Keychain.exists(account: provider.keychainAccount) }
 
-    /// OpenAI Realtime transcription is independent from the model used for
-    /// minutes and translation. Keeping a separate key lets those workflows
-    /// use different accounts, quotas and providers.
-    var realtimeOpenAIKey: String? {
-        get { Keychain.read(account: "openai-realtime-api-key") }
-        set {
-            if let newValue, !newValue.isEmpty {
-                Keychain.write(account: "openai-realtime-api-key", value: newValue)
-            } else {
-                Keychain.delete(account: "openai-realtime-api-key")
-            }
-        }
-    }
-    var realtimeOpenAIKeyExists: Bool {
-        Keychain.exists(account: "openai-realtime-api-key")
-    }
-
     private enum Keys {
         static let backend = "backend"
         static let frameDensity = "frameDensity"
@@ -265,7 +219,6 @@ final class Settings {
         static let providerBaseURL = "providerBaseURL"
         static let providerModel = "providerModel"
         static let providerVision = "providerVisionOverride"
-        static let realtimeQuality = "realtimeTranscriptionQuality"
     }
 
     static let defaultGlossary = """
@@ -298,9 +251,6 @@ final class Settings {
         minutesInstructions = defaults.string(forKey: Keys.minutesInstructions)
             ?? Settings.defaultMinutesInstructions
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
-        realtimeTranscriptionQuality = RealtimeTranscriptionQuality(
-            rawValue: defaults.string(forKey: Keys.realtimeQuality) ?? "") ?? .realtime
-
         let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.openAI.id
         let preset = ProviderPreset.preset(id: storedProvider)
         let providerWasRemoved = !ProviderPreset.all.contains { $0.id == storedProvider }
