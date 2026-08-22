@@ -477,6 +477,16 @@ final class PipelineRunner {
         let result = try await analyzer.run { [weak self] message in
             Task { @MainActor in self?.detail = message }
         }
+        var generationUsage = result.usage
+        let adaptiveCandidates = AdaptiveFramePlanner.candidateTimeline(from: originalBundle.transcript)
+        if originalBundle.hasVideo, originalBundle.sourceKind == .recordedMedia,
+           !adaptiveCandidates.isEmpty {
+            let planned = bundle.adaptiveScreenReviewStats?.plannedNodes ?? 0
+            generationUsage.phases.insert(
+                GenerationUsage.estimatedPhase(
+                    name: "画面节点规划", input: adaptiveCandidates,
+                    output: "规划 \(planned) 个补充画面节点"), at: 0)
+        }
         var trackedStructured = result.structured
         var actionSuggestions: [ActionStatusSuggestion] = []
         if var structured = trackedStructured {
@@ -541,6 +551,7 @@ final class PipelineRunner {
         storedRecord.minutesTemplateID = bundle.minutesTemplateID
         storedRecord.actionStatusSuggestions = actionSuggestions
         storedRecord.adaptiveScreenReviewStats = bundle.adaptiveScreenReviewStats
+        storedRecord.generationUsage = generationUsage
         do {
             try MeetingHistoryStore.save(storedRecord, materialSources: bundle.materials)
             savedRecordID = storedRecord.id

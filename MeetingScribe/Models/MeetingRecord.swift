@@ -34,6 +34,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var sourceKind: String?
     var relatedSourcePaths: [String]?
     var adaptiveScreenReviewStats: AdaptiveScreenReviewStats?
+    var generationUsage: GenerationUsage?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
@@ -73,6 +74,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.sourceKind = nil
         self.relatedSourcePaths = nil
         self.adaptiveScreenReviewStats = nil
+        self.generationUsage = nil
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }

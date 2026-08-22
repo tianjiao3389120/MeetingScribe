@@ -533,7 +533,7 @@ private struct ResultView: View {
     @State private var saveError: String?
     @State private var showNaming = false
     @State private var showFeedback = false
-    @State private var showEmail = false
+    @State private var showMinutesVersions = false
     @State private var showRecognitionLearning = false
     @State private var showSpeakerRetry = false
 
@@ -624,7 +624,7 @@ private struct ResultView: View {
                 }
 
                 if runner.savedRecordID != nil {
-                    Button("生成邮件") { showEmail = true }
+                    Button("会议纪要") { showMinutesVersions = true }
                 }
 
                 Button("纠正并学习") { showRecognitionLearning = true }
@@ -710,13 +710,11 @@ private struct ResultView: View {
                     }
             }
         }
-        .sheet(isPresented: $showEmail) {
+        .sheet(isPresented: $showMinutesVersions) {
             if let id = runner.savedRecordID, let assets = runner.assets {
-                MeetingEmailView(meetingID: id, title: assets.title,
-                                 workspaceName: assets.workspace?.name,
-                                 minutesTemplateID: assets.minutesTemplateID,
-                                 workspaceEmailTemplateID: assets.workspace?.defaultEmailTemplateID,
-                                 minutes: runner.summary)
+                MeetingMinutesVersionView(meetingID: id, title: assets.title,
+                                 minutes: runner.structuredSummary.map(CustomerMinutesRenderer.markdown(from:))
+                                     ?? runner.summary)
             }
         }
     }

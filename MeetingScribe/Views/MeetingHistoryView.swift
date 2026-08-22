@@ -20,18 +20,19 @@ struct MeetingHistoryView: View {
     @State private var editingClassification: MeetingRecord?
     @State private var dashboardWorkspace: MeetingWorkspace?
     @State private var editingTranscript: MeetingRecord?
-    @State private var learningRecognition: MeetingRecord?
     @State private var translatingTranscript: MeetingRecord?
-    @State private var emailRecord: MeetingRecord?
+    @State private var minutesVersionRecord: MeetingRecord?
     @State private var editingAction: ActionEditTarget?
     @State private var pendingActionReviewWorkspace: MeetingWorkspace?
     @State private var isReviewingActions = false
-    @State private var detailTab: DetailTab = .minutes
+    @State private var detailTab: DetailTab = .customer
     @State private var meetingTypeFilter = ""
     @State private var customerFilter = ""
     @State private var projectFilter = ""
     @State private var showLoadIssues = false
     @State private var pendingVersionCleanup: MeetingRecord?
+    @State private var showsLibrarySidebar = true
+    @State private var showsMeetingList = true
 
     init(initialSelection: UUID? = nil,
          onReprocess: @escaping (MeetingRecord) -> Void,
@@ -42,7 +43,7 @@ struct MeetingHistoryView: View {
     }
 
     private enum DetailTab: String, CaseIterable {
-        case minutes = "纪要", actions = "待办", email = "邮件", info = "信息"
+        case customer = "会议纪要", actions = "待办", info = "信息"
     }
 
     private struct ActionEditTarget: Identifiable {
@@ -145,10 +146,16 @@ struct MeetingHistoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HSplitView {
-                librarySidebar
-                    .frame(minWidth: 180, idealWidth: 205, maxWidth: 240)
-                meetingList
-                    .frame(minWidth: 270, idealWidth: 310, maxWidth: 370)
+                if showsLibrarySidebar {
+                    librarySidebar
+                        .frame(minWidth: 180, idealWidth: 205, maxWidth: 240)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+                if showsMeetingList {
+                    meetingList
+                        .frame(minWidth: 270, idealWidth: 310, maxWidth: 370)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
 
                 if let record = selected {
                     historyDetail(record)
@@ -204,17 +211,6 @@ struct MeetingHistoryView: View {
                 onAnalyzeTranscript(record, transcript)
             }
         }
-        .sheet(item: $learningRecognition) { record in
-            RecognitionLearningView(
-                workspaceID: record.workspaceID,
-                sourceTitle: record.title,
-                uncertainties: record.structuredSummary?.uncertainties ?? []) {
-                    let corrected = RecognitionMemoryStore.apply(
-                        to: record.transcript, workspaceID: record.workspaceID)
-                    learningRecognition = nil
-                    onAnalyzeTranscript(record, corrected)
-                }
-        }
         .sheet(item: $translatingTranscript) { record in
             TranscriptTranslationView(record: record) { updated in
                 if let index = records.firstIndex(where: { $0.id == updated.id }) {
@@ -222,13 +218,10 @@ struct MeetingHistoryView: View {
                 }
             }
         }
-        .sheet(item: $emailRecord) { record in
-            MeetingEmailView(
+        .sheet(item: $minutesVersionRecord) { record in
+            MeetingMinutesVersionView(
                 meetingID: record.id, title: record.title,
-                workspaceName: record.projectName,
-                minutesTemplateID: record.minutesTemplateID,
-                workspaceEmailTemplateID: workspace(for: record)?.defaultEmailTemplateID,
-                minutes: StructuredMinutesRenderer.markdown(for: record),
+                minutes: CustomerMinutesRenderer.markdown(for: record),
                 initialDrafts: record.emailDrafts
             ) { drafts in
                 if let index = records.firstIndex(where: { $0.id == record.id }) {
@@ -251,7 +244,7 @@ struct MeetingHistoryView: View {
                 selection = listSections.first?.records.first?.id
             }
         }
-        .onChange(of: selection) { _, _ in detailTab = .minutes }
+        .onChange(of: selection) { _, _ in detailTab = .customer }
         .alert("删除这条历史记录？", isPresented: Binding(
             get: { pendingDelete != nil },
             set: { if !$0 { pendingDelete = nil } }
@@ -496,7 +489,9 @@ struct MeetingHistoryView: View {
                 if record.isFavorite == true { Image(systemName: "star.fill").foregroundStyle(.yellow) }
                 Text(record.title).font(.callout.weight(.medium)).lineLimit(1)
                 Spacer()
-                if record.emailDrafts != nil { Image(systemName: "envelope.fill").foregroundStyle(.secondary) }
+                if record.emailDrafts?.hongKongTraditional.isEmpty == false {
+                    Image(systemName: "character.book.closed.fill").foregroundStyle(.secondary)
+                }
                 let versions = versions(for: record)
                 if versions.count > 1 {
                     Text("\(versions.count) 个版本")
@@ -550,14 +545,41 @@ struct MeetingHistoryView: View {
                 .lineLimit(2)
 
                 HStack(spacing: 10) {
+                    Button {
+                        withAnimation { showsLibrarySidebar.toggle() }
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                    }
+                    .help(showsLibrarySidebar ? "收起分类栏" : "展开分类栏")
+                    Button {
+                        withAnimation { showsMeetingList.toggle() }
+                    } label: {
+                        Image(systemName: "list.bullet.rectangle")
+                    }
+                    .help(showsMeetingList ? "收起会议列表" : "展开会议列表")
                     Button { toggleFavorite(record) } label: {
                         Image(systemName: record.isFavorite == true ? "star.fill" : "star")
                     }.help(record.isFavorite == true ? "取消收藏" : "收藏")
                     Spacer()
                     Button("复制纪要") { copyMinutes(record) }
                     Menu("更多") {
-                        Button("用默认 Markdown 应用打开") { openMinutes(record) }
-                        Button("导出…") { export(record) }
+                        Button("编辑会议信息…") { editingClassification = record }
+                        Menu("导出会议资料") {
+                            Button("会议纪要…") {
+                                exportText(CustomerMinutesRenderer.markdown(for: record),
+                                           suggestedName: "\(record.title) 会议纪要.md")
+                            }
+                            Button("内部完整纪要…") {
+                                exportText(StructuredMinutesRenderer.markdown(for: record),
+                                           suggestedName: "\(record.title) 内部完整纪要.md")
+                            }
+                            Button("逐字稿…") {
+                                exportText(record.transcript.timecodedText,
+                                           suggestedName: "\(record.title) 逐字稿.txt")
+                            }
+                            Divider()
+                            Button("全部会议资料…") { export(record) }
+                        }
                         Divider()
                         if FileManager.default.fileExists(atPath: record.sourcePath) {
                             Button("打开源文件") { NSWorkspace.shared.open(record.sourceURL) }
@@ -583,16 +605,12 @@ struct MeetingHistoryView: View {
                             }
                         }
                         Divider()
-                        Button("会议信息、归组与标签…") { editingClassification = record }
-                        Button("生成同步邮件…") { emailRecord = record }
+                        Button("校正识别并重新生成…") { editingTranscript = record }
+                        Button("生成双语逐字稿…") { translatingTranscript = record }
+                        Divider()
                         Button(record.isArchived == true ? "移出归档" : "归档") {
                             toggleArchived(record)
                         }
-                        Divider()
-                        Button("校正逐字稿、学习并重新生成…") { editingTranscript = record }
-                        Button("纠正并学习识别内容…") { learningRecognition = record }
-                        Button("生成双栏释义…") { translatingTranscript = record }
-                        Divider()
                         Button("删除这条记录…", role: .destructive) { pendingDelete = record }
                     }
                 }
@@ -611,8 +629,25 @@ struct MeetingHistoryView: View {
     @ViewBuilder
     private func detailContent(_ record: MeetingRecord) -> some View {
         switch detailTab {
-        case .minutes:
-            MarkdownView(markdown: StructuredMinutesRenderer.markdown(for: record))
+        case .customer:
+            VStack(spacing: 0) {
+                MarkdownView(markdown: CustomerMinutesRenderer.markdown(for: record))
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("打开 Markdown", systemImage: "doc.text") {
+                        do {
+                            try MinutesDocumentOpener.open(
+                                markdown: CustomerMinutesRenderer.markdown(for: record),
+                                title: record.title)
+                        } catch let openError {
+                            error = "打开纪要失败：\(openError.localizedDescription)"
+                        }
+                    }
+                    Button("更多") { minutesVersionRecord = record }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 10)
+            }
         case .actions:
             if let actions = record.structuredSummary?.actionItems, !actions.isEmpty {
                 List {
@@ -628,8 +663,6 @@ struct MeetingHistoryView: View {
                                     }
                                     Text("\(statusText(suggestion.previousStatus)) → \(statusText(suggestion.proposedStatus))")
                                         .font(.caption).foregroundStyle(.blue)
-                                    Text("依据：\(suggestion.evidence.joined(separator: "、"))")
-                                        .font(.caption).foregroundStyle(.secondary)
                                 }.padding(.vertical, 4)
                             }
                         } header: {
@@ -670,26 +703,6 @@ struct MeetingHistoryView: View {
             } else {
                 ContentUnavailableView("没有结构化待办", systemImage: "checklist")
             }
-        case .email:
-            if let drafts = record.emailDrafts, !drafts.chinese.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("中文草稿").font(.headline)
-                        Text(drafts.chinese).textSelection(.enabled)
-                        if !drafts.hongKongTraditional.isEmpty {
-                            Divider(); Text("香港繁体草稿").font(.headline)
-                            Text(drafts.hongKongTraditional).textSelection(.enabled)
-                        }
-                        Button("打开邮件编辑器…") { emailRecord = record }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
-                }
-            } else {
-                VStack(spacing: 12) {
-                    ContentUnavailableView("尚未生成同步邮件", systemImage: "envelope",
-                                           description: Text("可以从本次纪要生成中文和香港繁体草稿。"))
-                    Button("生成同步邮件…") { emailRecord = record }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         case .info:
             Form {
                 LabeledContent("会议名称", value: record.title)
@@ -707,6 +720,28 @@ struct MeetingHistoryView: View {
                 }
                 if let stats = record.adaptiveScreenReviewStats {
                     LabeledContent("画面补充分析", value: stats.summary)
+                }
+                if let usage = record.generationUsage {
+                    Section("本次生成用量") {
+                        LabeledContent("总 Token", value: usage.totalTokens.formatted())
+                        LabeledContent("输入 / 输出",
+                                       value: "\(usage.inputTokens.formatted()) / \(usage.outputTokens.formatted())")
+                        LabeledContent("模型调用", value: "\(usage.calls) 次")
+                        ForEach(usage.phases) { phase in
+                            LabeledContent(phase.name,
+                                           value: "\((phase.inputTokens + phase.outputTokens).formatted()) Token")
+                        }
+                        if usage.isEstimated {
+                            Text("估算值：根据实际发送和返回的文本计算；CLI、推理 Token、图片 Token及供应商缓存计费可能存在差异。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                DisclosureGroup("内部完整纪要（仅供内部查看）") {
+                    Text("包含参会角色判断、证据引用、会后非正式内容和待核对信息，请勿在客户面前展开。")
+                        .font(.caption).foregroundStyle(.orange)
+                    MarkdownView(markdown: StructuredMinutesRenderer.markdown(for: record))
+                        .frame(height: 420)
                 }
             }.formStyle(.grouped)
         }
@@ -1013,20 +1048,9 @@ struct MeetingHistoryView: View {
     private func copyMinutes(_ record: MeetingRecord) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(
-            StructuredMinutesRenderer.markdown(for: record), forType: .string)
+            CustomerMinutesRenderer.markdown(for: record), forType: .string)
         exportMessage = "纪要已复制"
         error = nil
-    }
-
-    private func openMinutes(_ record: MeetingRecord) {
-        do {
-            try MinutesDocumentOpener.open(
-                markdown: StructuredMinutesRenderer.markdown(for: record),
-                title: detailTitle(for: record))
-            error = nil
-        } catch {
-            self.error = "打开纪要失败：\(error.localizedDescription)"
-        }
     }
 
     private func relinkSource(_ record: MeetingRecord) {
@@ -1088,6 +1112,20 @@ struct MeetingHistoryView: View {
         do {
             try MeetingHistoryStore.export(record, to: directory)
             exportMessage = "已导出到 \(directory.path)"
+            error = nil
+        } catch {
+            self.error = "导出失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func exportText(_ text: String, suggestedName: String) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.prompt = "导出"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            exportMessage = "已导出到 \(url.path)"
             error = nil
         } catch {
             self.error = "导出失败：\(error.localizedDescription)"

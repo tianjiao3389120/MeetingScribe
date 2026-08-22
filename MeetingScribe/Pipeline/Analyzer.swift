@@ -15,6 +15,7 @@ struct Analyzer {
         /// Raw model output is retained when JSON parsing failed, so a useful
         /// legacy Markdown response is never discarded.
         let usedFallback: Bool
+        let usage: GenerationUsage
     }
 
     let assets: MeetingAssets
@@ -68,13 +69,18 @@ struct Analyzer {
                                                 progress: progress)
         }
 
+        var phases = [GenerationUsage.estimatedPhase(
+            name: "主纪要", input: PromptBuilder.systemPrompt + "\n" + timeline, output: raw)]
         if let structured = Self.parseStructured(raw) {
-            let reviewed = await repairScreenEvidenceIfNeeded(
+            let (reviewed, repairUsage) = await repairScreenEvidenceIfNeeded(
                 structured, progress: progress)
+            if let repairUsage { phases.append(repairUsage) }
             return Result(markdown: StructuredMinutesRenderer.markdown(from: reviewed),
-                          structured: reviewed, usedFallback: false)
+                          structured: reviewed, usedFallback: false,
+                          usage: GenerationUsage(phases: phases, isEstimated: true))
         }
-        return Result(markdown: raw, structured: nil, usedFallback: true)
+        return Result(markdown: raw, structured: nil, usedFallback: true,
+                      usage: GenerationUsage(phases: phases, isEstimated: true))
     }
 
     /// IDs of adaptive frames that survive backend capability filtering and
@@ -145,10 +151,10 @@ struct Analyzer {
     private func repairScreenEvidenceIfNeeded(
         _ minutes: StructuredMinutes,
         progress: @escaping @Sendable (String) -> Void
-    ) async -> StructuredMinutes {
+    ) async -> (StructuredMinutes, GenerationUsage.Phase?) {
         guard Self.shouldRepairScreenEvidence(minutes: minutes,
                                               assets: assets,
-                                              settings: settings) else { return minutes }
+                                              settings: settings) else { return (minutes, nil) }
         let sentIDs = Self.screenFramesSentToModel(assets: assets, settings: settings)
         let evidence = assets.captures
             .filter { sentIDs.contains($0.id) && !$0.recognizedText.isEmpty }
@@ -161,13 +167,12 @@ struct Analyzer {
             .joined(separator: "\n\n")
         guard !evidence.isEmpty,
               let encoded = try? JSONEncoder().encode(minutes),
-              let minutesJSON = String(data: encoded, encoding: .utf8) else { return minutes }
+              let minutesJSON = String(data: encoded, encoding: .utf8) else { return (minutes, nil) }
 
         progress("补充画面已送达但未被引用，正在校验证据…")
         do {
-            let raw = try await ModelTextClient(settings: settings).complete(
-                system: "你负责校验会议纪要中的屏幕证据。只输出完整合法 JSON，不要解释。",
-                user: """
+            let system = "你负责校验会议纪要中的屏幕证据。只输出完整合法 JSON，不要解释。"
+            let user = """
                 对照补充屏幕OCR，修订下面的结构化纪要：
                 1. 只在OCR确实支持、纠正或补充某条事实时修改该条，并在 evidence 加入 `屏幕 MM:SS`。
                 2. 屏幕与逐字稿冲突时，以屏幕文字为准；可纠正名称、数字、日期、版本、报错和配置项。
@@ -179,11 +184,14 @@ struct Analyzer {
 
                 补充屏幕OCR：
                 \(String(evidence.prefix(14_000)))
-                """,
-                timeout: 300)
-            return Self.parseStructured(raw) ?? minutes
+                """
+            let raw = try await ModelTextClient(settings: settings).complete(
+                system: system, user: user, timeout: 300)
+            return (Self.parseStructured(raw) ?? minutes,
+                    GenerationUsage.estimatedPhase(name: "画面证据修复",
+                                                   input: system + "\n" + user, output: raw))
         } catch {
-            return minutes
+            return (minutes, nil)
         }
     }
 

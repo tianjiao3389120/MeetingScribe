@@ -1,62 +1,22 @@
 import Foundation
 
-struct MeetingEmailGenerator {
-    enum Tone: String, CaseIterable, Identifiable {
-        case formal = "正式"
-        case natural = "自然"
-        case concise = "简洁"
-        var id: String { rawValue }
-    }
-
-    enum Audience: String, CaseIterable, Identifiable {
-        case customer = "客户"
-        case internalTeam = "内部同事"
-        case partner = "合作伙伴"
-        var id: String { rawValue }
-    }
-
+struct HongKongMinutesGenerator {
     let settings: Settings
 
-    func generateChinese(title: String, workspaceName: String?, minutes: String,
-                         template: EmailTemplate, tone: Tone,
-                         audience: Audience) async throws -> String {
-        try await complete(system: Self.chineseSystemPrompt(
-            template: template, tone: tone, audience: audience),
-                           user: "会议名称：\(title)\n客户或项目：\(workspaceName ?? "未提供")\n\n已确认的会议纪要：\n\(minutes)")
+    func generateHongKongMinutes(from confirmedMinutes: String) async throws -> String {
+        try await ModelTextClient(settings: settings).complete(
+            system: Self.systemPrompt, user: confirmedMinutes)
     }
 
-    func generateHongKongTraditional(from confirmedChinese: String) async throws -> String {
-        try await complete(system: Self.hongKongSystemPrompt, user: confirmedChinese)
-    }
+    static let systemPrompt = """
+    你是熟悉香港企业、政府及金融机构项目沟通习惯的会议纪要编辑。把用户已经确认的会议纪要改写为“香港版本纪要”。
 
-    static func chineseSystemPrompt(template: EmailTemplate = .general,
-                                    tone: Tone, audience: Audience) -> String {
-        """
-        你是阶段性工作同步邮件编辑。根据会议纪要起草一封面向\(audience.rawValue)的简体中文邮件，语气\(tone.rawValue)。
-        第一行是“主题：【客户或项目】符合本邮件模板的简短主题”；仅当输入明确提供日期范围时才加日期范围。
+    这不是简单的简体转繁体：
+    - 使用香港常见的繁体中文书面语、商务措辞和项目术语，例如“進度匯報、跟進事項、負責人、預計完成日期、待確認、已完成、進行中、安排、時程、回饋”。
+    - 对内地表达作自然的香港本地化，但避免口语化、粤语对白和生硬逐字替换。
+    - 保留 Markdown 标题、列表、层级和整体信息结构，使结果仍是一份可直接展示或发送的会议纪要。
+    - 保留人名、公司名、产品名、英文缩写及自然英文术语；专有名词没有可靠香港译法时保持原文。
 
-        Hi All,
-
-        以下是[客户或项目]本周期的工作进度同步：
-
-        本次使用“\(template.name)”模板，严格遵守下面的结构要求：
-        \(template.instructions)
-
-        结尾保持简短，不虚构签名。
-        只使用纪要中的事实；不确定的信息标注“待确认”；不要虚构收件人、日期范围、负责人、完成比例或承诺。
-        保留 HIDS、SIEM、Agent、Hotfix、UAT、DMP、CVE、Hash 等自然英文业务术语，不做生硬翻译。
-        输出可直接复制的纯文本邮件，不要 Markdown 表格、Markdown 代码块、前言或解释。
-        """
-    }
-
-    static let hongKongSystemPrompt = """
-    你是香港商务邮件编辑。把用户已经确认的简体中文邮件改写为香港常用繁体中文商务表达。
-    必须保持“整体总结、问题与故障、需求”的结构，以及主题、事实、数字、日期、责任人、待办和段落含义不变；保留人名、公司名、产品名、缩写和自然的英文业务术语。
-    使用香港项目工作邮件常见措辞，例如“進度匯報、已閉環、進行中、待更新、待業務回饋、時程”，但不要为了套用措辞改变事实。
-    这不是重新总结会议，不得增加或删除承诺。只输出可直接复制的纯文本邮件，不要解释。
+    必须严格保持所有事实、数字、日期、时间、责任人、状态、需求、风险和承诺不变。不得添加、删除、推断或弱化任何事项；不确定内容继续标注待确认。只输出完整的香港版本 Markdown 纪要，不要前言、解释或代码块。
     """
-
-    private func complete(system: String, user: String) async throws -> String {
-        try await ModelTextClient(settings: settings).complete(system: system, user: user)
-    }
 }

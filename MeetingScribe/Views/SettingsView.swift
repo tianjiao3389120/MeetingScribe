@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var voiceProfileCount = VoiceProfileStore.load().count
     @State private var showStorageManagement = false
     @State private var showRuntimeDiagnostics = false
+    @State private var showTokenUsage = false
     @State private var glossaryCandidates = FeedbackStore.loadCandidates()
     @State private var glossaryCandidateError: String?
 
@@ -163,6 +164,16 @@ struct SettingsView: View {
                     Button("管理存储…") { showStorageManagement = true }
                 }
 
+                Section("Token 用量") {
+                    let usage = ApplicationTokenUsage.aggregate(
+                        (try? MeetingHistoryStore.loadAll()) ?? [])
+                    LabeledContent("应用总计",
+                                   value: usage.reduce(0) { $0 + $1.totalTokens }.formatted())
+                    Button("查看模型明细…") { showTokenUsage = true }
+                    Text("统计从启用用量记录后生成或重新生成的会议；旧会议不会被估算补录。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section("高级诊断") {
                     DisclosureGroup("展开诊断选项") {
                         Button("运行环境诊断…", systemImage: "stethoscope") {
@@ -210,6 +221,7 @@ struct SettingsView: View {
             cacheSummary = Self.describeCache()
         }) { StorageManagementView() }
         .sheet(isPresented: $showRuntimeDiagnostics) { RuntimeDiagnosticsView() }
+        .sheet(isPresented: $showTokenUsage) { TokenUsageOverviewView() }
     }
 
     private func canAccept(_ candidate: GlossaryCandidate) -> Bool {
@@ -231,6 +243,62 @@ struct SettingsView: View {
             glossaryCandidates.removeAll { $0.id == candidate.id }
             glossaryCandidateError = nil
         } catch { glossaryCandidateError = error.localizedDescription }
+    }
+}
+
+private struct TokenUsageOverviewView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var rows: [ModelTokenUsage] = []
+
+    private var input: Int { rows.reduce(0) { $0 + $1.inputTokens } }
+    private var output: Int { rows.reduce(0) { $0 + $1.outputTokens } }
+    private var total: Int { input + output }
+    private var calls: Int { rows.reduce(0) { $0 + $1.calls } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Token 用量统计").font(.title3.weight(.semibold))
+                    Text("按生成会议时实际使用的模型汇总")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
+            }.padding(18)
+            Divider()
+
+            if rows.isEmpty {
+                ContentUnavailableView("暂无用量记录", systemImage: "chart.bar",
+                                       description: Text("生成或重新生成一场会议后会开始统计。"))
+            } else {
+                HStack(spacing: 28) {
+                    metric("总 Token", total)
+                    metric("输入", input)
+                    metric("输出", output)
+                    metric("调用次数", calls)
+                }
+                .frame(maxWidth: .infinity).padding(18)
+                Divider()
+                Table(rows) {
+                    TableColumn("模型") { Text($0.model) }.width(min: 210, ideal: 260)
+                    TableColumn("会议") { Text($0.meetings.formatted()) }.width(55)
+                    TableColumn("调用") { Text($0.calls.formatted()) }.width(55)
+                    TableColumn("输入 Token") { Text($0.inputTokens.formatted()) }.width(90)
+                    TableColumn("输出 Token") { Text($0.outputTokens.formatted()) }.width(90)
+                    TableColumn("总 Token") { Text($0.totalTokens.formatted()).fontWeight(.medium) }.width(95)
+                }
+            }
+        }
+        .frame(width: 790, height: 480)
+        .onAppear { rows = ApplicationTokenUsage.aggregate((try? MeetingHistoryStore.loadAll()) ?? []) }
+    }
+
+    private func metric(_ title: String, _ value: Int) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value.formatted()).font(.title3.monospacedDigit().weight(.semibold))
+        }
     }
 }
 

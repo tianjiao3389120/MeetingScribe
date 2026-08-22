@@ -34,18 +34,13 @@ final class FeedbackStoreTests: XCTestCase {
         XCTAssertTrue(MinutesTemplate.all.allSatisfy { !$0.instructions.isEmpty })
     }
 
-    func testEmailPromptsPreserveFactsAndRequireChineseReviewFirst() {
-        let chinese = MeetingEmailGenerator.chineseSystemPrompt(
-            template: .progress, tone: .formal, audience: .customer)
-        XCTAssertTrue(chinese.contains("只使用纪要中的事实"))
-        XCTAssertTrue(chinese.contains("客户"))
-        XCTAssertTrue(chinese.contains("一、整体总结"))
-        XCTAssertTrue(chinese.contains("二、问题与故障"))
-        XCTAssertTrue(chinese.contains("根因、方案、验证、下一步"))
-        XCTAssertTrue(chinese.contains("三、需求"))
-        XCTAssertTrue(chinese.contains("不要 Markdown 表格"))
-        XCTAssertTrue(MeetingEmailGenerator.hongKongSystemPrompt.contains("已经确认"))
-        XCTAssertTrue(MeetingEmailGenerator.hongKongSystemPrompt.contains("不得增加或删除承诺"))
+    func testHongKongMinutesPromptLocalizesWithoutChangingFacts() {
+        let prompt = HongKongMinutesGenerator.systemPrompt
+        XCTAssertTrue(prompt.contains("不是简单的简体转繁体"))
+        XCTAssertTrue(prompt.contains("香港常见的繁体中文书面语"))
+        XCTAssertTrue(prompt.contains("保留 Markdown"))
+        XCTAssertTrue(prompt.contains("事实、数字、日期、时间、责任人"))
+        XCTAssertTrue(prompt.contains("不得添加、删除、推断或弱化"))
     }
 
     func testMinutesTemplatesMapToExpectedEmailTemplates() {

@@ -288,7 +288,7 @@ enum MarkdownRenderer {
         font: 15px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
         -webkit-font-smoothing: antialiased;
     }
-    article { max-width: 780px; margin: 0 auto; padding: 32px 40px 64px; }
+    article { max-width: 980px; margin: 0 auto; padding: 32px 40px 64px; }
     h1, h2, h3, h4 { line-height: 1.35; font-weight: 600; }
     h1 { font-size: 25px; margin: 0 0 20px; letter-spacing: -0.01em; }
     h2 {
@@ -303,6 +303,7 @@ enum MarkdownRenderer {
     strong { font-weight: 600; }
     ul, ol { margin: 10px 0; padding-left: 24px; }
     li { margin: 5px 0; }
+    h3 + ul > li { margin: 10px 0; }
     li > ul, li > ol { margin: 4px 0; }
 
     ul.tasklist { list-style: none; padding-left: 2px; }

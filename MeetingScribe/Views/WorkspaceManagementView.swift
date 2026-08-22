@@ -49,13 +49,6 @@ struct WorkspaceManagementView: View {
                         )) {
                             ForEach(MinutesTemplate.all) { Text($0.name).tag($0.id) }
                         }.font(.caption)
-                        Picker("默认邮件模板", selection: Binding(
-                            get: { workspace.defaultEmailTemplateID
-                                ?? EmailTemplate.defaultID(forMinutesTemplateID: workspace.defaultTemplateID) },
-                            set: { workspace.defaultEmailTemplateID = $0 }
-                        )) {
-                            ForEach(EmailTemplate.all) { Text($0.name).tag($0.id) }
-                        }.font(.caption)
                     }.padding(.vertical, 5)
                 }
                 HStack {

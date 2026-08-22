@@ -38,6 +38,7 @@ struct MeetingScribeApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
+
     }
 }
 

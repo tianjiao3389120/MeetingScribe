@@ -17,7 +17,7 @@ struct TranscriptEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("校正逐字稿").font(.title3.weight(.medium))
+                Text("校正识别并重新生成").font(.title3.weight(.medium))
                 Text("修改每个时间码后的文字。短词修正会加入识别记忆，下次会议自动使用；请不要增加或删除行。")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(18)

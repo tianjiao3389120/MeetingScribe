@@ -2,6 +2,41 @@ import XCTest
 @testable import MeetingScribe
 
 final class StructuredMinutesTests: XCTestCase {
+    func testTokenEstimatorAndUsageTotals() {
+        let phase = GenerationUsage.estimatedPhase(
+            name: "主纪要", input: "会议内容 ABCD", output: "会议纪要")
+        let usage = GenerationUsage(phases: [phase], isEstimated: true)
+        XCTAssertGreaterThan(usage.inputTokens, 0)
+        XCTAssertGreaterThan(usage.outputTokens, 0)
+        XCTAssertEqual(usage.totalTokens, usage.inputTokens + usage.outputTokens)
+        XCTAssertEqual(usage.calls, 1)
+    }
+
+    func testApplicationTokenUsageAggregatesByModel() {
+        let transcript = Transcript(segments: [])
+        var first = MeetingRecord(title: "A", sourcePath: "/a", duration: 1,
+                                  backend: "本机", model: "Codex CLI", summaryMarkdown: "",
+                                  structuredSummary: nil, transcript: transcript,
+                                  speakerNames: [:], usedSummaryFallback: false)
+        first.generationUsage = GenerationUsage(
+            phases: [.init(name: "主纪要", inputTokens: 100, outputTokens: 20, calls: 1)],
+            isEstimated: true)
+        var second = MeetingRecord(title: "B", sourcePath: "/b", duration: 1,
+                                   backend: "本机", model: "Codex CLI", summaryMarkdown: "",
+                                   structuredSummary: nil, transcript: transcript,
+                                   speakerNames: [:], usedSummaryFallback: false)
+        second.generationUsage = GenerationUsage(
+            phases: [.init(name: "主纪要", inputTokens: 50, outputTokens: 10, calls: 1)],
+            isEstimated: true)
+
+        let rows = ApplicationTokenUsage.aggregate([first, second])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].inputTokens, 150)
+        XCTAssertEqual(rows[0].outputTokens, 30)
+        XCTAssertEqual(rows[0].totalTokens, 180)
+        XCTAssertEqual(rows[0].meetings, 2)
+    }
+
     func testMeetingDateUsesRecordingFileCreationDate() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("meeting-date-\(UUID().uuidString).mov")
@@ -93,6 +128,19 @@ final class StructuredMinutesTests: XCTestCase {
         XCTAssertTrue(markdown.contains("### 协作约定"))
     }
 
+    func testMinutesShowOnlyFormalMeetingDuration() throws {
+        var value = try XCTUnwrap(Analyzer.parseStructured(json))
+        value.duration = "录制时长1小时6分钟；正式会议约1小时3分30秒"
+
+        let internalMarkdown = StructuredMinutesRenderer.markdown(from: value)
+        let meetingMarkdown = CustomerMinutesRenderer.markdown(from: value)
+
+        XCTAssertTrue(internalMarkdown.contains("**时长**：约1小时3分30秒"))
+        XCTAssertTrue(meetingMarkdown.contains("**时长**：约1小时3分30秒"))
+        XCTAssertFalse(internalMarkdown.contains("录制时长"))
+        XCTAssertFalse(meetingMarkdown.contains("录制时长"))
+    }
+
     func testExistingRecordRendersFromStructuredMinutesInsteadOfStaleMarkdown() throws {
         let value = try XCTUnwrap(Analyzer.parseStructured(json))
         let record = MeetingRecord(
@@ -105,5 +153,26 @@ final class StructuredMinutesTests: XCTestCase {
 
         XCTAssertFalse(markdown.contains("旧版连行内容"))
         XCTAssertTrue(markdown.contains("**议程**：\n1. 问题复盘\n2. 上线安排"))
+    }
+
+    func testCustomerMinutesHideInternalSectionsAndAllEvidence() throws {
+        var value = try XCTUnwrap(Analyzer.parseStructured(json))
+        value.participantAssessment = ["张三负责内部决策"]
+        value.afterMeeting = [.init(content: "客户离开后的内部讨论", evidence: ["[35:00]"])]
+        value.uncertainties = [.init(content: "名称可能识别错误", evidence: ["[08:00]"])]
+
+        let markdown = CustomerMinutesRenderer.markdown(from: value)
+
+        XCTAssertTrue(markdown.contains("日志积压"))
+        XCTAssertTrue(markdown.contains("增加告警导出"))
+        XCTAssertTrue(markdown.contains("提交方案"))
+        XCTAssertFalse(markdown.contains("参会角色判断"))
+        XCTAssertFalse(markdown.contains("张三负责内部决策"))
+        XCTAssertFalse(markdown.contains("会后（非正式内容）"))
+        XCTAssertFalse(markdown.contains("客户离开后的内部讨论"))
+        XCTAssertFalse(markdown.contains("名称可能识别错误"))
+        XCTAssertFalse(markdown.contains("证据"))
+        XCTAssertFalse(markdown.contains("[12:34]"))
+        XCTAssertFalse(markdown.contains("[20:00]"))
     }
 }
