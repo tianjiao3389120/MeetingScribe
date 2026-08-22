@@ -1,6 +1,16 @@
 import Foundation
 
 enum MeetingHistoryStore {
+    struct LoadIssue: Identifiable, Sendable {
+        var id: String { directory.path }
+        let directory: URL
+        let reason: String
+    }
+
+    struct LoadReport: Sendable {
+        let records: [MeetingRecord]
+        let issues: [LoadIssue]
+    }
     enum Failure: LocalizedError {
         case noStructuredActions
         case actionNotFound
@@ -74,19 +84,45 @@ enum MeetingHistoryStore {
     }
 
     static func loadAll(root: URL = defaultDirectory) throws -> [MeetingRecord] {
-        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        try loadReport(root: root).records
+    }
+
+    static func loadReport(root: URL = defaultDirectory) throws -> LoadReport {
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return LoadReport(records: [], issues: [])
+        }
         let directories = try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles])
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return directories.compactMap { directory in
+        var records: [MeetingRecord] = []
+        var issues: [LoadIssue] = []
+        for directory in directories {
             let url = directory.appendingPathComponent("metadata.json")
-            guard let data = try? Data(contentsOf: url),
-                  let record = try? decoder.decode(MeetingRecord.self, from: data),
-                  record.schemaVersion <= MeetingRecord.currentSchemaVersion else { return nil }
-            return record
-        }.sorted { $0.createdAt > $1.createdAt }
+            do {
+                let data = try Data(contentsOf: url)
+                let record = try decoder.decode(MeetingRecord.self, from: data)
+                guard record.schemaVersion <= MeetingRecord.currentSchemaVersion else {
+                    issues.append(LoadIssue(directory: directory, reason: "记录来自更高版本的应用"))
+                    continue
+                }
+                records.append(record)
+            } catch {
+                issues.append(LoadIssue(directory: directory, reason: error.localizedDescription))
+            }
+        }
+        return LoadReport(records: records.sorted { $0.createdAt > $1.createdAt }, issues: issues)
+    }
+
+    static func updateSourcePath(id: UUID, sourcePath: String,
+                                 root: URL = defaultDirectory) throws -> MeetingRecord {
+        let url = root.appendingPathComponent(id.uuidString).appendingPathComponent("metadata.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        record.sourcePath = sourcePath
+        try save(record, root: root)
+        return record
     }
 
     static func remove(id: UUID, root: URL = defaultDirectory) throws {
@@ -97,19 +133,35 @@ enum MeetingHistoryStore {
 
     static func updateClassification(id: UUID, title: String? = nil,
                                      createdAt: Date? = nil,
-                                     workspaceID: UUID?, tags: [String],
+                                     workspaceID: UUID?, customerName: String? = nil,
+                                     projectName: String? = nil, tags: [String],
                                      root: URL = defaultDirectory) throws -> MeetingRecord {
         let url = root.appendingPathComponent(id.uuidString)
             .appendingPathComponent("metadata.json")
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
-        if let title { record.title = title }
-        if let createdAt { record.createdAt = createdAt }
-        record.workspaceID = workspaceID
-        record.tags = tags
-        try save(record, root: root)
-        return record
+        let target = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        let sourceKey = target.sourceURL.standardizedFileURL.path
+        var updatedTarget = target
+        for var record in try loadAll(root: root) where
+            record.sourceURL.standardizedFileURL.path == sourceKey {
+            if record.id == id {
+                if let title { record.title = title }
+                if let createdAt { record.createdAt = createdAt }
+            }
+            record.workspaceID = workspaceID
+            record.customerName = cleanedClassification(customerName)
+            record.projectName = cleanedClassification(projectName)
+            record.tags = tags
+            try save(record, root: root)
+            if record.id == id { updatedTarget = record }
+        }
+        return updatedTarget
+    }
+
+    private static func cleanedClassification(_ value: String?) -> String? {
+        let cleaned = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     static func clearWorkspaceReferences(_ workspaceIDs: Set<UUID>,
@@ -219,7 +271,7 @@ enum MeetingHistoryStore {
 
     static func export(_ record: MeetingRecord, to directory: URL) throws {
         let base = record.title
-        try record.summaryMarkdown.write(
+        try StructuredMinutesRenderer.markdown(for: record).write(
             to: directory.appendingPathComponent("\(base) 纪要.md"),
             atomically: true, encoding: .utf8)
         try record.transcript.timecodedText.write(

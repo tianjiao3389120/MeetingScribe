@@ -7,7 +7,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     let schemaVersion: Int
     var createdAt: Date
     var title: String
-    let sourcePath: String
+    var sourcePath: String
     let duration: TimeInterval
     let backend: String
     let model: String
@@ -18,6 +18,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     let usedSummaryFallback: Bool
     /// Optional for backward compatibility with records created before spaces.
     var workspaceID: UUID?
+    /// User-maintained classification fields. Nil means legacy/unknown.
+    var customerName: String?
+    var projectName: String?
     var tags: [String]?
     var materials: [MaterialReference]?
     var transcriptTranslations: [TranscriptTranslation]?
@@ -37,7 +40,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
          model: String, summaryMarkdown: String,
          structuredSummary: StructuredMinutes?, transcript: Transcript,
          speakerNames: [Int: String], usedSummaryFallback: Bool,
-         workspaceID: UUID? = nil, tags: [String] = [],
+         workspaceID: UUID? = nil, customerName: String? = nil,
+         projectName: String? = nil, tags: [String] = [],
          materials: [MaterialReference] = [],
          transcriptTranslations: [TranscriptTranslation] = []) {
         self.id = id
@@ -54,6 +58,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.speakerNames = speakerNames
         self.usedSummaryFallback = usedSummaryFallback
         self.workspaceID = workspaceID
+        self.customerName = customerName
+        self.projectName = projectName
         self.tags = tags
         self.materials = materials
         self.transcriptTranslations = transcriptTranslations

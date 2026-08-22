@@ -4,6 +4,8 @@ struct WorkspaceDashboardView: View {
     @Environment(\.dismiss) private var dismiss
     let workspace: MeetingWorkspace
     let records: [MeetingRecord]
+    var onReviewHistory: (() -> Void)? = nil
+    var onOpenMeeting: ((UUID) -> Void)? = nil
     @State private var ledger = ProjectLedger()
     @State private var ledgerError: String?
     @State private var editingProposal: ProjectActionProposal?
@@ -21,10 +23,13 @@ struct WorkspaceDashboardView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(workspace.name).font(.title2.weight(.semibold))
-                    Text("\(workspace.kind.label)空间 · \(records.count) 场会议")
+                    Text("\(workspace.kind.label) · \(records.count) 场会议")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if let onReviewHistory {
+                    Button("回溯历史待办…") { onReviewHistory() }
+                }
                 Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(20)
             Divider()
@@ -58,6 +63,9 @@ struct WorkspaceDashboardView: View {
                     }
                     sectionTitle("会议时间线", count: insights.records.count)
                     ForEach(insights.records) { record in
+                        Button {
+                            onOpenMeeting?(record.id)
+                        } label: {
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: "circle.fill").font(.system(size: 7))
                                 .foregroundStyle(Color.accentColor).padding(.top, 6)
@@ -71,7 +79,8 @@ struct WorkspaceDashboardView: View {
                                 }
                             }
                             Spacer()
-                        }.padding(.vertical, 5)
+                        }.padding(.vertical, 5).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
                     }
                 }.padding(20)
             }

@@ -7,7 +7,7 @@ struct MeetingWorkspace: Codable, Identifiable, Sendable, Hashable {
         var label: String {
             switch self {
             case .customer: return "客户"
-            case .project: return "项目"
+            case .project: return "普通项目"
             case .task: return "任务"
             case .recurring: return "固定会议"
             }
@@ -17,10 +17,18 @@ struct MeetingWorkspace: Codable, Identifiable, Sendable, Hashable {
     var id: UUID = UUID()
     var name: String
     var kind: Kind
+    /// Projects belong to a customer. Nil for customer nodes and legacy data.
+    var customerID: UUID? = nil
+    /// Controlled tags offered when preparing a meeting in this project.
+    var meetingTypes: [String]? = nil
     var context: String = ""
     var defaultTemplateID: String?
     var defaultEmailTemplateID: String?
     var createdAt: Date = Date()
+
+    var isCustomer: Bool { kind == .customer }
+    var isProject: Bool { !isCustomer }
+    var configuredMeetingTypes: [String] { meetingTypes ?? [] }
 }
 
 struct SupportingMaterial: Identifiable, Sendable {

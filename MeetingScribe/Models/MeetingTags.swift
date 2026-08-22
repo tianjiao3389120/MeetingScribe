@@ -43,6 +43,17 @@ enum MeetingTags {
         parse(text).contains { key($0) == key(tag) }
     }
 
+    static func syncingMeetingType(_ meetingType: String, in tags: [String],
+                                   knownTypes: [String]) -> [String] {
+        let known = Set(knownTypes.map(key))
+        var result = tags.filter { !known.contains(key($0)) }
+        let cleaned = meetingType.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleaned.isEmpty, !result.contains(where: { key($0) == key(cleaned) }) {
+            result.append(cleaned)
+        }
+        return result
+    }
+
     private static func key(_ value: String) -> String {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .lowercased()

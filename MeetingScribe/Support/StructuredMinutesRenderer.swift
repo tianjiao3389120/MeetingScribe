@@ -1,15 +1,25 @@
 import Foundation
 
 enum StructuredMinutesRenderer {
+    /// Re-render persisted structured data so presentation fixes also apply to
+    /// existing meetings. Legacy unstructured records keep their saved text.
+    static func markdown(for record: MeetingRecord) -> String {
+        guard let structured = record.structuredSummary else { return record.summaryMarkdown }
+        return markdown(from: structured)
+    }
+
     static func markdown(from value: StructuredMinutes) -> String {
         var lines = ["# \(value.title.isEmpty ? "会议纪要" : value.title)"]
 
         let metadata = [
             value.nature.isEmpty ? nil : "**性质**：\(value.nature)",
             value.duration.isEmpty ? nil : "**时长**：\(value.duration)",
-            value.agenda.isEmpty ? nil : "**议程**：\(value.agenda.joined(separator: "；"))",
         ].compactMap { $0 }
         if !metadata.isEmpty { lines += ["", metadata.joined(separator: "  \n")] }
+        if !value.agenda.isEmpty {
+            lines += ["", "**议程**："]
+            lines += value.agenda.enumerated().map { "\($0.offset + 1). \($0.element)" }
+        }
 
         if !value.participantAssessment.isEmpty {
             lines += ["", "## 参会角色判断", ""]

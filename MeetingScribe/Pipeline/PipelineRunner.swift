@@ -71,6 +71,7 @@ final class PipelineRunner {
              recognitionScenario: RecognitionScenario = .autoMultilingual,
              speakerCount: Int = 0,
              workspace: MeetingWorkspace? = nil,
+             customerName: String = "", projectName: String = "",
              tags: [String] = [], materials: [SupportingMaterial] = []) {
         task?.cancel()
         error = nil
@@ -88,7 +89,8 @@ final class PipelineRunner {
             sourcePath: url.path, title: title ?? "", meetingContext: meetingContext,
             minutesTemplateID: minutesTemplateID,
             recognitionScenario: recognitionScenario,
-            workspaceID: workspace?.id, tags: tags,
+            workspaceID: workspace?.id, customerName: customerName,
+            projectName: projectName, tags: tags,
             materialPaths: materials.map { $0.sourceURL.path })
         pendingJobID = pendingJob.id
         try? PendingJobStore.save(pendingJob)
@@ -101,6 +103,7 @@ final class PipelineRunner {
                                        recognitionScenario: recognitionScenario,
                                        speakerCount: speakerCount,
                                        workspace: workspace,
+                                       customerName: customerName, projectName: projectName,
                                        tags: tags, materials: materials)
             } catch is CancellationError {
                 self.stage = .idle
@@ -119,6 +122,7 @@ final class PipelineRunner {
              minutesTemplateID: String = MinutesTemplate.general.id,
              recognitionScenario: RecognitionScenario = .autoMultilingual,
              workspace: MeetingWorkspace? = nil,
+             customerName: String = "", projectName: String = "",
              tags: [String] = [], materials: [SupportingMaterial] = []) {
         task?.cancel()
         error = nil
@@ -160,6 +164,8 @@ final class PipelineRunner {
                     diarization: nil,
                     materials: materials,
                     workspace: workspace,
+                    customerName: customerName,
+                    projectName: projectName,
                     tags: tags)
                 self.assets = bundle
                 try await self.analyze(bundle)
@@ -233,6 +239,8 @@ final class PipelineRunner {
             duration: record.duration,
             transcript: transcript, captures: [], hasVideo: false,
             diarization: nil, materials: materials, workspace: workspace,
+            customerName: record.customerName ?? "",
+            projectName: record.projectName ?? "",
             tags: record.tags ?? [])
         assets = bundle
         task = Task { [weak self] in
@@ -268,6 +276,7 @@ final class PipelineRunner {
                          recognitionScenario: RecognitionScenario,
                          speakerCount: Int,
                          workspace: MeetingWorkspace?,
+                         customerName: String, projectName: String,
                          tags: [String], materials: [SupportingMaterial]) async throws {
         let settings = Settings.shared
         let learningContext = ([meetingContext, workspace?.name, workspace?.context]
@@ -429,6 +438,8 @@ final class PipelineRunner {
                                    diarization: diarization,
                                    materials: materials,
                                    workspace: workspace,
+                                   customerName: customerName,
+                                   projectName: projectName,
                                    tags: tags)
         // Publish before analysing: if the model call fails, the transcript and
         // captures survive and `retryAnalysis()` can reuse them.
@@ -516,6 +527,8 @@ final class PipelineRunner {
             speakerNames: bundle.diarization?.names ?? [:],
             usedSummaryFallback: result.usedFallback,
             workspaceID: bundle.workspace?.id,
+            customerName: bundle.customerName,
+            projectName: bundle.projectName,
             tags: bundle.tags,
             materials: bundle.materials.map {
                 MaterialReference(name: $0.name, kind: $0.kind,

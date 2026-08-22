@@ -158,11 +158,6 @@ struct SpeakerNamingView: View {
             let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
             return name.isEmpty ? nil : (speaker, name)
         }
-        let duplicate = Dictionary(grouping: entered, by: \.1).first { $0.value.count > 1 }?.key
-        if let duplicate {
-            saveError = "姓名“\(duplicate)”被分配给多位说话人。"
-            return
-        }
         isSaving = true
         Task {
           do {

@@ -150,7 +150,7 @@ struct PromptBuilder {
             lines.append("背景信息：\(contextHint)")
         }
         if let workspace = assets.workspace {
-            lines.append("会议空间：\(workspace.kind.label) / \(workspace.name)")
+            lines.append("所属项目：\(workspace.name)")
         }
         if !assets.tags.isEmpty { lines.append("标签：\(assets.tags.joined(separator: "、"))") }
         if assets.hasVideo {

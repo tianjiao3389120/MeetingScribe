@@ -1,7 +1,8 @@
 import Foundation
 
 enum MeetingLibraryScope: Hashable {
-    case all, recent, pendingActions, favorites, ungrouped, archived, workspace(UUID), meetingTag(String)
+    case all, recent, pendingActions, favorites, archived
+    case customer(UUID), workspace(UUID), meetingTag(String)
 }
 
 enum MeetingLibrarySort: String, CaseIterable, Identifiable {
@@ -36,7 +37,7 @@ enum MeetingLibrary {
                     && record.createdAt >= Calendar.current.date(byAdding: .day, value: -30, to: now)!
             case .pendingActions: return record.isArchived != true && record.openActionCount > 0
             case .favorites: return record.isArchived != true && record.isFavorite == true
-            case .ungrouped: return record.isArchived != true && record.workspaceID == nil
+            case .customer(let id): return record.isArchived != true && record.workspaceID == id
             case .workspace(let id): return record.isArchived != true && record.workspaceID == id
             case .meetingTag(let tag):
                 return record.isArchived != true && (record.tags ?? []).contains {

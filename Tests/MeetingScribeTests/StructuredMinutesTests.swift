@@ -59,7 +59,7 @@ final class StructuredMinutesTests: XCTestCase {
     private let json = #"""
     {
       "title":"会议纪要","nature":"双周会","duration":"40 分钟",
-      "agenda":["问题复盘"],"participantAssessment":[],
+      "agenda":["问题复盘","上线安排"],"participantAssessment":[],
       "issues":[{"title":"日志积压","status":"进行中","rootCause":"处理能力不足","solution":"扩容","progress":"验证中","evidence":["[12:34]"]}],
       "requirements":[{"title":"增加告警导出","status":"待确认","schedule":"下周","evidence":[]}],
       "actionItems":[{"owner":"张三","task":"提交方案","status":"进行中","due":"周五","evidence":["[20:00]"]}],
@@ -84,8 +84,26 @@ final class StructuredMinutesTests: XCTestCase {
         let markdown = StructuredMinutesRenderer.markdown(from: value)
 
         XCTAssertTrue(markdown.contains("# 会议纪要"))
+        XCTAssertTrue(markdown.contains("**性质**：双周会  \n**时长**：40 分钟\n\n**议程**：\n1. 问题复盘\n2. 上线安排"))
+        let html = MarkdownRenderer.body(from: markdown)
+        XCTAssertTrue(html.contains("<strong>性质</strong>：双周会<br><strong>时长</strong>：40 分钟"))
+        XCTAssertTrue(html.contains("<p><strong>议程</strong>：</p><ol><li>问题复盘</li><li>上线安排</li></ol>"))
         XCTAssertTrue(markdown.contains("### 日志积压 [进行中]"))
         XCTAssertTrue(markdown.contains("- [ ] 提交方案（周五） [进行中]（证据：[20:00]）"))
         XCTAssertTrue(markdown.contains("### 协作约定"))
+    }
+
+    func testExistingRecordRendersFromStructuredMinutesInsteadOfStaleMarkdown() throws {
+        let value = try XCTUnwrap(Analyzer.parseStructured(json))
+        let record = MeetingRecord(
+            title: "旧会议", sourcePath: "/meeting.mov", duration: 60,
+            backend: "测试", model: "mock", summaryMarkdown: "旧版连行内容",
+            structuredSummary: value, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+
+        let markdown = StructuredMinutesRenderer.markdown(for: record)
+
+        XCTAssertFalse(markdown.contains("旧版连行内容"))
+        XCTAssertTrue(markdown.contains("**议程**：\n1. 问题复盘\n2. 上线安排"))
     }
 }

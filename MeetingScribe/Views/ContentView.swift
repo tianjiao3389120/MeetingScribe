@@ -68,19 +68,21 @@ struct ContentView: View {
             set: { if !$0 { pendingInput = nil } }
         )) {
             if let input = pendingInput {
-                MeetingPreparationView(input: input) { title, scenario, workspace, context, templateID, tags, materials in
+                MeetingPreparationView(input: input) { title, scenario, workspace, context, templateID, customerName, projectName, tags, materials in
                     pendingInput = nil
                     switch input {
                     case .media(let url):
                         runner.run(url: url, title: title, meetingContext: context,
                                    minutesTemplateID: templateID,
                                    recognitionScenario: scenario,
-                                   workspace: workspace, tags: tags, materials: materials)
+                                   workspace: workspace, customerName: customerName,
+                                   projectName: projectName, tags: tags, materials: materials)
                     case .externalTranscript(let package):
                         runner.run(imported: package, title: title, meetingContext: context,
                                    minutesTemplateID: templateID,
                                    recognitionScenario: scenario,
-                                   workspace: workspace, tags: tags, materials: materials)
+                                   workspace: workspace, customerName: customerName,
+                                   projectName: projectName, tags: tags, materials: materials)
                     }
                 } onCancel: {
                     pendingInput = nil
@@ -163,7 +165,8 @@ struct ContentView: View {
             runner.run(url: source, title: job.title, meetingContext: job.meetingContext ?? "",
                        minutesTemplateID: job.minutesTemplateID ?? MinutesTemplate.general.id,
                        recognitionScenario: job.recognitionScenario ?? .autoMultilingual,
-                       workspace: workspace, tags: job.tags, materials: materials)
+                       workspace: workspace, customerName: job.customerName ?? "",
+                       projectName: job.projectName ?? "", tags: job.tags, materials: materials)
         }
     }
 }
@@ -632,8 +635,14 @@ private struct ResultView: View {
                         Button("反馈并改进纪要…") { showFeedback = true }
                     }
                     Divider()
-                    Button("用其他应用打开") {
-                        if let url = savedURL ?? save() { NSWorkspace.shared.open(url) }
+                    Button("用默认 Markdown 应用打开") {
+                        do {
+                            try MinutesDocumentOpener.open(
+                                markdown: runner.summary,
+                                title: runner.assets?.title ?? "会议纪要")
+                        } catch {
+                            saveError = "打开纪要失败：\(error.localizedDescription)"
+                        }
                     }
                 }
             }

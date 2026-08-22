@@ -40,7 +40,7 @@ struct VoiceProfileManagementView: View {
                             TextField("姓名", text: $profile.name)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 260)
-                            Text("\(profile.sampleCount) 个样本 · 更新于 \(profile.updatedAt.formatted(date: .abbreviated, time: .omitted))")
+                            Text("\(profile.sampleCount) 次确认 · \(profile.representativeEmbeddings.count) 个代表声纹 · 更新于 \(profile.updatedAt.formatted(date: .abbreviated, time: .omitted))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

@@ -28,6 +28,20 @@ final class SpeakerTests: XCTestCase {
         XCTAssertEqual(VoiceProfileStore.similarity([1], [1, 0]), 0)
     }
 
+    func testVoiceMatchingAllowsSplitClustersToResolveToSamePerson() {
+        let profiles = [
+            VoiceProfile(name: "郑云凤", embedding: [1, 0]),
+            VoiceProfile(name: "Joey", embedding: [0, 1]),
+        ]
+
+        let matches = VoiceProfileStore.match(
+            embeddings: ["2": [0.99, 0.01], "4": [0.98, 0.02]],
+            profiles: profiles)
+
+        XCTAssertEqual(matches[2], "郑云凤")
+        XCTAssertEqual(matches[4], "郑云凤")
+    }
+
     func testMergingVoiceSamplesRenormalizesRunningMean() {
         var profile = VoiceProfile(name: "测试", embedding: [1, 0])
         profile.merge([0, 1])
@@ -35,6 +49,24 @@ final class SpeakerTests: XCTestCase {
         XCTAssertEqual(profile.sampleCount, 2)
         XCTAssertEqual(profile.embedding[0], 0.7071, accuracy: 0.001)
         XCTAssertEqual(profile.embedding[1], 0.7071, accuracy: 0.001)
+        XCTAssertEqual(profile.representativeEmbeddings.count, 2)
+    }
+
+    func testNearDuplicateVoiceSamplesDoNotConsumeRepresentativeSlots() {
+        var profile = VoiceProfile(name: "测试", embedding: [1, 0])
+        profile.merge([0.999, 0.001])
+
+        XCTAssertEqual(profile.sampleCount, 2)
+        XCTAssertEqual(profile.representativeEmbeddings.count, 1)
+    }
+
+    func testRepresentativeSampleImprovesCrossEnvironmentMatchWithoutIgnoringCentroid() {
+        let profile = VoiceProfile(
+            name: "测试", embedding: [0.8, 0.6], sampleCount: 2,
+            representativeEmbeddings: [[1, 0], [0, 1]])
+
+        XCTAssertEqual(VoiceProfileStore.matchScore([1, 0], profile: profile), 0.94,
+                       accuracy: 0.001)
     }
 
     func testLegacyVoiceProfileDecodesWithoutReferenceClip() throws {
@@ -42,6 +74,7 @@ final class SpeakerTests: XCTestCase {
         let profile = try JSONDecoder().decode(VoiceProfile.self, from: data)
 
         XCTAssertNil(profile.referenceClip)
+        XCTAssertEqual(profile.representativeEmbeddings, [[1, 0]])
     }
 
     func testLegacyDiarizationCacheDecodesWithoutVoiceprints() throws {

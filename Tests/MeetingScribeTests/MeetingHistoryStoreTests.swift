@@ -28,14 +28,29 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertEqual(loaded[0].id, record.id)
         XCTAssertEqual(loaded[0].speakerNames[0], "张三")
 
+        let sibling = MeetingRecord(
+            title: "旧版纪要", sourcePath: record.sourcePath, duration: record.duration,
+            backend: record.backend, model: record.model, summaryMarkdown: "旧版",
+            structuredSummary: nil, transcript: record.transcript,
+            speakerNames: record.speakerNames, usedSummaryFallback: false)
+        try MeetingHistoryStore.save(sibling, root: root)
+
         let workspaceID = UUID()
         let updated = try MeetingHistoryStore.updateClassification(
             id: record.id, title: "客户项目周会",
-            workspaceID: workspaceID, tags: ["双周会", "客户"], root: root)
+            workspaceID: workspaceID, customerName: "中银香港",
+            projectName: "HIDS项目", tags: ["双周会", "客户"], root: root)
         XCTAssertEqual(updated.title, "客户项目周会")
         XCTAssertEqual(updated.workspaceID, workspaceID)
+        XCTAssertEqual(updated.customerName, "中银香港")
+        XCTAssertEqual(updated.projectName, "HIDS项目")
         XCTAssertEqual(updated.tags ?? [], ["双周会", "客户"])
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root)[0].workspaceID, workspaceID)
+        let updatedSibling = try XCTUnwrap(try MeetingHistoryStore.loadAll(root: root)
+            .first { $0.id == sibling.id })
+        XCTAssertEqual(updatedSibling.customerName, "中银香港")
+        XCTAssertEqual(updatedSibling.projectName, "HIDS项目")
+        XCTAssertEqual(updatedSibling.tags ?? [], ["双周会", "客户"])
 
         try MeetingHistoryStore.export(updated, to: export)
         XCTAssertTrue(FileManager.default.fileExists(
@@ -44,7 +59,9 @@ final class MeetingHistoryStoreTests: XCTestCase {
             atPath: export.appendingPathComponent("客户项目周会 逐字稿.txt").path))
 
         try MeetingHistoryStore.remove(id: record.id, root: root)
-        XCTAssertTrue(try MeetingHistoryStore.loadAll(root: root).isEmpty)
+        let remaining = try MeetingHistoryStore.loadAll(root: root)
+        XCTAssertFalse(remaining.contains { $0.id == record.id })
+        XCTAssertEqual(remaining.map(\.id), [sibling.id])
     }
 
     func testRegenerationKeepsIndependentVersions() throws {
@@ -393,5 +410,48 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertEqual(MeetingTags.toggling("双周会", in: "HIDS"), "HIDS, 双周会")
         XCTAssertEqual(MeetingTags.toggling("hids", in: "HIDS, 双周会"), "双周会")
         XCTAssertEqual(MeetingTags.parse("HIDS， hids, 双周会"), ["HIDS", "双周会"])
+        XCTAssertEqual(MeetingTags.syncingMeetingType(
+            "需求评审", in: ["高优先级", "双周会"], knownTypes: ["双周会", "需求评审"]),
+            ["高优先级", "需求评审"])
+    }
+
+    func testLoadReportKeepsReadableMeetingsAndSurfacesDamagedRecords() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-load-report-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let meeting = MeetingRecord(
+            title: "正常会议", sourcePath: "/meeting.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        try MeetingHistoryStore.save(meeting, root: root)
+        let damaged = root.appendingPathComponent("damaged")
+        try FileManager.default.createDirectory(at: damaged, withIntermediateDirectories: true)
+        try Data("not-json".utf8).write(to: damaged.appendingPathComponent("metadata.json"))
+
+        let report = try MeetingHistoryStore.loadReport(root: root)
+
+        XCTAssertEqual(report.records.map(\.id), [meeting.id])
+        XCTAssertEqual(report.issues.count, 1)
+        XCTAssertEqual(report.issues.first?.directory.lastPathComponent, "damaged")
+    }
+
+    func testSourcePathCanBeRelinkedWithoutChangingMeetingContent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-relink-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let meeting = MeetingRecord(
+            title: "待重连会议", sourcePath: "/old.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "原纪要",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        try MeetingHistoryStore.save(meeting, root: root)
+
+        let updated = try MeetingHistoryStore.updateSourcePath(
+            id: meeting.id, sourcePath: "/new.mov", root: root)
+
+        XCTAssertEqual(updated.sourcePath, "/new.mov")
+        XCTAssertEqual(updated.summaryMarkdown, "原纪要")
+        XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).first?.sourcePath, "/new.mov")
     }
 }

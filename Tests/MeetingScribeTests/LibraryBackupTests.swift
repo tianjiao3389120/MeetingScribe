@@ -79,14 +79,20 @@ final class LibraryBackupTests: XCTestCase {
         let source = LibraryBackup.Paths(root: temporary.appendingPathComponent("source"))
         let destination = LibraryBackup.Paths(root: temporary.appendingPathComponent("destination"))
         let archive = temporary.appendingPathComponent("backup.zip")
-        try MeetingWorkspaceStore.save(
-            [MeetingWorkspace(name: "恢复测试", kind: .project)], to: source.workspaces)
+        let customer = MeetingWorkspace(name: "恢复客户", kind: .customer)
+        let project = MeetingWorkspace(
+            name: "恢复测试", kind: .project, customerID: customer.id,
+            meetingTypes: ["双周会"])
+        try MeetingWorkspaceStore.save([customer, project], to: source.workspaces)
 
         try LibraryBackup.createArchive(at: archive, source: source)
         XCTAssertTrue(FileManager.default.fileExists(atPath: archive.path))
         let result = try LibraryBackup.restoreArchive(from: archive, destination: destination)
-        XCTAssertEqual(result.workspacesAdded, 1)
-        XCTAssertEqual(try MeetingWorkspaceStore.load(from: destination.workspaces).first?.name,
-                       "恢复测试")
+        XCTAssertEqual(result.workspacesAdded, 2)
+        let restored = try MeetingWorkspaceStore.load(from: destination.workspaces)
+        XCTAssertEqual(Set(restored.map(\.name)), Set(["恢复客户", "恢复测试"]))
+        XCTAssertEqual(restored.first(where: { $0.id == project.id })?.customerID, customer.id)
+        XCTAssertEqual(restored.first(where: { $0.id == project.id })?.configuredMeetingTypes,
+                       ["双周会"])
     }
 }

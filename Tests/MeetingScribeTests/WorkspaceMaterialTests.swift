@@ -3,6 +3,18 @@ import CoreGraphics
 @testable import MeetingScribe
 
 final class WorkspaceMaterialTests: XCTestCase {
+    func testLegacyFixedMeetingMigratesUnderFallbackCustomerWithMeetingType() {
+        let legacy = MeetingWorkspace(name: "管理周会", kind: .recurring)
+
+        let migrated = MeetingWorkspaceStore.normalizeHierarchy([legacy])
+        let customer = migrated.first(where: \.isCustomer)
+        let project = migrated.first { $0.id == legacy.id }
+
+        XCTAssertEqual(customer?.name, "未归属客户")
+        XCTAssertEqual(project?.kind, .project)
+        XCTAssertEqual(project?.customerID, customer?.id)
+        XCTAssertEqual(project?.configuredMeetingTypes, ["固定会议"])
+    }
     func testAdaptiveFramePlannerParsesBoundsDeduplicatesAndCapsRequests() {
         let raw = #"prefix {"requests":[{"seconds":12.1,"reason":"数字","radius":3},{"seconds":12.4,"reason":"重复","radius":3},{"seconds":-1,"reason":"越界","radius":3},{"seconds":20,"reason":"A","radius":3},{"seconds":30,"reason":"B","radius":3},{"seconds":40,"reason":"C","radius":3},{"seconds":50,"reason":"D","radius":3},{"seconds":60,"reason":"E","radius":3},{"seconds":70,"reason":"F","radius":3}]} suffix"#
         let requests = AdaptiveFramePlanner.parse(raw, duration: 100)

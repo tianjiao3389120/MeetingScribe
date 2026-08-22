@@ -94,15 +94,23 @@ enum MarkdownRenderer {
             }
 
             // Paragraph — gather until a blank line or the start of another block
-            var paragraph: [String] = []
+            var paragraph: [(text: String, hardBreak: Bool)] = []
             while index < lines.count {
-                let candidate = lines[index].trimmingCharacters(in: .whitespaces)
+                let raw = lines[index]
+                let candidate = raw.trimmingCharacters(in: .whitespaces)
                 if candidate.isEmpty || isBlockStart(candidate) { break }
-                paragraph.append(candidate)
+                paragraph.append((candidate, raw.hasSuffix("  ") || raw.hasSuffix("\\")))
                 index += 1
             }
             if !paragraph.isEmpty {
-                out += "<p>\(inline(paragraph.joined(separator: " ")))</p>"
+                let rendered = paragraph.enumerated().map { offset, line in
+                    let text = line.hardBreak && line.text.hasSuffix("\\")
+                        ? String(line.text.dropLast()) : line.text
+                    let separator = offset < paragraph.count - 1
+                        ? (line.hardBreak ? "<br>" : " ") : ""
+                    return inline(text) + separator
+                }.joined()
+                out += "<p>\(rendered)</p>"
             }
         }
         return out

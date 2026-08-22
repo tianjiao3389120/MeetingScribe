@@ -75,6 +75,8 @@ struct MeetingAssets: Sendable {
     var diarization: Diarization?
     var materials: [SupportingMaterial] = []
     var workspace: MeetingWorkspace?
+    var customerName: String = ""
+    var projectName: String = ""
     var tags: [String] = []
 
     var title: String {

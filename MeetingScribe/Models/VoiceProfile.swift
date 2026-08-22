@@ -2,21 +2,57 @@ import Foundation
 
 /// A person's enrolled voiceprint.
 struct VoiceProfile: Codable, Identifiable, Sendable {
+    static let maximumRepresentativeSamples = 8
+
     var id: UUID = UUID()
     var name: String
     /// Unit-length mean of the samples enrolled so far.
     var embedding: [Float]
+    /// A bounded set that preserves different microphones and acoustic
+    /// conditions instead of collapsing every confirmation into one centroid.
+    var representativeEmbeddings: [[Float]] = []
     var sampleCount: Int = 1
     var updatedAt: Date = Date()
     var note: String = ""
     /// Filename of a short, local reference clip used for manual identification.
     var referenceClip: String? = nil
 
+    init(id: UUID = UUID(), name: String, embedding: [Float], sampleCount: Int = 1,
+         updatedAt: Date = Date(), note: String = "", referenceClip: String? = nil,
+         representativeEmbeddings: [[Float]]? = nil) {
+        self.id = id
+        self.name = name
+        self.embedding = embedding
+        self.representativeEmbeddings = representativeEmbeddings ?? (embedding.isEmpty ? [] : [embedding])
+        self.sampleCount = sampleCount
+        self.updatedAt = updatedAt
+        self.note = note
+        self.referenceClip = referenceClip
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, embedding, representativeEmbeddings, sampleCount, updatedAt, note, referenceClip
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try values.decode(String.self, forKey: .name)
+        embedding = try values.decode([Float].self, forKey: .embedding)
+        representativeEmbeddings = try values.decodeIfPresent(
+            [[Float]].self, forKey: .representativeEmbeddings) ?? (embedding.isEmpty ? [] : [embedding])
+        sampleCount = try values.decodeIfPresent(Int.self, forKey: .sampleCount) ?? 1
+        updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        note = try values.decodeIfPresent(String.self, forKey: .note) ?? ""
+        referenceClip = try values.decodeIfPresent(String.self, forKey: .referenceClip)
+    }
+
     /// Folds a new sample into the running mean, so a person's profile improves
     /// as they appear in more meetings rather than being replaced by the latest
     /// (possibly worse) recording.
     mutating func merge(_ sample: [Float]) {
         guard sample.count == embedding.count else { return }
+        retainRepresentative(sample)
         let weight = Float(sampleCount)
         var combined = zip(embedding, sample).map { ($0 * weight + $1) / (weight + 1) }
         let norm = sqrt(combined.reduce(0) { $0 + $1 * $1 })
@@ -24,6 +60,35 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
         embedding = combined
         sampleCount += 1
         updatedAt = Date()
+    }
+
+    private mutating func retainRepresentative(_ sample: [Float]) {
+        if representativeEmbeddings.isEmpty, !embedding.isEmpty {
+            representativeEmbeddings = [embedding]
+        }
+        guard !sample.isEmpty else { return }
+        let closest = representativeEmbeddings.map { VoiceProfileStore.similarity($0, sample) }.max() ?? -1
+        guard closest < 0.985 else { return }
+        if representativeEmbeddings.count < Self.maximumRepresentativeSamples {
+            representativeEmbeddings.append(sample)
+            return
+        }
+
+        // Replace one member of the most redundant pair only when the new
+        // sample adds more acoustic coverage than that pair provides.
+        var redundantPair: (first: Int, second: Int, similarity: Float)?
+        for first in representativeEmbeddings.indices {
+            for second in representativeEmbeddings.indices where second > first {
+                let score = VoiceProfileStore.similarity(
+                    representativeEmbeddings[first], representativeEmbeddings[second])
+                if redundantPair == nil || score > redundantPair!.similarity {
+                    redundantPair = (first, second, score)
+                }
+            }
+        }
+        if let pair = redundantPair, closest < pair.similarity {
+            representativeEmbeddings[pair.second] = sample
+        }
     }
 }
 
@@ -181,14 +246,31 @@ enum VoiceProfileStore {
         return zip(a, b).reduce(0) { $0 + $1.0 * $1.1 }
     }
 
+    static func matchScore(_ embedding: [Float], profile: VoiceProfile) -> Float {
+        let centroid = similarity(embedding, profile.embedding)
+        let representatives = profile.representativeEmbeddings.filter {
+            $0.count == embedding.count && !$0.isEmpty
+        }
+        guard let best = representatives.map({ similarity(embedding, $0) }).max() else {
+            return centroid
+        }
+        // A representative handles environment changes; the centroid keeps a
+        // single noisy or incorrectly labelled sample from dominating.
+        return best * 0.7 + centroid * 0.3
+    }
+
     /// Best enrolled match per cluster.
     ///
     /// Rejects a match that is barely ahead of the next candidate: two people
     /// with similar voices should both stay anonymous rather than one being
-    /// confidently mislabelled as the other. A name is also never assigned
-    /// twice within one meeting — the stronger claim wins.
+    /// confidently mislabelled as the other. Multiple clusters may resolve to
+    /// the same profile: diarization can split one person when microphone
+    /// distance, noise or compression changes during a meeting.
     static func match(embeddings: [String: [Float]]) -> [Int: String] {
-        let profiles = load()
+        match(embeddings: embeddings, profiles: load())
+    }
+
+    static func match(embeddings: [String: [Float]], profiles: [VoiceProfile]) -> [Int: String] {
         guard !profiles.isEmpty, !embeddings.isEmpty else { return [:] }
 
         struct Candidate { let speaker: Int; let name: String; let score: Float }
@@ -197,20 +279,13 @@ enum VoiceProfileStore {
         for (key, embedding) in embeddings {
             guard let speaker = Int(key) else { continue }
             let scored = profiles
-                .map { (name: $0.name, score: similarity(embedding, $0.embedding)) }
+                .map { (name: $0.name, score: matchScore(embedding, profile: $0)) }
                 .sorted { $0.score > $1.score }
             guard let best = scored.first, best.score >= matchThreshold else { continue }
             if scored.count > 1, best.score - scored[1].score < ambiguityMargin { continue }
             candidates.append(Candidate(speaker: speaker, name: best.name, score: best.score))
         }
 
-        var result: [Int: String] = [:]
-        var claimed = Set<String>()
-        for candidate in candidates.sorted(by: { $0.score > $1.score }) {
-            guard !claimed.contains(candidate.name) else { continue }
-            result[candidate.speaker] = candidate.name
-            claimed.insert(candidate.name)
-        }
-        return result
+        return Dictionary(uniqueKeysWithValues: candidates.map { ($0.speaker, $0.name) })
     }
 }
