@@ -8,7 +8,7 @@ final class PipelineRunner {
 
     enum Stage: String, CaseIterable {
         case idle, probing, extractingAudio, transcribing, separatingSpeakers,
-             extractingFrames, readingScreen, analyzing, done, failed
+             extractingFrames, readingScreen, analyzing, reviewingIssues, done, failed
 
         var label: String {
             switch self {
@@ -20,6 +20,7 @@ final class PipelineRunner {
             case .extractingFrames:   return "提取画面"
             case .readingScreen:      return "识别屏幕文字"
             case .analyzing:          return "生成纪要"
+            case .reviewingIssues:    return "确认问题边界"
             case .done:               return "完成"
             case .failed:             return "失败"
             }
@@ -37,6 +38,9 @@ final class PipelineRunner {
     private(set) var error: String?
     private(set) var isRunning = false
     private(set) var savedRecordID: UUID?
+    private(set) var issueReviewReasons: [String] = []
+    private var pendingReviewRecord: MeetingRecord?
+    private var pendingReviewMaterials: [SupportingMaterial] = []
 
     /// True when transcription and screen extraction succeeded but the model
     /// call failed. The expensive work is still in `assets`, so the user can
@@ -66,11 +70,13 @@ final class PipelineRunner {
 
     func run(url: URL, forceRetranscribe: Bool = false,
              forceSpeakerSeparation: Bool = false,
+             recordedAt: Date? = nil,
              title: String? = nil, meetingContext: String = "",
              minutesTemplateID: String = MinutesTemplate.general.id,
              recognitionScenario: RecognitionScenario = .autoMultilingual,
              speakerCount: Int = 0,
              workspace: MeetingWorkspace? = nil,
+             speakerNames: [Int: String] = [:], speakerRoles: [Int: SpeakerRole] = [:],
              customerName: String = "", projectName: String = "",
              tags: [String] = [], materials: [SupportingMaterial] = []) {
         task?.cancel()
@@ -83,6 +89,8 @@ final class PipelineRunner {
         speakerWarning = nil
         historyWarning = nil
         savedRecordID = nil
+        pendingReviewRecord = nil
+        issueReviewReasons = []
         self.forceRetranscribe = forceRetranscribe
         self.forceSpeakerSeparation = forceSpeakerSeparation
         let pendingJob = PendingMeetingJob(
@@ -99,10 +107,12 @@ final class PipelineRunner {
             guard let self else { return }
             do {
                 try await self.execute(url: url, title: title, meetingContext: meetingContext,
+                                       recordedAt: recordedAt,
                                        minutesTemplateID: minutesTemplateID,
                                        recognitionScenario: recognitionScenario,
                                        speakerCount: speakerCount,
                                        workspace: workspace,
+                                       speakerNames: speakerNames, speakerRoles: speakerRoles,
                                        customerName: customerName, projectName: projectName,
                                        tags: tags, materials: materials)
             } catch is CancellationError {
@@ -134,6 +144,8 @@ final class PipelineRunner {
         speakerWarning = nil
         historyWarning = nil
         savedRecordID = nil
+        pendingReviewRecord = nil
+        issueReviewReasons = []
         usedCachedTranscript = true
 
         task = Task { [weak self] in
@@ -186,11 +198,15 @@ final class PipelineRunner {
     func rerunSpeakerSeparation(speakerCount: Int = 0) {
         guard let bundle = assets, !isRunning else { return }
         run(url: bundle.sourceURL, forceSpeakerSeparation: true,
+            recordedAt: bundle.recordedAt,
             title: bundle.title, meetingContext: bundle.meetingContext,
             minutesTemplateID: bundle.minutesTemplateID,
             recognitionScenario: bundle.recognitionScenario,
             speakerCount: speakerCount,
-            workspace: bundle.workspace, tags: bundle.tags, materials: bundle.materials)
+            workspace: bundle.workspace,
+            speakerNames: bundle.diarization?.names ?? [:],
+            speakerRoles: bundle.diarization?.roles ?? [:],
+            tags: bundle.tags, materials: bundle.materials)
     }
 
     /// Re-runs only the model call, reusing the existing transcript and captures.
@@ -233,7 +249,11 @@ final class PipelineRunner {
         error = nil; summary = ""; structuredSummary = nil
         usedSummaryFallback = false; isRunning = true
         let bundle = MeetingAssets(
-            sourceURL: record.sourceURL, customTitle: record.title,
+            sourceURL: record.sourceURL,
+            sourceKind: MeetingAssets.SourceKind(rawValue: record.sourceKind ?? "")
+                ?? .recordedMedia,
+            relatedSourceURLs: (record.relatedSourcePaths ?? []).map(URL.init(fileURLWithPath:)),
+            recordedAt: record.createdAt, customTitle: record.title,
             meetingContext: record.meetingContext ?? "",
             minutesTemplateID: record.minutesTemplateID ?? MinutesTemplate.general.id,
             duration: record.duration,
@@ -255,9 +275,10 @@ final class PipelineRunner {
     /// Applies names enrolled from this meeting before regenerating the
     /// summary, so the current result benefits immediately rather than only
     /// future recordings.
-    func applySpeakerNamesAndRegenerate(_ names: [Int: String]) {
+    func applySpeakerNamesAndRegenerate(_ names: [Int: String], roles: [Int: SpeakerRole]) {
         guard var bundle = assets, var diarization = bundle.diarization else { return }
         diarization.names.merge(names) { _, new in new }
+        diarization.roles = roles.filter { $0.value.isSpecified }
         bundle.diarization = diarization
         assets = bundle
         retryAnalysis()
@@ -272,10 +293,12 @@ final class PipelineRunner {
     }
 
     private func execute(url: URL, title: String?, meetingContext: String,
+                         recordedAt: Date?,
                          minutesTemplateID: String,
                          recognitionScenario: RecognitionScenario,
                          speakerCount: Int,
                          workspace: MeetingWorkspace?,
+                         speakerNames: [Int: String], speakerRoles: [Int: SpeakerRole],
                          customerName: String, projectName: String,
                          tags: [String], materials: [SupportingMaterial]) async throws {
         let settings = Settings.shared
@@ -286,8 +309,8 @@ final class PipelineRunner {
         let extractor = MediaExtractor(url: url)
         let transcriptionPrompt = Self.transcriptionPrompt(
             scenario: recognitionScenario,
-            glossary: [learnedVocabulary, settings.glossary]
-                .filter { !$0.isEmpty }.joined(separator: "，"),
+            priorityVocabulary: learnedVocabulary,
+            glossary: settings.glossary,
             materials: materials)
 
         stage = .probing
@@ -425,8 +448,15 @@ final class PipelineRunner {
             detail = "保留 \(captures.count) 个不同画面"
         }
 
+        if var identified = diarization {
+            identified.names.merge(speakerNames) { _, saved in saved }
+            identified.roles = speakerRoles.filter { $0.value.isSpecified }
+            diarization = identified
+        }
+
         let bundle = MeetingAssets(sourceURL: url,
-                                   recordedAt: MeetingDateResolver.recordedAt(for: url),
+                                   recordedAt: recordedAt
+                                       ?? MeetingDateResolver.recordedAt(for: url),
                                    customTitle: title,
                                    meetingContext: meetingContext,
                                    minutesTemplateID: minutesTemplateID,
@@ -448,14 +478,16 @@ final class PipelineRunner {
         try await analyze(bundle)
     }
 
-    static func transcriptionPrompt(scenario: RecognitionScenario, glossary: String,
+    static func transcriptionPrompt(scenario: RecognitionScenario,
+                                    priorityVocabulary: String = "", glossary: String,
                                     materials: [SupportingMaterial]) -> String {
         let materialContext = materials.prefix(3).map {
             "\($0.name)：\($0.extractedText.replacingOccurrences(of: "\n", with: " ").prefix(60))"
         }.joined(separator: "；")
-        // Scenario and meeting-specific material come first because whisper's
-        // initial prompt is capped; generic glossary terms use the remainder.
-        return [scenario.transcriptionHint, materialContext, glossary]
+        // whisper.cpp keeps only the beginning of its initial prompt. Put explicit
+        // learned corrections first, then the user's vocabulary, so a long scenario
+        // hint can never push a critical product name out of the 170-character budget.
+        return [priorityVocabulary, glossary, materialContext, scenario.transcriptionHint]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: " ")
     }
@@ -492,7 +524,9 @@ final class PipelineRunner {
         if var structured = trackedStructured {
             let priorRecords = ((try? MeetingHistoryStore.loadAll()) ?? []).filter {
                 $0.workspaceID == bundle.workspace?.id && $0.workspaceID != nil
+                    && $0.createdAt < bundle.recordedAt
             }
+            IssueTracking.prepare(&structured, priorRecords: priorRecords)
             actionSuggestions = ActionTracking.prepare(&structured, priorRecords: priorRecords)
             trackedStructured = structured
         }
@@ -536,6 +570,7 @@ final class PipelineRunner {
             transcript: bundle.transcript,
             speakerNames: bundle.diarization?.names ?? [:],
             usedSummaryFallback: result.usedFallback,
+            speakerRoles: bundle.diarization?.roles ?? [:],
             workspaceID: bundle.workspace?.id,
             customerName: bundle.customerName,
             projectName: bundle.projectName,
@@ -552,18 +587,56 @@ final class PipelineRunner {
         storedRecord.actionStatusSuggestions = actionSuggestions
         storedRecord.adaptiveScreenReviewStats = bundle.adaptiveScreenReviewStats
         storedRecord.generationUsage = generationUsage
-        do {
-            try MeetingHistoryStore.save(storedRecord, materialSources: bundle.materials)
-            savedRecordID = storedRecord.id
-            try ProjectLedgerStore.prepareProposals(for: storedRecord)
-        } catch {
-            // History is a convenience; a valid summary remains successful.
-            historyWarning = "历史记录保存失败：\(error.localizedDescription)"
+        let reviewRisks = trackedStructured.map { IssuePreflight.risks(in: $0.issues) } ?? []
+        let isHeadless = CommandLine.arguments.contains("--regenerate-record")
+        if !isHeadless, trackedStructured?.issues.isEmpty == false,
+           Settings.shared.alwaysReviewIssues || !reviewRisks.isEmpty {
+            pendingReviewRecord = storedRecord
+            pendingReviewMaterials = bundle.materials
+            issueReviewReasons = reviewRisks
+            stage = .reviewingIssues
+            progress = 1
+            detail = reviewRisks.isEmpty ? "请确认问题后生成最终纪要" : "检测到问题边界可能需要确认"
+            return
         }
+        persist(storedRecord, materials: bundle.materials)
 
         stage = .done
         progress = 1
         detail = "完成"
+    }
+
+    func finalizeIssueReview(_ issues: [StructuredMinutes.Issue]) {
+        guard var record = pendingReviewRecord, var structured = record.structuredSummary else { return }
+        structured.issues = issues
+        let validIDs = Set(issues.compactMap(\.trackingID))
+        for index in structured.actionItems.indices {
+            if let issueID = structured.actionItems[index].issueID,
+               !validIDs.contains(issueID) {
+                structured.actionItems[index].issueID = nil
+            }
+        }
+        record.structuredSummary = structured
+        record.summaryMarkdown = StructuredMinutesRenderer.markdown(from: structured)
+        structuredSummary = structured
+        summary = record.summaryMarkdown
+        persist(record, materials: pendingReviewMaterials)
+        pendingReviewRecord = nil
+        pendingReviewMaterials = []
+        issueReviewReasons = []
+        stage = .done
+        progress = 1
+        detail = "完成"
+    }
+
+    private func persist(_ record: MeetingRecord, materials: [SupportingMaterial]) {
+        do {
+            try MeetingHistoryStore.save(record, materialSources: materials)
+            savedRecordID = record.id
+            try ProjectLedgerStore.prepareProposals(for: record)
+        } catch {
+            historyWarning = "历史记录保存失败：\(error.localizedDescription)"
+        }
     }
 
     /// A best-effort second look at the screen. Planning or image extraction

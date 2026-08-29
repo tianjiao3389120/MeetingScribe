@@ -31,6 +31,29 @@ enum MeetingWorkspaceStore {
                                               ofItemAtPath: url.path)
     }
 
+    static func resolve(id: UUID?, customerName: String?, projectName: String?,
+                        from values: [MeetingWorkspace]? = nil) -> MeetingWorkspace? {
+        let workspaces = values ?? ((try? load()) ?? [])
+        if let id, let exact = workspaces.first(where: { $0.id == id }) { return exact }
+        func normalized(_ value: String?) -> String {
+            (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        let customer = normalized(customerName), project = normalized(projectName)
+        if !project.isEmpty {
+            let customerIDs = Set(workspaces.filter {
+                $0.isCustomer && normalized($0.name) == customer
+            }.map(\.id))
+            if let match = workspaces.first(where: {
+                $0.isProject && normalized($0.name) == project
+                    && (customerIDs.isEmpty || $0.customerID.map(customerIDs.contains) == true)
+            }) { return match }
+        }
+        if !customer.isEmpty {
+            return workspaces.first { $0.isCustomer && normalized($0.name) == customer }
+        }
+        return nil
+    }
+
     static func normalizeHierarchy(_ values: [MeetingWorkspace]) -> [MeetingWorkspace] {
         var result = values
         let validCustomers = Set(result.filter(\.isCustomer).map(\.id))

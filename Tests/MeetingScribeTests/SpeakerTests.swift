@@ -23,6 +23,35 @@ final class SpeakerTests: XCTestCase {
         XCTAssertEqual(value.displayName(for: 9), "张三")
     }
 
+    func testConfirmedAffiliationAndRoleAreIncludedInPromptLabel() {
+        let value = Diarization(
+            segments: [SpeakerSegment(start: 0, end: 2, speaker: 9)],
+            names: [9: "张三"],
+            roles: [9: SpeakerRole(affiliation: .customer, meetingRole: .leader)])
+
+        XCTAssertEqual(value.displayName(for: 9), "张三｜客户｜领导")
+    }
+
+    func testRoleSelectionPropagatesOnlyToConfirmedSameNameClusters() {
+        let role = SpeakerRole(affiliation: .ours, meetingRole: .engineer)
+        let result = SpeakerRole.applying(
+            role, to: 1,
+            names: [1: " Joey ", 2: "joey", 3: "Joey Chen"],
+            roles: [4: SpeakerRole(affiliation: .customer, meetingRole: .leader)])
+
+        XCTAssertEqual(result[1], role)
+        XCTAssertEqual(result[2], role)
+        XCTAssertNil(result[3])
+        XCTAssertEqual(result[4]?.meetingRole, .leader)
+    }
+
+    func testLegacyDiarizationDecodesWithoutSpeakerRoles() throws {
+        let data = #"{"segments":[{"start":0,"end":1,"speaker":0}],"names":{"0":"张三"}}"#
+            .data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(Diarization.self, from: data)
+        XCTAssertTrue(decoded.roles.isEmpty)
+    }
+
     func testVoiceSimilarityRejectsMismatchedDimensions() {
         XCTAssertEqual(VoiceProfileStore.similarity([1, 0], [1, 0]), 1, accuracy: 0.001)
         XCTAssertEqual(VoiceProfileStore.similarity([1], [1, 0]), 0)

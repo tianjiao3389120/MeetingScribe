@@ -163,14 +163,31 @@ enum LibraryBackup {
             var existing = try ProjectLedgerStore.load(from: destination.projectLedger)
             let actionIDs = Set(existing.actions.map(\.id))
             let proposalIDs = Set(existing.proposals.map(\.id))
+            let issueIDs = Set(existing.issues.map(\.id))
+            let issueProposalIDs = Set(existing.issueProposals.map(\.id))
+            let analysisIssueIDs = Set(existing.issueAnalyses.map(\.issueID))
             let newActions = incoming.actions.filter { !actionIDs.contains($0.id) }
             let newProposals = incoming.proposals.filter { !proposalIDs.contains($0.id) }
+            let newIssues = incoming.issues.filter { !issueIDs.contains($0.id) }
+            let newIssueProposals = incoming.issueProposals.filter {
+                !issueProposalIDs.contains($0.id)
+            }
+            let newIssueAnalyses = incoming.issueAnalyses.filter {
+                !analysisIssueIDs.contains($0.issueID)
+            }
             existing.actions.append(contentsOf: newActions)
             existing.proposals.append(contentsOf: newProposals)
+            existing.issues.append(contentsOf: newIssues)
+            existing.issueProposals.append(contentsOf: newIssueProposals)
+            existing.issueAnalyses.append(contentsOf: newIssueAnalyses)
             try ProjectLedgerStore.save(existing, to: destination.projectLedger)
             filesAdded += newActions.count + newProposals.count
+                + newIssues.count + newIssueProposals.count + newIssueAnalyses.count
             skipped += incoming.actions.count - newActions.count
                 + incoming.proposals.count - newProposals.count
+                + incoming.issues.count - newIssues.count
+                + incoming.issueProposals.count - newIssueProposals.count
+                + incoming.issueAnalyses.count - newIssueAnalyses.count
         }
         return RestoreResult(meetingsAdded: meetingsAdded, workspacesAdded: workspacesAdded,
                              filesAdded: filesAdded, skipped: skipped)

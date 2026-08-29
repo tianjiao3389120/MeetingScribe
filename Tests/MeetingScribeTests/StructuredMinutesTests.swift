@@ -50,6 +50,37 @@ final class StructuredMinutesTests: XCTestCase {
                        expected.timeIntervalSince1970, accuracy: 1)
     }
 
+    func testMeetingDateUsesExplicitFilenameBeforeCopiedFileDate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        let full = URL(fileURLWithPath: "/tmp/录屏2026-06-12 15.18.32.mov")
+        let expected = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 6, day: 12, hour: 15, minute: 18, second: 32)))
+        XCTAssertEqual(MeetingDateResolver.filenameDate(for: full, calendar: calendar), expected)
+
+        let dateOnly = URL(fileURLWithPath: "/tmp/2026-06-12.m4a")
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 6, day: 12, hour: 0, minute: 0, second: 0)))
+        XCTAssertEqual(MeetingDateResolver.filenameDate(for: dateOnly, calendar: calendar), start)
+    }
+
+    func testIssuePreflightFlagsDiagnosticLimitationAndMergesItIntoProblem() {
+        let performance = StructuredMinutes.Issue(
+            trackingID: "MS-ISSUE-1", title: "生产数据抽取吞吐量下降", status: "进行中",
+            background: "生产批处理变慢", rootCause: "原因待查", solution: "UAT复现",
+            progress: "已排除压缩影响", evidence: ["[01:00]"])
+        let logging = StructuredMinutes.Issue(
+            trackingID: "MS-ISSUE-2", title: "现有日志不足以定位性能瓶颈", status: "待更新",
+            background: "日志只记录异常", rootCause: "粒度不足", solution: "开启debug日志",
+            progress: "未发现异常", evidence: ["[02:00]"])
+
+        XCTAssertFalse(IssuePreflight.risks(in: [performance, logging]).isEmpty)
+        let merged = IssuePreflight.merge(logging, into: performance)
+        XCTAssertEqual(merged.trackingID, "MS-ISSUE-1")
+        XCTAssertTrue(merged.solution.contains("开启debug日志"))
+        XCTAssertEqual(Set(merged.evidence), Set(["[01:00]", "[02:00]"]))
+    }
+
     func testGeneratedMeetingTitleReplacesOnlyDefaultFilename() {
         let source = URL(fileURLWithPath: "/tmp/Screen Recording 2026-08-08.mov")
 
@@ -95,7 +126,7 @@ final class StructuredMinutesTests: XCTestCase {
     {
       "title":"会议纪要","nature":"双周会","duration":"40 分钟",
       "agenda":["问题复盘","上线安排"],"participantAssessment":[],
-      "issues":[{"title":"日志积压","status":"进行中","rootCause":"处理能力不足","solution":"扩容","progress":"验证中","evidence":["[12:34]"]}],
+      "issues":[{"title":"日志积压","status":"进行中","background":"业务量增长导致日志持续增加","rootCause":"处理能力不足","solution":"扩容","progress":"验证中","evidence":["[12:34]"]}],
       "requirements":[{"title":"增加告警导出","status":"待确认","schedule":"下周","evidence":[]}],
       "actionItems":[{"owner":"张三","task":"提交方案","status":"进行中","due":"周五","evidence":["[20:00]"]}],
       "agreements":[{"content":"邮件抄送安全团队","evidence":["[22:00]"]}],
@@ -124,8 +155,20 @@ final class StructuredMinutesTests: XCTestCase {
         XCTAssertTrue(html.contains("<strong>性质</strong>：双周会<br><strong>时长</strong>：40 分钟"))
         XCTAssertTrue(html.contains("<p><strong>议程</strong>：</p><ol><li>问题复盘</li><li>上线安排</li></ol>"))
         XCTAssertTrue(markdown.contains("### 日志积压 [进行中]"))
+        XCTAssertTrue(markdown.contains("- **背景**：业务量增长导致日志持续增加"))
+        XCTAssertTrue(markdown.range(of: "**背景**")!.lowerBound < markdown.range(of: "**根因**")!.lowerBound)
         XCTAssertTrue(markdown.contains("- [ ] 提交方案（周五） [进行中]（证据：[20:00]）"))
         XCTAssertTrue(markdown.contains("### 协作约定"))
+    }
+
+    func testIssueWithoutBackgroundRemainsBackwardCompatible() throws {
+        let legacy = json.replacingOccurrences(
+            of: #""background":"业务量增长导致日志持续增加","#,
+            with: "")
+        let value = try XCTUnwrap(Analyzer.parseStructured(legacy))
+
+        XCTAssertNil(value.issues.first?.background)
+        XCTAssertFalse(StructuredMinutesRenderer.markdown(from: value).contains("**背景**"))
     }
 
     func testMinutesShowOnlyFormalMeetingDuration() throws {

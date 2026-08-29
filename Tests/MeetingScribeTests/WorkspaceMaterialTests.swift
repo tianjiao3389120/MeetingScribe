@@ -220,6 +220,152 @@ final class WorkspaceMaterialTests: XCTestCase {
             for: record(date: 300, status: "", includeAction: false), at: url)
         XCTAssertEqual(ledger.proposals.count, count)
     }
+
+    func testProjectIssueLedgerRequiresConfirmationAndKeepsTimeline() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("project-issues-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workspaceID = UUID()
+        func record(date: TimeInterval, status: String, progress: String) -> MeetingRecord {
+            let minutes = StructuredMinutes(
+                title: "周会", nature: "", duration: "", agenda: ["进展"],
+                participantAssessment: [],
+                issues: [.init(trackingID: "MS-ISSUE-1", title: "供应商引擎异常",
+                               status: status, background: "安装组件后异常关闭",
+                               rootCause: "等待供应商确认", solution: "分析日志",
+                               progress: progress, evidence: ["[10:00]"])],
+                requirements: [], actionItems: [], agreements: [], afterMeeting: [],
+                uncertainties: [])
+            return MeetingRecord(createdAt: Date(timeIntervalSince1970: date), title: "周会",
+                                 sourcePath: "/meeting.srt", duration: 60,
+                                 backend: "测试", model: "mock", summaryMarkdown: "纪要",
+                                 structuredSummary: minutes, transcript: Transcript(segments: []),
+                                 speakerNames: [:], usedSummaryFallback: false,
+                                 workspaceID: workspaceID)
+        }
+
+        var ledger = try ProjectLedgerStore.prepareProposals(
+            for: record(date: 100, status: "进行中", progress: "等待日志"), at: url)
+        let create = try XCTUnwrap(ledger.pendingIssueProposals(for: workspaceID).first)
+        XCTAssertEqual(create.kind, .create)
+        ledger = try ProjectLedgerStore.acceptIssue(proposalID: create.id, at: url)
+        XCTAssertEqual(ledger.issues.first?.background, "安装组件后异常关闭")
+
+        ledger = try ProjectLedgerStore.prepareProposals(
+            for: record(date: 200, status: "等待中", progress: "完成三轮分析"), at: url)
+        let update = try XCTUnwrap(ledger.pendingIssueProposals(for: workspaceID).first)
+        XCTAssertEqual(update.kind, .update)
+        ledger = try ProjectLedgerStore.acceptIssue(proposalID: update.id, at: url)
+        XCTAssertEqual(ledger.issues.first?.events.count, 2)
+        XCTAssertEqual(ledger.issues.first?.events.last?.progress, "完成三轮分析")
+    }
+
+    func testIssueProposalCanBeManuallyAssociatedWithExistingIssue() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manual-issue-link-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workspaceID = UUID()
+        let existing = ProjectIssue(
+            id: "MS-ISSUE-EXISTING", workspaceID: workspaceID, title: "供应商引擎异常",
+            aliases: [], background: "历史背景", rootCause: "待确认", solution: "分析日志",
+            status: "进行中", createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 100), sourceMeetingID: UUID(), events: [])
+        var ledger = ProjectLedger(issues: [existing])
+        let proposal = ProjectIssueProposal(
+            workspaceID: workspaceID, meetingID: UUID(), meetingTitle: "本周会议",
+            meetingDate: Date(timeIntervalSince1970: 200), kind: .create,
+            targetIssueID: "MS-ISSUE-WRONG", title: "引擎主动退出",
+            background: "", rootCause: "供应商内部错误", solution: "供应商分析",
+            progress: "完成三轮日志分析", status: "等待中", previousStatus: nil,
+            evidence: ["[10:00]"])
+        ledger.issueProposals = [proposal]
+        try ProjectLedgerStore.save(ledger, to: url)
+
+        ledger = try ProjectLedgerStore.acceptIssue(
+            proposalID: proposal.id, targetIssueID: existing.id, at: url)
+
+        XCTAssertEqual(ledger.issues.count, 1)
+        XCTAssertEqual(ledger.issues[0].events.last?.progress, "完成三轮日志分析")
+        XCTAssertEqual(ledger.issues[0].status, "等待中")
+        XCTAssertEqual(ledger.issueProposals[0].resolution, .accepted)
+    }
+
+    func testAcceptedIssueAssociationCanBeReopenedWithoutLeavingTimelineEvent() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reopen-issue-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workspaceID = UUID()
+        let proposal = ProjectIssueProposal(
+            workspaceID: workspaceID, meetingID: UUID(), meetingTitle: "首次会议",
+            meetingDate: Date(timeIntervalSince1970: 100), kind: .create,
+            targetIssueID: nil, title: "引擎异常", background: "背景", rootCause: "待查",
+            solution: "分析日志", progress: "首次发现", status: "进行中",
+            previousStatus: nil, evidence: ["[01:00]"])
+        try ProjectLedgerStore.save(ProjectLedger(issueProposals: [proposal]), to: url)
+        var ledger = try ProjectLedgerStore.acceptIssue(proposalID: proposal.id, at: url)
+        XCTAssertEqual(ledger.issues.count, 1)
+        XCTAssertNotNil(ledger.issueProposals[0].targetIssueID)
+
+        ledger = try ProjectLedgerStore.reopenIssue(proposalID: proposal.id, at: url)
+        XCTAssertTrue(ledger.issues.isEmpty)
+        XCTAssertEqual(ledger.issueProposals[0].resolution, .pending)
+    }
+
+    func testWorkspaceResolverRepairsTextOnlyCustomerClassification() {
+        let customer = MeetingWorkspace(name: "中银香港", kind: .customer)
+        let other = MeetingWorkspace(name: "其他客户", kind: .customer)
+        XCTAssertEqual(MeetingWorkspaceStore.resolve(
+            id: nil, customerName: " 中银香港 ", projectName: "主机安全",
+            from: [other, customer])?.id, customer.id)
+    }
+
+    func testRemovingMeetingPrunesOnlyPendingLedgerReferences() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prune-meeting-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let meetingID = UUID(), workspaceID = UUID()
+        let pending = ProjectIssueProposal(
+            workspaceID: workspaceID, meetingID: meetingID, meetingTitle: "会议",
+            meetingDate: Date(), kind: .create, targetIssueID: nil, title: "问题",
+            background: "", rootCause: "", solution: "", progress: "", status: "进行中",
+            previousStatus: nil, evidence: [])
+        var accepted = pending
+        accepted.id = UUID(); accepted.resolution = .accepted
+        try ProjectLedgerStore.save(ProjectLedger(issueProposals: [pending, accepted]), to: url)
+
+        let ledger = try ProjectLedgerStore.removePendingReferences(to: [meetingID], at: url)
+        XCTAssertEqual(ledger.issueProposals.map(\.id), [accepted.id])
+        XCTAssertEqual(ledger.issueProposals.first?.resolution, .accepted)
+    }
+
+    func testIssueStatusCanBeClosedAndReopenedWithAuditEvents() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manual-status-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let issue = ProjectIssue(
+            id: "MS-ISSUE-STATUS", workspaceID: UUID(), title: "持续问题", aliases: [],
+            background: "背景", rootCause: "根因", solution: "方案", status: "进行中",
+            createdAt: Date(timeIntervalSince1970: 100), updatedAt: Date(timeIntervalSince1970: 100),
+            sourceMeetingID: UUID(), events: [])
+        try ProjectLedgerStore.save(ProjectLedger(issues: [issue]), to: url)
+
+        var ledger = try ProjectLedgerStore.updateIssueStatus(
+            issueID: issue.id, status: "已闭环", note: "现场验证通过", at: url)
+        XCTAssertTrue(ledger.issues[0].isClosed)
+        XCTAssertEqual(ledger.issues[0].events.last?.note, "现场验证通过")
+
+        ledger = try ProjectLedgerStore.updateIssueStatus(
+            issueID: issue.id, status: "进行中", note: "客户要求重新打开", at: url)
+        XCTAssertFalse(ledger.issues[0].isClosed)
+        XCTAssertEqual(ledger.issues[0].events.last?.previousStatus, "已闭环")
+    }
+
+    func testLegacyProjectLedgerDecodesWithoutIssueCollections() throws {
+        let data = #"{"actions":[],"proposals":[]}"#.data(using: .utf8)!
+        let ledger = try JSONDecoder().decode(ProjectLedger.self, from: data)
+        XCTAssertTrue(ledger.issues.isEmpty)
+        XCTAssertTrue(ledger.issueProposals.isEmpty)
+    }
     func testActionTrackingSuggestsOnlyExactEvidenceBackedStatusChanges() {
         let workspaceID = UUID()
         let oldMinutes = StructuredMinutes(
@@ -300,6 +446,21 @@ final class WorkspaceMaterialTests: XCTestCase {
         XCTAssertTrue(trimmed.contains("香港粤语"))
         XCTAssertTrue(trimmed.contains("Falcon Gateway"))
         XCTAssertTrue(RecognitionScenario.hongKongMixed.analysisGuidance.contains("简体书面中文"))
+    }
+
+    @MainActor
+    func testLearnedAndManualVocabularySurviveWhisperPromptLimit() {
+        let legacy = String(repeating: "通", count: 155) + "无相AI"
+        let prompt = PipelineRunner.transcriptionPrompt(
+            scenario: .hongKongMixed,
+            priorityVocabulary: "(无线AI)应识别为(无相AI)",
+            glossary: legacy,
+            materials: [])
+        let trimmed = Transcriber.trimGlossary(prompt)
+
+        XCTAssertTrue(trimmed.hasPrefix("(无线AI)应识别为(无相AI)"))
+        XCTAssertTrue(trimmed.contains("无相AI"))
+        XCTAssertLessThanOrEqual(trimmed.count, 170)
     }
 
     func testWorkspaceInsightsAggregatesOpenAndClosedActions() {

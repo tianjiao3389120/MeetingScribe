@@ -2,6 +2,29 @@ import XCTest
 @testable import MeetingScribe
 
 final class MeetingHistoryStoreTests: XCTestCase {
+    func testSpeakerRolesCanBeEditedWithoutChangingMeetingContent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speaker-role-edit-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = MeetingRecord(
+            title: "角色测试", sourcePath: "/meeting.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "原纪要",
+            structuredSummary: nil,
+            transcript: Transcript(segments: [
+                TranscriptSegment(id: 0, start: 0, end: 1, text: "测试")
+            ]), speakerNames: [:], usedSummaryFallback: false)
+        try MeetingHistoryStore.save(record, root: root)
+
+        let updated = try MeetingHistoryStore.updateSpeakers(
+            id: record.id, names: [0: "张三"],
+            roles: [0: SpeakerRole(affiliation: .customer, meetingRole: .leader)],
+            root: root)
+
+        XCTAssertEqual(updated.speakerNames[0], "张三")
+        XCTAssertEqual(updated.speakerRoles?[0]?.affiliation, .customer)
+        XCTAssertEqual(updated.summaryMarkdown, record.summaryMarkdown)
+        XCTAssertEqual(updated.transcript.timecodedText, record.transcript.timecodedText)
+    }
     func testSaveLoadExportAndDeleteWithoutSourceMedia() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("meetingscribe-history-\(UUID().uuidString)")

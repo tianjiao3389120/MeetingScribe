@@ -8,10 +8,11 @@ import AVFoundation
 /// recognise that person automatically next time.
 struct SpeakerNamingView: View {
     let assets: MeetingAssets
-    var onSaved: ([Int: String]) -> Void
+    var onSaved: ([Int: String], [Int: SpeakerRole]) -> Void
     var onCancel: () -> Void
 
     @State private var names: [Int: String] = [:]
+    @State private var roles: [Int: SpeakerRole] = [:]
     @State private var player: AVAudioPlayer?
     @State private var playingSpeaker: Int?
     @State private var clipURL: URL?
@@ -24,9 +25,9 @@ struct SpeakerNamingView: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("给说话人命名")
+                Text("确认说话人姓名与角色")
                     .font(.title3.weight(.medium))
-                Text("填写后会记住每个人的声纹，之后的会议自动识别，纪要里直接写真名。可以只填认得出的人，留空的保持匿名。")
+                Text("姓名用于声纹记忆；所属方和角色只用于本次会议。多个声音片段使用同一姓名时，修改其中一项会自动同步角色。无法确认的字段可以留空。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -50,6 +51,24 @@ struct SpeakerNamingView: View {
                                 get: { names[entry.speaker] ?? "" },
                                 set: { names[entry.speaker] = $0 }
                             ),
+                            affiliation: Binding(
+                                get: { roles[entry.speaker]?.affiliation ?? .unknown },
+                                set: { value in
+                                    var role = roles[entry.speaker] ?? SpeakerRole()
+                                    role.affiliation = value
+                                    roles = SpeakerRole.applying(
+                                        role, to: entry.speaker, names: names, roles: roles)
+                                }
+                            ),
+                            meetingRole: Binding(
+                                get: { roles[entry.speaker]?.meetingRole ?? .unknown },
+                                set: { value in
+                                    var role = roles[entry.speaker] ?? SpeakerRole()
+                                    role.meetingRole = value
+                                    roles = SpeakerRole.applying(
+                                        role, to: entry.speaker, names: names, roles: roles)
+                                }
+                            ),
                             onPlay: { play(speaker: entry.speaker) }
                         )
                         Divider()
@@ -70,7 +89,9 @@ struct SpeakerNamingView: View {
                 Button("跳过") { stop(); onCancel() }
                 Button("保存并重新生成纪要") { enroll() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isSaving || names.values.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty })
+                    .disabled(isSaving || (names.values.allSatisfy {
+                        $0.trimmingCharacters(in: .whitespaces).isEmpty
+                    } && roles.values.allSatisfy { !$0.isSpecified }))
             }
             .padding(16)
         }
@@ -91,6 +112,7 @@ struct SpeakerNamingView: View {
     private func prefill() {
         guard let diarization else { return }
         for (speaker, name) in diarization.names { names[speaker] = name }
+        roles = diarization.roles
     }
 
     /// A line this speaker actually said, to jog the user's memory.
@@ -179,14 +201,14 @@ struct SpeakerNamingView: View {
                 samples.append((name, embedding, "", reference))
                 applied[speaker] = name
             }
-            try VoiceProfileStore.enroll(samples: samples)
+            if !samples.isEmpty { try VoiceProfileStore.enroll(samples: samples) }
             for (_, name) in entered {
                 try RecognitionMemoryStore.upsert(RecognitionMemoryEntry(
                     canonical: name, kind: .person,
                     workspaceID: assets.workspace?.id, sourceTitle: assets.title))
             }
             stop()
-            onSaved(applied)
+            onSaved(applied, roles.filter { $0.value.isSpecified })
           } catch {
             saveError = "保存失败：\(error.localizedDescription)"
             isSaving = false
@@ -203,6 +225,8 @@ private struct SpeakerRow: View {
     let sample: String
     let isPlaying: Bool
     @Binding var name: String
+    @Binding var affiliation: SpeakerRole.Affiliation
+    @Binding var meetingRole: SpeakerRole.MeetingRole
     let onPlay: () -> Void
 
     var body: some View {
@@ -236,9 +260,19 @@ private struct SpeakerRow: View {
                         .lineLimit(2)
                 }
 
-                TextField("姓名（留空则保持匿名）", text: $name)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 260)
+                HStack {
+                    TextField("姓名（留空则保持匿名）", text: $name)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 240)
+                    Picker("所属方", selection: $affiliation) {
+                        ForEach(SpeakerRole.Affiliation.allCases) { Text($0.label).tag($0) }
+                    }
+                    .frame(width: 120)
+                    Picker("角色", selection: $meetingRole) {
+                        ForEach(SpeakerRole.MeetingRole.allCases) { Text($0.label).tag($0) }
+                    }
+                    .frame(width: 130)
+                }
             }
             Spacer()
         }

@@ -17,6 +17,12 @@ enum Entry {
             MeetingScribeApp.main()
             return
         }
+        if let flag = arguments.firstIndex(of: "--regenerate-record"),
+           arguments.indices.contains(flag + 1),
+           let id = UUID(uuidString: arguments[flag + 1]) {
+            CommandLineRunner.regenerate(recordID: id)
+            return
+        }
         let args = arguments.filter { !$0.hasPrefix("-") }
         if let path = args.first, FileManager.default.fileExists(atPath: path) {
             CommandLineRunner.run(path: path)
@@ -84,6 +90,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Headless driver: same pipeline as the UI, progress on stderr, summary on stdout.
 enum CommandLineRunner {
+
+    /// Re-runs only minutes analysis for an existing history record. This
+    /// preserves the original meeting date and avoids paying for transcription.
+    static func regenerate(recordID: UUID) {
+        Task { @MainActor in
+            do {
+                guard let record = try MeetingHistoryStore.loadAll().first(where: { $0.id == recordID })
+                else { throw RegenerationFailure.recordNotFound }
+                let workspace = MeetingWorkspaceStore.resolve(
+                    id: record.workspaceID, customerName: record.customerName,
+                    projectName: record.projectName)
+                var materials: [SupportingMaterial] = []
+                for reference in record.materials ?? [] {
+                    let url = URL(fileURLWithPath: reference.sourcePath)
+                    if let value = try? await Task.detached(operation: {
+                        try MaterialExtractor.extract(from: url)
+                    }).value { materials.append(value) }
+                }
+                let runner = PipelineRunner()
+                runner.analyzeEditedTranscript(record: record, transcript: record.transcript,
+                                               workspace: workspace, materials: materials)
+                while runner.isRunning {
+                    if !runner.detail.isEmpty { log("    \(runner.detail)") }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                if let error = runner.error { throw RegenerationFailure.analysis(error) }
+                print(runner.summary)
+                if let savedRecordID = runner.savedRecordID {
+                    log("▸ 已生成新版本：\(savedRecordID.uuidString)")
+                }
+                exit(0)
+            } catch {
+                log("错误：\(error.localizedDescription)")
+                exit(1)
+            }
+        }
+        RunLoop.main.run()
+    }
+
+    private enum RegenerationFailure: LocalizedError {
+        case recordNotFound
+        case analysis(String)
+        var errorDescription: String? {
+            switch self {
+            case .recordNotFound: "找不到指定的历史会议。"
+            case .analysis(let message): message
+            }
+        }
+    }
 
     /// The pipeline is `@MainActor`, so the main thread must stay free to run
     /// it — blocking here on a semaphore would deadlock. Drive the run loop

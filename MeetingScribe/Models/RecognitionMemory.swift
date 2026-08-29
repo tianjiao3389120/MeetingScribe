@@ -82,6 +82,26 @@ enum RecognitionMemoryStore {
         try save(load(from: url).filter { $0.id != id }, to: url)
     }
 
+    @discardableResult
+    static func update(_ entry: RecognitionMemoryEntry,
+                       in url: URL = entriesURL) throws -> RecognitionMemoryEntry {
+        var entries = load(from: url)
+        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else {
+            return try upsert(entry, to: url)
+        }
+        var value = entry
+        value.mistaken = value.mistaken.trimmingCharacters(in: .whitespacesAndNewlines)
+        value.canonical = value.canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.canonical.isEmpty else { return entries[index] }
+        value.createdAt = entries[index].createdAt
+        value.usageCount = entries[index].usageCount
+        value.promptUsageCount = entries[index].promptUsageCount
+        value.updatedAt = Date()
+        entries[index] = value
+        try save(entries, to: url)
+        return value
+    }
+
     static func relevant(workspaceID: UUID?, text: String = "",
                          from url: URL = entriesURL) -> [RecognitionMemoryEntry] {
         let context = text.lowercased()

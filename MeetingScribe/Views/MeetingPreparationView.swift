@@ -39,6 +39,17 @@ struct MeetingPreparationView: View {
         workspaces.first { $0.id == selectedWorkspaceID }
     }
 
+    /// Free-form customer/project labels are useful meeting metadata, but project-ledger
+    /// updates still need a stable workspace ID. Prefer an exact project selection and
+    /// fall back to the matching customer when the typed project has not been created yet.
+    private var resolvedWorkspace: MeetingWorkspace? {
+        MeetingWorkspaceStore.resolve(
+            id: selectedWorkspaceID,
+            customerName: customerName,
+            projectName: projectName,
+            from: workspaces)
+    }
+
     private var customers: [MeetingWorkspace] { workspaces.filter(\.isCustomer) }
     private var projects: [MeetingWorkspace] { workspaces.filter(\.isProject) }
 
@@ -79,6 +90,13 @@ struct MeetingPreparationView: View {
                             Text(workspace.context).font(.caption).foregroundStyle(.secondary)
                                 .lineLimit(2)
                         }
+                    }
+                    if selectedWorkspace == nil,
+                       let workspace = resolvedWorkspace,
+                       workspace.isCustomer,
+                       !projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("“\(projectName)”尚未建为正式项目，本次将归入客户“\(workspace.name)”，问题关联仍会正常生成。")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     if showNewWorkspace {
                         GroupBox {
@@ -251,7 +269,7 @@ struct MeetingPreparationView: View {
         let tags = MeetingTags.parse(tagsText)
         let title = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { materialError = "会议名称不能为空。"; return }
-        onStart(title, recognitionScenario, selectedWorkspace,
+        onStart(title, recognitionScenario, resolvedWorkspace,
                 meetingContext.trimmingCharacters(in: .whitespacesAndNewlines),
                 selectedTemplateID, customerName, projectName,
                 tags, materials)

@@ -31,6 +31,8 @@ struct ContentView: View {
                          onPick: { pendingInput = $0 })
             case .done:
                 ResultView(runner: runner, savedPath: $savedPath)
+            case .reviewingIssues:
+                IssuePreflightView(runner: runner)
             default:
                 ProgressPanel(runner: runner)
             }
@@ -122,8 +124,9 @@ struct ContentView: View {
 
     private func reprocess(_ record: MeetingRecord, editedTranscript: Transcript? = nil) {
         Task {
-            let workspace = (try? MeetingWorkspaceStore.load())?
-                .first { $0.id == record.workspaceID }
+            let workspace = MeetingWorkspaceStore.resolve(
+                id: record.workspaceID, customerName: record.customerName,
+                projectName: record.projectName)
             var materials: [SupportingMaterial] = []
             for reference in record.materials ?? [] {
                 let url = URL(fileURLWithPath: reference.sourcePath)
@@ -138,10 +141,13 @@ struct ContentView: View {
                 runner.analyzeEditedTranscript(record: record, transcript: record.transcript,
                                                workspace: workspace, materials: materials)
             } else {
-                runner.run(url: record.sourceURL, title: record.title,
+                runner.run(url: record.sourceURL, recordedAt: record.createdAt,
+                           title: record.title,
                            meetingContext: record.meetingContext ?? "",
                            minutesTemplateID: record.minutesTemplateID ?? MinutesTemplate.general.id,
                            workspace: workspace,
+                           speakerNames: record.speakerNames,
+                           speakerRoles: record.speakerRoles ?? [:],
                            tags: record.tags ?? [], materials: materials)
             }
         }
@@ -378,6 +384,114 @@ private struct DropZone: View {
         }
     }
 
+}
+
+// MARK: - Issue preflight
+
+private struct IssuePreflightView: View {
+    struct Draft: Identifiable {
+        let id = UUID()
+        var issue: StructuredMinutes.Issue
+        var excluded = false
+    }
+
+    let runner: PipelineRunner
+    @State private var drafts: [Draft]
+    private let historicalIssues: [ProjectIssue]
+
+    init(runner: PipelineRunner) {
+        self.runner = runner
+        _drafts = State(initialValue: (runner.structuredSummary?.issues ?? []).map { Draft(issue: $0) })
+        if let workspaceID = runner.assets?.workspace?.id {
+            historicalIssues = (try? ProjectLedgerStore.load().issues(for: workspaceID)) ?? []
+        } else {
+            historicalIssues = []
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("生成最终纪要前确认问题").font(.title2.weight(.semibold))
+                Text("问题结构确认后才会保存纪要和建立问题关联。可以改名、排除、合并或直接关联历史问题。")
+                    .font(.callout).foregroundStyle(.secondary)
+                ForEach(runner.issueReviewReasons, id: \.self) {
+                    Label($0, systemImage: "exclamationmark.bubble")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Divider()
+            ScrollView {
+                VStack(spacing: 12) {
+                    ForEach($drafts) { $draft in
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack {
+                                Toggle("保留为问题", isOn: Binding(
+                                    get: { !draft.excluded },
+                                    set: { draft.excluded = !$0 }))
+                                Spacer()
+                                Menu("合并到…") {
+                                    ForEach(drafts.filter { $0.id != draft.id && !$0.excluded }) { target in
+                                        Button(target.issue.title) { merge(draft.id, into: target.id) }
+                                    }
+                                }.disabled(draft.excluded || drafts.filter { $0.id != draft.id && !$0.excluded }.isEmpty)
+                                Button("拆分副本") { split(draft.id) }.disabled(draft.excluded)
+                                Button("排除") { draft.excluded = true }.disabled(draft.excluded)
+                            }
+                            TextField("问题标题", text: $draft.issue.title)
+                                .textFieldStyle(.roundedBorder).disabled(draft.excluded)
+                            if !draft.issue.progress.isEmpty {
+                                Text("本次进展：\(draft.issue.progress)")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                            }
+                            if !historicalIssues.isEmpty && !draft.excluded {
+                                Picker("历史关联", selection: $draft.issue.trackingID) {
+                                    Text("作为新问题").tag(Optional<String>.none)
+                                    ForEach(historicalIssues) { issue in
+                                        Text(issue.title).tag(Optional(issue.id))
+                                    }
+                                }.controlSize(.small)
+                                if let selectedID = draft.issue.trackingID,
+                                   let selected = historicalIssues.first(where: { $0.id == selectedID }) {
+                                    ProjectIssueHistorySummaryView(issue: selected)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .opacity(draft.excluded ? 0.55 : 1)
+                        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                }.padding(20)
+            }
+            Divider()
+            HStack {
+                Text("保留 \(drafts.filter { !$0.excluded }.count) 个问题")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("确认并生成最终纪要") {
+                    runner.finalizeIssueReview(drafts.filter { !$0.excluded }.map(\.issue))
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }.padding(16)
+        }
+    }
+
+    private func merge(_ sourceID: UUID, into targetID: UUID) {
+        guard let source = drafts.firstIndex(where: { $0.id == sourceID }),
+              let target = drafts.firstIndex(where: { $0.id == targetID }) else { return }
+        drafts[target].issue = IssuePreflight.merge(drafts[source].issue, into: drafts[target].issue)
+        drafts[source].excluded = true
+    }
+
+    private func split(_ sourceID: UUID) {
+        guard let source = drafts.firstIndex(where: { $0.id == sourceID }) else { return }
+        var issue = drafts[source].issue
+        issue.trackingID = nil
+        issue.title += "（拆分）"
+        drafts.insert(Draft(issue: issue), at: source + 1)
+    }
 }
 
 // MARK: - Analysis failed, transcript intact
@@ -649,11 +763,9 @@ private struct ResultView: View {
                     Button(mode == .rendered ? "查看 Markdown 源码" : "返回纪要预览") {
                         mode = mode == .rendered ? .source : .rendered
                     }
-                    if let diarization = runner.assets?.diarization {
+                    if runner.assets?.diarization != nil {
                         Divider()
-                        if !diarization.embeddings.isEmpty {
-                            Button("登记或更新说话人声纹…") { showNaming = true }
-                        }
+                        Button("确认说话人姓名与角色…") { showNaming = true }
                         Button("重新分离说话人…") { showSpeakerRetry = true }
                     }
                     if runner.savedRecordID != nil {
@@ -677,9 +789,9 @@ private struct ResultView: View {
         }
         .sheet(isPresented: $showNaming) {
             if let assets = runner.assets {
-                SpeakerNamingView(assets: assets) { names in
+                SpeakerNamingView(assets: assets) { names, roles in
                     showNaming = false
-                    runner.applySpeakerNamesAndRegenerate(names)
+                    runner.applySpeakerNamesAndRegenerate(names, roles: roles)
                 } onCancel: {
                     showNaming = false
                 }

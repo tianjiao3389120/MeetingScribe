@@ -125,6 +125,17 @@ enum MeetingHistoryStore {
         return record
     }
 
+    static func updateSpeakers(id: UUID, names: [Int: String], roles: [Int: SpeakerRole],
+                               root: URL = defaultDirectory) throws -> MeetingRecord {
+        let url = root.appendingPathComponent(id.uuidString).appendingPathComponent("metadata.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        record.speakerNames = names
+        record.speakerRoles = roles.filter { $0.value.isSpecified }
+        try save(record, root: root)
+        return record
+    }
+
     static func remove(id: UUID, root: URL = defaultDirectory) throws {
         let directory = root.appendingPathComponent(id.uuidString, isDirectory: true)
         guard FileManager.default.fileExists(atPath: directory.path) else { return }

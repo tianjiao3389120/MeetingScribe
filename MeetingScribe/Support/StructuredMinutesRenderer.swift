@@ -31,9 +31,10 @@ enum StructuredMinutesRenderer {
             for issue in value.issues {
                 let status = issue.status.isEmpty ? "" : " [\(issue.status)]"
                 lines += ["", "### \(issue.title)\(status)"]
+                append(label: "背景", value: issue.background ?? "", evidence: [], to: &lines)
                 append(label: "根因", value: issue.rootCause, evidence: issue.evidence, to: &lines)
                 append(label: "方案", value: issue.solution, evidence: [], to: &lines)
-                append(label: "现状", value: issue.progress, evidence: [], to: &lines)
+                append(label: "本次进展", value: issue.progress, evidence: [], to: &lines)
             }
         }
 
@@ -124,9 +125,10 @@ enum CustomerMinutesRenderer {
             for issue in value.issues {
                 let status = issue.status.isEmpty ? "" : " [\(issue.status)]"
                 lines += ["", "### \(issue.title)\(status)"]
+                append(label: "背景", value: issue.background ?? "", to: &lines)
                 append(label: "根因", value: issue.rootCause, to: &lines)
                 append(label: "方案", value: issue.solution, to: &lines)
-                append(label: "现状", value: issue.progress, to: &lines)
+                append(label: "本次进展", value: issue.progress, to: &lines)
             }
         }
 

@@ -14,7 +14,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var summaryMarkdown: String
     var structuredSummary: StructuredMinutes?
     let transcript: Transcript
-    let speakerNames: [Int: String]
+    var speakerNames: [Int: String]
+    var speakerRoles: [Int: SpeakerRole]?
     let usedSummaryFallback: Bool
     /// Optional for backward compatibility with records created before spaces.
     var workspaceID: UUID?
@@ -35,12 +36,16 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     var relatedSourcePaths: [String]?
     var adaptiveScreenReviewStats: AdaptiveScreenReviewStats?
     var generationUsage: GenerationUsage?
+    /// Generation time is separate from the immutable meeting/recording time.
+    /// Optional so existing libraries remain decodable.
+    var generatedAt: Date?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
          model: String, summaryMarkdown: String,
          structuredSummary: StructuredMinutes?, transcript: Transcript,
          speakerNames: [Int: String], usedSummaryFallback: Bool,
+         speakerRoles: [Int: SpeakerRole] = [:],
          workspaceID: UUID? = nil, customerName: String? = nil,
          projectName: String? = nil, tags: [String] = [],
          materials: [MaterialReference] = [],
@@ -57,6 +62,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.structuredSummary = structuredSummary
         self.transcript = transcript
         self.speakerNames = speakerNames
+        self.speakerRoles = speakerRoles
         self.usedSummaryFallback = usedSummaryFallback
         self.workspaceID = workspaceID
         self.customerName = customerName
@@ -75,6 +81,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.relatedSourcePaths = nil
         self.adaptiveScreenReviewStats = nil
         self.generationUsage = nil
+        self.generatedAt = Date()
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }

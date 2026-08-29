@@ -38,6 +38,27 @@ final class RecognitionMemoryTests: XCTestCase {
         XCTAssertEqual(entry.usageCount, 0)
     }
 
+    func testEditingMemoryReplacesRecordAndPreservesUsageHistory() throws {
+        let url = temporaryURL()
+        var original = RecognitionMemoryEntry(
+            mistaken: "无线AI", canonical: "无相AI", usageCount: 3,
+            promptUsageCount: 4)
+        try RecognitionMemoryStore.save([original], to: url)
+
+        original.mistaken = "无线 AI"
+        original.kind = .product
+        original.isEnabled = false
+        let updated = try RecognitionMemoryStore.update(original, in: url)
+        let values = RecognitionMemoryStore.load(from: url)
+
+        XCTAssertEqual(values.count, 1)
+        XCTAssertEqual(updated.mistaken, "无线 AI")
+        XCTAssertEqual(updated.kind, .product)
+        XCTAssertFalse(updated.isEnabled)
+        XCTAssertEqual(updated.usageCount, 3)
+        XCTAssertEqual(updated.promptUsageCount, 4)
+    }
+
     func testLegacyMemoryDecodesWithoutPromptUsageCount() throws {
         let data = Data(#"[{"id":"00000000-0000-0000-0000-000000000001","mistaken":"","canonical":"张三","kind":"person","sourceTitle":"","usageCount":0,"isEnabled":true,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]"#.utf8)
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601

@@ -16,8 +16,14 @@ struct StructuredMinutes: Codable, Sendable, Equatable {
     var uncertainties: [EvidenceItem]
 
     struct Issue: Codable, Sendable, Equatable {
+        /// Stable internal identifier used to carry context across meetings.
+        /// It is never rendered into customer-facing minutes.
+        var trackingID: String? = nil
         var title: String
         var status: String
+        /// Context that explains how the issue arose. Optional so minutes
+        /// saved before this field was introduced continue to decode.
+        var background: String? = nil
         var rootCause: String
         var solution: String
         var progress: String
@@ -33,6 +39,8 @@ struct StructuredMinutes: Codable, Sendable, Equatable {
 
     struct ActionItem: Codable, Sendable, Equatable {
         var trackingID: String? = nil
+        /// Optional link to the project issue this action helps resolve.
+        var issueID: String? = nil
         var owner: String
         var task: String
         var status: String

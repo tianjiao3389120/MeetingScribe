@@ -9,6 +9,9 @@ struct WorkspaceDashboardView: View {
     @State private var ledger = ProjectLedger()
     @State private var ledgerError: String?
     @State private var editingProposal: ProjectActionProposal?
+    @State private var editingIssueProposal: ProjectIssueProposal?
+    @State private var editingIssueStatus: ProjectIssue?
+    @State private var analyzingIssue: ProjectIssue?
 
     private var insights: WorkspaceInsights { WorkspaceInsights(records: records) }
     private var actions: [ProjectAction] { ledger.actions(for: workspace.id) }
@@ -17,6 +20,15 @@ struct WorkspaceDashboardView: View {
     private var overdueActions: [ProjectAction] { openActions.filter(\.isOverdue) }
     private var blockedActions: [ProjectAction] { openActions.filter(\.isBlocked) }
     private var proposals: [ProjectActionProposal] { ledger.pendingProposals(for: workspace.id) }
+    private var issues: [ProjectIssue] { ledger.issues(for: workspace.id) }
+    private var openIssues: [ProjectIssue] { issues.filter { !$0.isClosed } }
+    private var closedIssues: [ProjectIssue] { issues.filter(\.isClosed) }
+    private var issueProposals: [ProjectIssueProposal] {
+        ledger.pendingIssueProposals(for: workspace.id)
+    }
+    private var acceptedIssueProposals: [ProjectIssueProposal] {
+        ledger.acceptedIssueProposals(for: workspace.id)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,7 +40,8 @@ struct WorkspaceDashboardView: View {
                 }
                 Spacer()
                 if let onReviewHistory {
-                    Button("回溯历史待办…") { onReviewHistory() }
+                    Button("扫描历史待办进展…") { onReviewHistory() }
+                        .help("仅用于补录：扫描已有历史会议中明确提到的待办状态变化")
                 }
                 Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(20)
@@ -37,7 +50,8 @@ struct WorkspaceDashboardView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(spacing: 12) {
                         metric("会议", value: records.count, icon: "calendar")
-                        metric("待确认更新", value: proposals.count, icon: "tray.and.arrow.down")
+                        metric("待确认更新", value: proposals.count + issueProposals.count,
+                               icon: "tray.and.arrow.down")
                         metric("未完成", value: openActions.count, icon: "checklist")
                         metric("逾期 / 阻塞", value: overdueActions.count + blockedActions.count,
                                icon: "exclamationmark.triangle")
@@ -52,6 +66,16 @@ struct WorkspaceDashboardView: View {
                                 .padding(.top, 4).textSelection(.enabled)
                         }
                     }
+                    issueProposalSection
+                    acceptedIssueProposalSection
+                    sectionTitle("持续跟进问题", count: openIssues.count)
+                    if openIssues.isEmpty {
+                        Text(issueProposals.isEmpty ? "还没有项目问题档案" : "确认上方建议后将建立问题档案")
+                            .foregroundStyle(.secondary).padding(.vertical, 8)
+                    } else {
+                        ForEach(openIssues) { issue in projectIssueRow(issue) }
+                    }
+                    closedIssueSection
                     proposalSection
                     followUpSection
                     sectionTitle("项目行动项", count: openActions.count)
@@ -99,6 +123,25 @@ struct WorkspaceDashboardView: View {
                 resolve(edited, accept: true, originalID: proposal.id)
                 editingProposal = nil
             } onCancel: { editingProposal = nil }
+        }
+        .sheet(item: $editingIssueProposal) { proposal in
+            IssueAssociationEditorView(proposal: proposal, issues: issues) { choice in
+                resolveIssueAssociation(proposal, choice: choice)
+                editingIssueProposal = nil
+            } onCancel: { editingIssueProposal = nil }
+        }
+        .sheet(item: $editingIssueStatus) { issue in
+            IssueStatusEditorView(issue: issue) { status, note in
+                updateIssueStatus(issue, status: status, note: note)
+                editingIssueStatus = nil
+            } onCancel: { editingIssueStatus = nil }
+        }
+        .sheet(item: $analyzingIssue) { issue in
+            ProjectIssueAnalysisView(
+                issue: issue, records: records,
+                existingAnalysis: ledger.analysis(for: issue.id)) { updated in
+                    ledger = updated
+                }
         }
     }
 
@@ -157,6 +200,137 @@ struct WorkspaceDashboardView: View {
         }.padding(10).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    private func projectIssueRow(_ issue: ProjectIssue) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                if !issue.background.isEmpty { LabeledContent("背景", value: issue.background) }
+                if !issue.rootCause.isEmpty { LabeledContent("根因", value: issue.rootCause) }
+                if !issue.solution.isEmpty { LabeledContent("方案", value: issue.solution) }
+                ForEach(issue.events.sorted(by: { $0.occurredAt > $1.occurredAt })) { event in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(event.meetingTitle).font(.caption.weight(.semibold))
+                        Text(event.occurredAt.formatted(date: .abbreviated, time: .omitted))
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if !event.progress.isEmpty { Text(event.progress).font(.callout) }
+                    }.padding(.vertical, 3)
+                }
+            }.padding(.top, 8)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(issue.title).font(.callout.weight(.medium))
+                    Text("\(issue.status.isEmpty ? "待确认" : issue.status) · 更新于 \(issue.updatedAt.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(ledger.analysis(for: issue.id) == nil ? "一键分析" : "查看分析") {
+                    analyzingIssue = issue
+                }
+                    .buttonStyle(.borderless).controlSize(.small)
+                    .help("基于已确认关联的会议和证据生成问题专题分析")
+                Button(issue.isClosed ? "重新打开" : "修改状态") {
+                    editingIssueStatus = issue
+                }
+                .buttonStyle(.borderless).controlSize(.small)
+            }
+        }
+        .padding(12).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var closedIssueSection: some View {
+        if !closedIssues.isEmpty {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("已闭环问题仍保留完整背景、方案和会议进展，不再作为后续纪要的未完成上下文。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(closedIssues) { issue in projectIssueRow(issue) }
+                }.padding(.top, 8)
+            } label: {
+                HStack {
+                    Label("已闭环问题", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("\(closedIssues.count)").foregroundStyle(.secondary)
+                }.font(.headline)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var issueProposalSection: some View {
+        if !issueProposals.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionTitle("需要确认的问题关联", count: issueProposals.count)
+                Text("确认后才会建立或更新跨会议问题档案；历史背景会在后续纪要生成时作为上下文使用。")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(issueProposals) { proposal in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(proposal.kind == .create ? "新增问题" : "关联历史问题")
+                                .font(.caption.weight(.semibold)).foregroundStyle(.purple)
+                            Spacer()
+                            Button("忽略") { resolveIssue(proposal, accept: false) }
+                                .buttonStyle(.borderless)
+                            Button("更改关联") { editingIssueProposal = proposal }
+                                .buttonStyle(.borderless)
+                            Button("确认") { resolveIssue(proposal, accept: true) }
+                                .buttonStyle(.borderedProminent).controlSize(.small)
+                        }
+                        Text(proposal.title).font(.callout.weight(.medium))
+                        if !proposal.background.isEmpty {
+                            Text("背景：\(proposal.background)").font(.caption)
+                        }
+                        if !proposal.progress.isEmpty {
+                            Text("本次进展：\(proposal.progress)").font(.caption)
+                        }
+                        HStack {
+                            if let previous = proposal.previousStatus {
+                                Text("\(previous.isEmpty ? "待确认" : previous) → \(proposal.status.isEmpty ? "待确认" : proposal.status)")
+                            } else {
+                                Text("状态：\(proposal.status.isEmpty ? "待确认" : proposal.status)")
+                            }
+                            Text("来源：\(proposal.meetingTitle)")
+                        }.font(.caption2).foregroundStyle(.secondary)
+                        if proposal.kind == .update,
+                           let targetID = proposal.targetIssueID,
+                           let historicalIssue = issues.first(where: { $0.id == targetID }) {
+                            ProjectIssueHistorySummaryView(issue: historicalIssue)
+                                .padding(.top, 4)
+                        }
+                    }.padding(12).background(Color.purple.opacity(0.06),
+                                             in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var acceptedIssueProposalSection: some View {
+        if !acceptedIssueProposals.isEmpty {
+            DisclosureGroup("已确认的问题关联（\(acceptedIssueProposals.count)）") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("确认有误时，可撤销该次写入并重新选择关联问题。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(acceptedIssueProposals) { proposal in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(proposal.title).font(.callout.weight(.medium))
+                                Text("\(proposal.meetingTitle) · \(proposal.meetingDate.formatted(date: .abbreviated, time: .omitted))")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("撤销并修改") { reopenAndEditIssue(proposal) }
+                                .controlSize(.small)
+                        }
+                        .padding(10)
+                        .background(Color.secondary.opacity(0.06),
+                                    in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }.padding(.top, 8)
+            }
+        }
+    }
+
     @ViewBuilder
     private var proposalSection: some View {
         if !proposals.isEmpty {
@@ -212,11 +386,6 @@ struct WorkspaceDashboardView: View {
     private func loadLedger() {
         do {
             ledger = try ProjectLedgerStore.load()
-            if ledger.actions(for: workspace.id).isEmpty,
-               ledger.pendingProposals(for: workspace.id).isEmpty,
-               let latest = records.sorted(by: { $0.createdAt > $1.createdAt }).first {
-                ledger = try ProjectLedgerStore.prepareProposals(for: latest)
-            }
             ledgerError = nil
         }
         catch { ledgerError = "项目台账读取失败：\(error.localizedDescription)" }
@@ -231,6 +400,46 @@ struct WorkspaceDashboardView: View {
                 : try ProjectLedgerStore.ignore(proposalID: originalID ?? proposal.id)
             ledgerError = nil
         } catch { ledgerError = "项目更新失败：\(error.localizedDescription)" }
+    }
+
+    private func resolveIssue(_ proposal: ProjectIssueProposal, accept: Bool) {
+        do {
+            ledger = accept
+                ? try ProjectLedgerStore.acceptIssue(proposalID: proposal.id)
+                : try ProjectLedgerStore.ignoreIssue(proposalID: proposal.id)
+            ledgerError = nil
+        } catch { ledgerError = "问题更新失败：\(error.localizedDescription)" }
+    }
+
+    private func resolveIssueAssociation(_ proposal: ProjectIssueProposal,
+                                         choice: IssueAssociationEditorView.Choice) {
+        do {
+            switch choice {
+            case .existing(let id):
+                ledger = try ProjectLedgerStore.acceptIssue(proposalID: proposal.id,
+                                                             targetIssueID: id)
+            case .new:
+                ledger = try ProjectLedgerStore.acceptIssue(proposalID: proposal.id,
+                                                             createNew: true)
+            }
+            ledgerError = nil
+        } catch { ledgerError = "问题关联失败：\(error.localizedDescription)" }
+    }
+
+    private func reopenAndEditIssue(_ proposal: ProjectIssueProposal) {
+        do {
+            ledger = try ProjectLedgerStore.reopenIssue(proposalID: proposal.id)
+            editingIssueProposal = ledger.issueProposals.first { $0.id == proposal.id }
+            ledgerError = nil
+        } catch { ledgerError = "撤销问题关联失败：\(error.localizedDescription)" }
+    }
+
+    private func updateIssueStatus(_ issue: ProjectIssue, status: String, note: String) {
+        do {
+            ledger = try ProjectLedgerStore.updateIssueStatus(
+                issueID: issue.id, status: status, note: note)
+            ledgerError = nil
+        } catch { ledgerError = "问题状态更新失败：\(error.localizedDescription)" }
     }
 
     @ViewBuilder
@@ -319,5 +528,118 @@ struct WorkspaceDashboardView: View {
         case .ongoing: .purple
         case .notMentioned: .secondary
         }
+    }
+}
+
+private struct IssueStatusEditorView: View {
+    let issue: ProjectIssue
+    let onSave: (String, String) -> Void
+    let onCancel: () -> Void
+    @State private var status: String
+    @State private var note = ""
+
+    private let statuses = ["进行中", "等待中", "待更新", "待确认", "已闭环"]
+
+    init(issue: ProjectIssue, onSave: @escaping (String, String) -> Void,
+         onCancel: @escaping () -> Void) {
+        self.issue = issue; self.onSave = onSave; self.onCancel = onCancel
+        _status = State(initialValue: issue.isClosed ? "进行中" : issue.status)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(issue.isClosed ? "重新打开问题" : "修改问题状态")
+                .font(.title2.weight(.semibold))
+            Text(issue.title).font(.headline)
+            Picker("新状态", selection: $status) {
+                ForEach(statuses, id: \.self) { Text($0).tag($0) }
+            }
+            TextField(issue.isClosed ? "重新打开原因或客户要求（建议填写）" : "调整原因或补充说明（建议填写）",
+                      text: $note, axis: .vertical)
+                .lineLimit(3...6)
+            Text("本次调整会作为独立历史事件记录，不会修改原会议纪要。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("取消", action: onCancel)
+                Button("保存") { onSave(status, note) }
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .disabled(status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || status == issue.status)
+            }
+        }.padding(20).frame(width: 500)
+    }
+}
+
+private struct IssueAssociationEditorView: View {
+    enum Choice { case existing(String), new }
+
+    let proposal: ProjectIssueProposal
+    let issues: [ProjectIssue]
+    let onSave: (Choice) -> Void
+    let onCancel: () -> Void
+    @State private var searchText = ""
+    @State private var selectedIssueID: String?
+
+    private var filteredIssues: [ProjectIssue] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return issues }
+        return issues.filter {
+            $0.title.localizedCaseInsensitiveContains(query)
+                || $0.aliases.contains(where: { $0.localizedCaseInsensitiveContains(query) })
+                || $0.background.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("更改问题关联").font(.title2.weight(.semibold))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("本次问题").font(.caption).foregroundStyle(.secondary)
+                Text(proposal.title).font(.headline)
+                if !proposal.progress.isEmpty {
+                    Text(proposal.progress).font(.callout).foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+            }
+            TextField("搜索已有问题", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+            List(filteredIssues, selection: $selectedIssueID) { issue in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(issue.title)
+                    Text("\(issue.status.isEmpty ? "待确认" : issue.status) · \(issue.id)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .tag(Optional(issue.id))
+                .padding(.vertical, 3)
+            }
+            .overlay {
+                if issues.isEmpty {
+                    ContentUnavailableView("还没有已有问题", systemImage: "tray",
+                                           description: Text("请先将较早会议中的问题确认为新问题。"))
+                } else if filteredIssues.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
+                }
+            }
+            if let selectedIssueID,
+               let selected = issues.first(where: { $0.id == selectedIssueID }) {
+                ProjectIssueHistorySummaryView(issue: selected)
+                    .padding(10)
+                    .background(.quaternary.opacity(0.25),
+                                in: RoundedRectangle(cornerRadius: 8))
+            }
+            HStack {
+                Button("取消", action: onCancel)
+                Spacer()
+                Button("作为新问题创建") { onSave(.new) }
+                Button("关联所选问题") {
+                    if let selectedIssueID { onSave(.existing(selectedIssueID)) }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedIssueID == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 620, height: 520)
     }
 }

@@ -20,6 +20,7 @@ struct MeetingHistoryView: View {
     @State private var editingClassification: MeetingRecord?
     @State private var dashboardWorkspace: MeetingWorkspace?
     @State private var editingTranscript: MeetingRecord?
+    @State private var editingSpeakers: MeetingRecord?
     @State private var translatingTranscript: MeetingRecord?
     @State private var minutesVersionRecord: MeetingRecord?
     @State private var editingAction: ActionEditTarget?
@@ -84,7 +85,7 @@ struct MeetingHistoryView: View {
         let groups = Dictionary(grouping: filtered, by: versionKey)
         return groups.values.compactMap { versions in
             if let selected, versions.contains(where: { $0.id == selected.id }) { return selected }
-            return versions.max { $0.createdAt < $1.createdAt }
+            return versions.max { versionSortDate($0) < versionSortDate($1) }
         }
     }
 
@@ -211,6 +212,19 @@ struct MeetingHistoryView: View {
                 onAnalyzeTranscript(record, transcript)
             }
         }
+        .sheet(item: $editingSpeakers) { record in
+            HistoricalSpeakerEditorView(record: record) { names, roles, regenerate in
+                do {
+                    let updated = try MeetingHistoryStore.updateSpeakers(
+                        id: record.id, names: names, roles: roles)
+                    if let index = records.firstIndex(where: { $0.id == updated.id }) {
+                        records[index] = updated
+                    }
+                    editingSpeakers = nil
+                    if regenerate { onReprocess(updated) }
+                } catch { self.error = "说话人信息保存失败：\(error.localizedDescription)" }
+            } onCancel: { editingSpeakers = nil }
+        }
         .sheet(item: $translatingTranscript) { record in
             TranscriptTranslationView(record: record) { updated in
                 if let index = records.firstIndex(where: { $0.id == updated.id }) {
@@ -261,7 +275,9 @@ struct MeetingHistoryView: View {
             Button("取消", role: .cancel) { pendingVersionCleanup = nil }
             Button("保留当前版本并清理其他版本", role: .destructive) { cleanOtherVersions() }
         } message: {
-            Text("将永久删除同一源文件的其他纪要版本，只保留当前打开的版本。原始媒体不会被删除。")
+            if let kept = pendingVersionCleanup {
+                Text("将保留：\(versionLabel(kept))。其他 \(max(versions(for: kept).count - 1, 0)) 个版本将被删除；原始媒体不会被删除。")
+            }
         }
         .alert("回溯历史待办？", isPresented: Binding(
             get: { pendingActionReviewWorkspace != nil },
@@ -561,6 +577,13 @@ struct MeetingHistoryView: View {
                         Image(systemName: record.isFavorite == true ? "star.fill" : "star")
                     }.help(record.isFavorite == true ? "取消收藏" : "收藏")
                     Spacer()
+                    if let workspace = workspace(for: record) {
+                        let count = pendingIssueProposalCount(for: workspace.id)
+                        Button(count > 0 ? "问题关联（\(count)）" : "项目问题") {
+                            dashboardWorkspace = workspace
+                        }
+                        .help(count > 0 ? "打开需要确认的问题关联" : "打开项目问题档案")
+                    }
                     Button("复制纪要") { copyMinutes(record) }
                     Menu("更多") {
                         Button("编辑会议信息…") { editingClassification = record }
@@ -581,6 +604,9 @@ struct MeetingHistoryView: View {
                             Button("全部会议资料…") { export(record) }
                         }
                         Divider()
+                        if !record.speakerNames.isEmpty || !(record.speakerRoles ?? [:]).isEmpty {
+                            Button("修改说话人姓名与角色…") { editingSpeakers = record }
+                        }
                         if FileManager.default.fileExists(atPath: record.sourcePath) {
                             Button("打开源文件") { NSWorkspace.shared.open(record.sourceURL) }
                             Button("重新处理") { onReprocess(record) }
@@ -594,7 +620,7 @@ struct MeetingHistoryView: View {
                                     Button {
                                         selection = version.id
                                     } label: {
-                                        Label(version.createdAt.formatted(date: .abbreviated, time: .shortened),
+                                        Label(versionLabel(version),
                                               systemImage: version.id == record.id ? "checkmark" : "doc")
                                     }
                                 }
@@ -838,6 +864,10 @@ struct MeetingHistoryView: View {
         workspaces.first { $0.id == record.workspaceID }
     }
 
+    private func pendingIssueProposalCount(for workspaceID: UUID) -> Int {
+        (try? ProjectLedgerStore.load().pendingIssueProposals(for: workspaceID).count) ?? 0
+    }
+
     private func versionKey(_ record: MeetingRecord) -> String {
         record.sourceURL.standardizedFileURL.path
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
@@ -847,7 +877,18 @@ struct MeetingHistoryView: View {
     private func versions(for record: MeetingRecord) -> [MeetingRecord] {
         let key = versionKey(record)
         return records.filter { versionKey($0) == key }
-            .sorted { $0.createdAt > $1.createdAt }
+            .sorted { versionSortDate($0) > versionSortDate($1) }
+    }
+
+    private func versionSortDate(_ record: MeetingRecord) -> Date {
+        record.generatedAt ?? (record.structuredSummary == nil ? .distantPast : record.createdAt)
+    }
+
+    private func versionLabel(_ record: MeetingRecord) -> String {
+        let state = record.structuredSummary == nil ? "未生成纪要" : "已生成纪要"
+        let time = record.generatedAt?.formatted(date: .abbreviated, time: .standard)
+            ?? "历史版本"
+        return "\(state) · \(time) · \(record.id.uuidString.prefix(6))"
     }
 
     private func meetingCount(in scope: MeetingLibraryScope) -> Int {
@@ -1037,6 +1078,7 @@ struct MeetingHistoryView: View {
         pendingDelete = nil
         do {
             try MeetingHistoryStore.remove(id: record.id)
+            try ProjectLedgerStore.removePendingReferences(to: [record.id])
             records.removeAll { $0.id == record.id }
             selection = records.first?.id
             error = nil
@@ -1089,9 +1131,15 @@ struct MeetingHistoryView: View {
         guard let kept = pendingVersionCleanup else { return }
         pendingVersionCleanup = nil
         let obsolete = versions(for: kept).filter { $0.id != kept.id }
+        guard kept.structuredSummary != nil
+                || !obsolete.contains(where: { $0.structuredSummary != nil }) else {
+            error = "当前选中的是“未生成纪要”版本。为避免误删，请先在历史版本菜单中选择“已生成纪要”版本。"
+            return
+        }
         do {
             for record in obsolete { try MeetingHistoryStore.remove(id: record.id) }
             let removed = Set(obsolete.map(\.id))
+            try ProjectLedgerStore.removePendingReferences(to: removed)
             records.removeAll { removed.contains($0.id) }
             selection = kept.id
             exportMessage = "已清理 \(obsolete.count) 个其他版本"
@@ -1130,6 +1178,88 @@ struct MeetingHistoryView: View {
         } catch {
             self.error = "导出失败：\(error.localizedDescription)"
         }
+    }
+}
+
+private struct HistoricalSpeakerEditorView: View {
+    let record: MeetingRecord
+    let onSave: ([Int: String], [Int: SpeakerRole], Bool) -> Void
+    let onCancel: () -> Void
+
+    @State private var names: [Int: String]
+    @State private var roles: [Int: SpeakerRole]
+
+    init(record: MeetingRecord,
+         onSave: @escaping ([Int: String], [Int: SpeakerRole], Bool) -> Void,
+         onCancel: @escaping () -> Void) {
+        self.record = record; self.onSave = onSave; self.onCancel = onCancel
+        _names = State(initialValue: record.speakerNames)
+        _roles = State(initialValue: record.speakerRoles ?? [:])
+    }
+
+    private var speakerIDs: [Int] {
+        Array(Set(names.keys).union(roles.keys)).sorted()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("修改说话人姓名与角色").font(.title3.weight(.semibold))
+                Text("修改可只保存到记录，也可以携带这些信息重新生成纪要；同名说话人的角色会自动同步。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Divider()
+            List(speakerIDs, id: \.self) { speaker in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("说话人 \(speaker + 1)").font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        TextField("姓名", text: Binding(
+                            get: { names[speaker] ?? "" },
+                            set: { names[speaker] = $0 }
+                        ))
+                        Picker("所属方", selection: Binding(
+                            get: { roles[speaker]?.affiliation ?? .unknown },
+                            set: { value in
+                                var role = roles[speaker] ?? SpeakerRole()
+                                role.affiliation = value
+                                roles = SpeakerRole.applying(
+                                    role, to: speaker, names: names, roles: roles)
+                            }
+                        )) {
+                            ForEach(SpeakerRole.Affiliation.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("角色", selection: Binding(
+                            get: { roles[speaker]?.meetingRole ?? .unknown },
+                            set: { value in
+                                var role = roles[speaker] ?? SpeakerRole()
+                                role.meetingRole = value
+                                roles = SpeakerRole.applying(
+                                    role, to: speaker, names: names, roles: roles)
+                            }
+                        )) {
+                            ForEach(SpeakerRole.MeetingRole.allCases) { Text($0.label).tag($0) }
+                        }
+                    }
+                }.padding(.vertical, 5)
+            }
+            Divider()
+            HStack {
+                Spacer()
+                Button("取消", action: onCancel)
+                Button("仅保存") { save(regenerate: false) }
+                Button("保存并重新生成") { save(regenerate: true) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!FileManager.default.fileExists(atPath: record.sourcePath))
+            }.padding(14)
+        }.frame(width: 720, height: 500)
+    }
+
+    private func save(regenerate: Bool) {
+        let cleanedNames = names.compactMapValues { value -> String? in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        onSave(cleanedNames, roles.filter { $0.value.isSpecified }, regenerate)
     }
 }
 

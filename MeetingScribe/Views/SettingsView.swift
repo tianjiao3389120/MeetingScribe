@@ -182,6 +182,8 @@ struct SettingsView: View {
                         Text("检查本地转录引擎、模型和大模型配置，不会调用接口。")
                             .font(.caption).foregroundStyle(.secondary)
                         Toggle("保留临时音轨", isOn: $settings.keepIntermediates)
+                        Toggle("生成最终纪要前始终确认问题", isOn: $settings.alwaysReviewIssues)
+                            .help("关闭时仅在检测到问题可能重复、从属或边界不清时暂停确认")
                         Text("仅用于排查转录问题，会持续占用临时目录空间；正常使用建议关闭。")
                             .font(.caption).foregroundStyle(.secondary)
                         DisclosureGroup("查看内置完整提示词（只读）") {
