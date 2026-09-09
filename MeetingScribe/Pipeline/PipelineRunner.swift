@@ -379,7 +379,7 @@ final class PipelineRunner {
         if transcript == nil, let audioURL {
             usedCachedTranscript = false
             stage = .transcribing
-            await debugSession.before("语音转录", input: "语言：\(recognitionScenario.whisperLanguage)，提示词长度：\(transcriptionPrompt.count)")
+            await debugSession.before("语音转录", input: "语言：\(recognitionScenario.whisperLanguage)，提示词长度：\(transcriptionPrompt.count)\n提示词全文：\n\(transcriptionPrompt)")
             progress = 0
             RecognitionMemoryStore.recordPromptUsage(
                 workspaceID: workspace?.id, context: learningContext)
@@ -626,9 +626,8 @@ final class PipelineRunner {
         detail = "完成"
     }
 
-    private static func preview(_ value: String, limit: Int = 800) -> String {
-        let text = value.replacingOccurrences(of: "\n", with: " ")
-        return String(text.prefix(limit)) + (text.count > limit ? "…" : "")
+    private static func preview(_ value: String) -> String {
+        return value
     }
 
     private static func fileSize(_ url: URL) -> String {
