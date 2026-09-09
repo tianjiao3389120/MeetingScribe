@@ -2,8 +2,12 @@ import Foundation
 
 enum IssueTracking {
     static func prepare(_ structured: inout StructuredMinutes,
-                        priorRecords: [MeetingRecord]) {
-        let candidates = currentIssues(in: priorRecords)
+                        confirmedIssues: [ProjectIssue]) {
+        let candidates = confirmedIssues.map {
+            TrackedIssue(id: $0.id, title: $0.title, background: $0.background,
+                         rootCause: $0.rootCause, solution: $0.solution,
+                         status: $0.status, updatedAt: $0.updatedAt)
+        }
         for index in structured.issues.indices {
             if structured.issues[index].trackingID?.trimmed.isEmpty == true {
                 structured.issues[index].trackingID = nil
@@ -17,11 +21,18 @@ enum IssueTracking {
             }
         }
         let knownIssueIDs = Set(structured.issues.compactMap(\.trackingID))
+        let issueIDsByTitle = Dictionary(
+            structured.issues.compactMap { issue -> (String, String)? in
+                guard let id = issue.trackingID else { return nil }
+                return (identity(issue.title), id)
+            }, uniquingKeysWith: { first, _ in first })
         for index in structured.actionItems.indices {
-            if let issueID = structured.actionItems[index].issueID,
-               !knownIssueIDs.contains(issueID) {
-                structured.actionItems[index].issueID = nil
-            }
+            guard let issueID = structured.actionItems[index].issueID else { continue }
+            if knownIssueIDs.contains(issueID) { continue }
+            // A newly discovered issue has no stable ID while the model is producing JSON.
+            // The prompt therefore lets an action temporarily reference its exact title; once
+            // IDs are assigned above, resolve that response-local reference deterministically.
+            structured.actionItems[index].issueID = issueIDsByTitle[identity(issueID)]
         }
     }
 

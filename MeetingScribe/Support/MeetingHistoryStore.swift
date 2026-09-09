@@ -142,6 +142,29 @@ enum MeetingHistoryStore {
         try FileManager.default.removeItem(at: directory)
     }
 
+    static func stageRemoval(id: UUID, root: URL = defaultDirectory) throws -> URL? {
+        let source = root.appendingPathComponent(id.uuidString, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: source.path) else { return nil }
+        let trash = root.appendingPathComponent(".Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        let destination = trash.appendingPathComponent(
+            "\(id.uuidString)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.moveItem(at: source, to: destination)
+        return destination
+    }
+
+    static func restoreRemoval(id: UUID, stagedAt url: URL,
+                               root: URL = defaultDirectory) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let destination = root.appendingPathComponent(id.uuidString, isDirectory: true)
+        try FileManager.default.moveItem(at: url, to: destination)
+    }
+
+    static func finalizeRemoval(stagedAt url: URL?) {
+        guard let url else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
     static func updateClassification(id: UUID, title: String? = nil,
                                      createdAt: Date? = nil,
                                      workspaceID: UUID?, customerName: String? = nil,
@@ -152,14 +175,11 @@ enum MeetingHistoryStore {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let target = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
-        let sourceKey = target.sourceURL.standardizedFileURL.path
         var updatedTarget = target
         for var record in try loadAll(root: root) where
-            record.sourceURL.standardizedFileURL.path == sourceKey {
-            if record.id == id {
-                if let title { record.title = title }
-                if let createdAt { record.createdAt = createdAt }
-            }
+            belongsToSameMeeting(record, as: target) {
+            if let title { record.title = title }
+            if let createdAt { record.createdAt = createdAt }
             record.workspaceID = workspaceID
             record.customerName = cleanedClassification(customerName)
             record.projectName = cleanedClassification(projectName)
@@ -175,6 +195,16 @@ enum MeetingHistoryStore {
         return cleaned.isEmpty ? nil : cleaned
     }
 
+    private static func belongsToSameMeeting(_ candidate: MeetingRecord,
+                                             as target: MeetingRecord) -> Bool {
+        if let groupID = target.meetingGroupID {
+            return candidate.meetingGroupID == groupID
+        }
+        guard candidate.meetingGroupID == nil else { return false }
+        return candidate.sourceURL.standardizedFileURL.path
+            == target.sourceURL.standardizedFileURL.path
+    }
+
     static func clearWorkspaceReferences(_ workspaceIDs: Set<UUID>,
                                          root: URL = defaultDirectory) throws {
         guard !workspaceIDs.isEmpty else { return }
@@ -183,17 +213,6 @@ enum MeetingHistoryStore {
             record.workspaceID = nil
             try save(record, root: root)
         }
-    }
-
-    static func updateTranslations(id: UUID, translations: [TranscriptTranslation],
-                                   root: URL = defaultDirectory) throws -> MeetingRecord {
-        let url = root.appendingPathComponent(id.uuidString)
-            .appendingPathComponent("metadata.json")
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
-        record.transcriptTranslations = translations
-        try save(record, root: root)
-        return record
     }
 
     static func updateEmailDrafts(id: UUID, drafts: MeetingEmailDrafts,
@@ -213,11 +232,16 @@ enum MeetingHistoryStore {
         let url = root.appendingPathComponent(id.uuidString)
             .appendingPathComponent("metadata.json")
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
-        if let favorite { record.isFavorite = favorite }
-        if let archived { record.isArchived = archived }
-        try save(record, root: root)
-        return record
+        let target = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
+        var updatedTarget = target
+        for var record in try loadAll(root: root) where
+            belongsToSameMeeting(record, as: target) {
+            if let favorite { record.isFavorite = favorite }
+            if let archived { record.isArchived = archived }
+            try save(record, root: root)
+            if record.id == id { updatedTarget = record }
+        }
+        return updatedTarget
     }
 
     static func updateActionItem(id: UUID, index: Int,

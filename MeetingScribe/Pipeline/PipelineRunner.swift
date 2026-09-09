@@ -8,7 +8,7 @@ final class PipelineRunner {
 
     enum Stage: String, CaseIterable {
         case idle, probing, extractingAudio, transcribing, separatingSpeakers,
-             extractingFrames, readingScreen, analyzing, reviewingIssues, done, failed
+             extractingFrames, readingScreen, reviewingRequest, analyzing, reviewingIssues, done, failed
 
         var label: String {
             switch self {
@@ -19,6 +19,7 @@ final class PipelineRunner {
             case .separatingSpeakers: return "分离说话人"
             case .extractingFrames:   return "提取画面"
             case .readingScreen:      return "识别屏幕文字"
+            case .reviewingRequest:   return "预览提交内容"
             case .analyzing:          return "生成纪要"
             case .reviewingIssues:    return "确认问题边界"
             case .done:               return "完成"
@@ -39,6 +40,7 @@ final class PipelineRunner {
     private(set) var isRunning = false
     private(set) var savedRecordID: UUID?
     private(set) var issueReviewReasons: [String] = []
+    private(set) var requestPreview = ""
     private var pendingReviewRecord: MeetingRecord?
     private var pendingReviewMaterials: [SupportingMaterial] = []
 
@@ -58,19 +60,45 @@ final class PipelineRunner {
     private var forceRetranscribe = false
     private var forceSpeakerSeparation = false
     private var pendingJobID: UUID?
+    private var requestPreviewContinuation: CheckedContinuation<Bool, Never>?
+    private var processingStartedAt: Date?
+    private var previewStartedAt: Date?
+    private var previewPausedDuration: TimeInterval = 0
+    private var sourceDuration: TimeInterval = 0
+
+    var estimatedRemainingText: String? {
+        guard let started = processingStartedAt,
+              let total = ProcessingTimeHistory.estimatedTotal(for: sourceDuration) else { return nil }
+        let elapsed = Date().timeIntervalSince(started) - previewPausedDuration
+        let remaining = max(total - elapsed, 0)
+        return remaining > 30 ? "根据本机历史，预计还需约 \(Self.durationText(remaining))" : "即将完成"
+    }
 
     func cancel() {
+        requestPreviewContinuation?.resume(returning: false)
+        requestPreviewContinuation = nil
         task?.cancel()
         PendingJobStore.clear(id: pendingJobID)
+        PendingIssueReviewStore.clear()
         task = nil
         isRunning = false
         stage = .idle
         detail = "已取消"
     }
 
+    func confirmRequestPreview() {
+        if let previewStartedAt {
+            previewPausedDuration += Date().timeIntervalSince(previewStartedAt)
+            self.previewStartedAt = nil
+        }
+        requestPreviewContinuation?.resume(returning: true)
+        requestPreviewContinuation = nil
+    }
+
     func run(url: URL, forceRetranscribe: Bool = false,
              forceSpeakerSeparation: Bool = false,
              recordedAt: Date? = nil,
+             meetingGroupID: UUID? = nil,
              title: String? = nil, meetingContext: String = "",
              minutesTemplateID: String = MinutesTemplate.general.id,
              recognitionScenario: RecognitionScenario = .autoMultilingual,
@@ -91,6 +119,10 @@ final class PipelineRunner {
         savedRecordID = nil
         pendingReviewRecord = nil
         issueReviewReasons = []
+        processingStartedAt = Date()
+        previewStartedAt = nil
+        previewPausedDuration = 0
+        sourceDuration = 0
         self.forceRetranscribe = forceRetranscribe
         self.forceSpeakerSeparation = forceSpeakerSeparation
         let pendingJob = PendingMeetingJob(
@@ -99,7 +131,7 @@ final class PipelineRunner {
             recognitionScenario: recognitionScenario,
             workspaceID: workspace?.id, customerName: customerName,
             projectName: projectName, tags: tags,
-            materialPaths: materials.map { $0.sourceURL.path })
+            materialPaths: materials.map { $0.sourceURL.path }, meetingGroupID: meetingGroupID)
         pendingJobID = pendingJob.id
         try? PendingJobStore.save(pendingJob)
 
@@ -108,6 +140,7 @@ final class PipelineRunner {
             do {
                 try await self.execute(url: url, title: title, meetingContext: meetingContext,
                                        recordedAt: recordedAt,
+                                       meetingGroupID: meetingGroupID,
                                        minutesTemplateID: minutesTemplateID,
                                        recognitionScenario: recognitionScenario,
                                        speakerCount: speakerCount,
@@ -118,17 +151,17 @@ final class PipelineRunner {
             } catch is CancellationError {
                 self.stage = .idle
                 self.detail = "已取消"
+                PendingJobStore.clear(id: pendingJob.id)
             } catch {
                 self.stage = .failed
                 self.error = error.localizedDescription
             }
-            PendingJobStore.clear(id: pendingJob.id)
             self.isRunning = false
         }
     }
 
     func run(imported package: ExternalTranscriptPackage,
-             title: String? = nil, meetingContext: String = "",
+             title: String? = nil, meetingGroupID: UUID? = nil, meetingContext: String = "",
              minutesTemplateID: String = MinutesTemplate.general.id,
              recognitionScenario: RecognitionScenario = .autoMultilingual,
              workspace: MeetingWorkspace? = nil,
@@ -146,7 +179,21 @@ final class PipelineRunner {
         savedRecordID = nil
         pendingReviewRecord = nil
         issueReviewReasons = []
+        processingStartedAt = Date()
+        previewStartedAt = nil
+        previewPausedDuration = 0
         usedCachedTranscript = true
+        let sourcePaths = [package.transcriptURL, package.textURL, package.audioURL]
+            .compactMap { $0?.path }
+        let pendingJob = PendingMeetingJob(
+            sourcePath: package.transcriptURL.path, title: title ?? "",
+            meetingContext: meetingContext, minutesTemplateID: minutesTemplateID,
+            recognitionScenario: recognitionScenario, workspaceID: workspace?.id,
+            customerName: customerName, projectName: projectName, tags: tags,
+            materialPaths: materials.map { $0.sourceURL.path }, sourcePaths: sourcePaths,
+            meetingGroupID: meetingGroupID)
+        pendingJobID = pendingJob.id
+        try? PendingJobStore.save(pendingJob)
 
         task = Task { [weak self] in
             guard let self else { return }
@@ -159,10 +206,12 @@ final class PipelineRunner {
                 if let audioURL = package.audioURL { related.append(audioURL) }
                 let duration = max(package.transcript.duration,
                                    package.metadata.declaredDuration ?? 0)
+                self.sourceDuration = duration
                 let bundle = MeetingAssets(
                     sourceURL: package.transcriptURL,
                     sourceKind: .importedTranscript,
                     relatedSourceURLs: related,
+                    meetingGroupID: meetingGroupID,
                     recordedAt: package.metadata.recordedAt
                         ?? MeetingDateResolver.recordedAt(for: package.transcriptURL),
                     customTitle: title,
@@ -184,12 +233,29 @@ final class PipelineRunner {
             } catch is CancellationError {
                 self.stage = .idle
                 self.detail = "已取消"
+                PendingJobStore.clear(id: pendingJob.id)
             } catch {
                 self.stage = .failed
                 self.error = error.localizedDescription
             }
             self.isRunning = false
         }
+    }
+
+    func restoreIssueReview(_ draft: PendingIssueReviewDraft,
+                            materials: [SupportingMaterial]) {
+        task?.cancel()
+        pendingReviewRecord = draft.record
+        pendingReviewMaterials = materials
+        issueReviewReasons = draft.reasons
+        summary = draft.record.summaryMarkdown
+        structuredSummary = draft.record.structuredSummary
+        savedRecordID = nil
+        error = nil
+        isRunning = false
+        stage = .reviewingIssues
+        progress = 1
+        detail = "已恢复待确认的会议纪要"
     }
 
     /// Re-runs diarization with the current speaker-count setting while still
@@ -199,6 +265,7 @@ final class PipelineRunner {
         guard let bundle = assets, !isRunning else { return }
         run(url: bundle.sourceURL, forceSpeakerSeparation: true,
             recordedAt: bundle.recordedAt,
+            meetingGroupID: bundle.meetingGroupID,
             title: bundle.title, meetingContext: bundle.meetingContext,
             minutesTemplateID: bundle.minutesTemplateID,
             recognitionScenario: bundle.recognitionScenario,
@@ -253,6 +320,7 @@ final class PipelineRunner {
             sourceKind: MeetingAssets.SourceKind(rawValue: record.sourceKind ?? "")
                 ?? .recordedMedia,
             relatedSourceURLs: (record.relatedSourcePaths ?? []).map(URL.init(fileURLWithPath:)),
+            meetingGroupID: record.meetingGroupID ?? record.id,
             recordedAt: record.createdAt, customTitle: record.title,
             meetingContext: record.meetingContext ?? "",
             minutesTemplateID: record.minutesTemplateID ?? MinutesTemplate.general.id,
@@ -294,6 +362,7 @@ final class PipelineRunner {
 
     private func execute(url: URL, title: String?, meetingContext: String,
                          recordedAt: Date?,
+                         meetingGroupID: UUID?,
                          minutesTemplateID: String,
                          recognitionScenario: RecognitionScenario,
                          speakerCount: Int,
@@ -316,6 +385,7 @@ final class PipelineRunner {
         stage = .probing
         progress = 0
         let info = try await extractor.probe()
+        sourceDuration = info.duration
         guard info.hasAudio else { throw MediaExtractor.Failure.noAudioTrack }
         detail = "时长 \(TranscriptSegment.humanDuration(info.duration))" + (info.hasVideo ? "，含画面" : "")
 
@@ -361,9 +431,17 @@ final class PipelineRunner {
         if needsAudio {
             usedCachedTranscript = transcript != nil
             stage = .extractingAudio
+            progress = 0
+            detail = "正在提取音轨 0%"
             try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
             let wav = work.appendingPathComponent("audio.wav")
-            try await extractor.extractAudio(to: wav)
+            try await extractor.extractAudio(to: wav) { [weak self] fraction in
+                Task { @MainActor in
+                    guard self?.stage == .extractingAudio else { return }
+                    self?.progress = fraction
+                    self?.detail = String(format: "正在提取音轨 %.0f%%", fraction * 100)
+                }
+            }
             try Task.checkCancellation()
             audioURL = wav
         }
@@ -372,6 +450,7 @@ final class PipelineRunner {
             usedCachedTranscript = false
             stage = .transcribing
             progress = 0
+            detail = "正在加载语音模型并开始转录…"
             RecognitionMemoryStore.recordPromptUsage(
                 workspaceID: workspace?.id, context: learningContext)
             let transcriber = Transcriber(audioURL: audioURL,
@@ -455,6 +534,7 @@ final class PipelineRunner {
         }
 
         let bundle = MeetingAssets(sourceURL: url,
+                                   meetingGroupID: meetingGroupID,
                                    recordedAt: recordedAt
                                        ?? MeetingDateResolver.recordedAt(for: url),
                                    customTitle: title,
@@ -493,11 +573,21 @@ final class PipelineRunner {
     }
 
     private func analyze(_ originalBundle: MeetingAssets) async throws {
+        let context = TokenUsageContext(
+            feature: "生成会议纪要", customer: originalBundle.customerName,
+            project: originalBundle.projectName, meetingID: originalBundle.meetingGroupID,
+            meetingTitle: originalBundle.title)
+        try await TokenUsageContext.$current.withValue(context) {
+            try await analyzeWithUsageContext(originalBundle)
+        }
+    }
+
+    private func analyzeWithUsageContext(_ originalBundle: MeetingAssets) async throws {
         stage = .analyzing
         progress = 0
         detail = ""
 
-        var bundle = await addAdaptiveScreenEvidence(to: originalBundle)
+        var bundle = try await addAdaptiveScreenEvidence(to: originalBundle)
         if var stats = bundle.adaptiveScreenReviewStats {
             stats.framesSentToModel = Analyzer.screenFramesSentToModel(
                 assets: bundle, settings: Settings.shared).count
@@ -505,10 +595,26 @@ final class PipelineRunner {
         }
         assets = bundle
 
+        if UserDefaults.standard.bool(forKey: "previewBeforeAnalysis"),
+           !CommandLine.arguments.contains("--regenerate-record") {
+            let analyzer = Analyzer(assets: bundle, settings: Settings.shared)
+            requestPreview = analyzer.requestPreview()
+            stage = .reviewingRequest
+            detail = "确认后才会提交给大模型"
+            previewStartedAt = Date()
+            let shouldContinue = await withCheckedContinuation { continuation in
+                requestPreviewContinuation = continuation
+            }
+            guard shouldContinue else { throw CancellationError() }
+            stage = .analyzing
+            detail = ""
+        }
+
         let analyzer = Analyzer(assets: bundle, settings: Settings.shared)
         let result = try await analyzer.run { [weak self] message in
             Task { @MainActor in self?.detail = message }
         }
+        finishTimingSample()
         var generationUsage = result.usage
         let adaptiveCandidates = AdaptiveFramePlanner.candidateTimeline(from: originalBundle.transcript)
         if originalBundle.hasVideo, originalBundle.sourceKind == .recordedMedia,
@@ -520,14 +626,11 @@ final class PipelineRunner {
                     output: "规划 \(planned) 个补充画面节点"), at: 0)
         }
         var trackedStructured = result.structured
-        var actionSuggestions: [ActionStatusSuggestion] = []
         if var structured = trackedStructured {
-            let priorRecords = ((try? MeetingHistoryStore.loadAll()) ?? []).filter {
-                $0.workspaceID == bundle.workspace?.id && $0.workspaceID != nil
-                    && $0.createdAt < bundle.recordedAt
-            }
-            IssueTracking.prepare(&structured, priorRecords: priorRecords)
-            actionSuggestions = ActionTracking.prepare(&structured, priorRecords: priorRecords)
+            let confirmedIssues = bundle.workspace.map {
+                (try? ProjectLedgerStore.load().issues(for: $0.id)) ?? []
+            } ?? []
+            IssueTracking.prepare(&structured, confirmedIssues: confirmedIssues)
             trackedStructured = structured
         }
         let renderedMarkdown = trackedStructured.map(StructuredMinutesRenderer.markdown) ?? result.markdown
@@ -584,9 +687,10 @@ final class PipelineRunner {
         storedRecord.relatedSourcePaths = bundle.relatedSourceURLs.map(\.path)
         storedRecord.meetingContext = bundle.meetingContext
         storedRecord.minutesTemplateID = bundle.minutesTemplateID
-        storedRecord.actionStatusSuggestions = actionSuggestions
+        storedRecord.actionStatusSuggestions = nil
         storedRecord.adaptiveScreenReviewStats = bundle.adaptiveScreenReviewStats
         storedRecord.generationUsage = generationUsage
+        storedRecord.meetingGroupID = bundle.meetingGroupID ?? storedRecord.id
         let reviewRisks = trackedStructured.map { IssuePreflight.risks(in: $0.issues) } ?? []
         let isHeadless = CommandLine.arguments.contains("--regenerate-record")
         if !isHeadless, trackedStructured?.issues.isEmpty == false,
@@ -597,9 +701,17 @@ final class PipelineRunner {
             stage = .reviewingIssues
             progress = 1
             detail = reviewRisks.isEmpty ? "请确认问题后生成最终纪要" : "检测到问题边界可能需要确认"
+            do {
+                try PendingIssueReviewStore.save(.init(
+                    record: storedRecord,
+                    materialPaths: bundle.materials.map { $0.sourceURL.path },
+                    reasons: reviewRisks))
+            } catch {
+                historyWarning = "待确认纪要暂存失败，请不要在确认前退出应用：\(error.localizedDescription)"
+            }
             return
         }
-        persist(storedRecord, materials: bundle.materials)
+        _ = persist(storedRecord, materials: bundle.materials)
 
         stage = .done
         progress = 1
@@ -620,7 +732,12 @@ final class PipelineRunner {
         record.summaryMarkdown = StructuredMinutesRenderer.markdown(from: structured)
         structuredSummary = structured
         summary = record.summaryMarkdown
-        persist(record, materials: pendingReviewMaterials)
+        guard persist(record, materials: pendingReviewMaterials) else {
+            stage = .reviewingIssues
+            detail = "纪要已生成，但尚未保存到资料库；请重试确认。"
+            return
+        }
+        PendingIssueReviewStore.clear()
         pendingReviewRecord = nil
         pendingReviewMaterials = []
         issueReviewReasons = []
@@ -629,19 +746,41 @@ final class PipelineRunner {
         detail = "完成"
     }
 
-    private func persist(_ record: MeetingRecord, materials: [SupportingMaterial]) {
+    private func finishTimingSample() {
+        guard let started = processingStartedAt, sourceDuration > 0 else { return }
+        let elapsed = Date().timeIntervalSince(started) - previewPausedDuration
+        ProcessingTimeHistory.record(mediaDuration: sourceDuration,
+                                     processingDuration: max(elapsed, 1))
+        processingStartedAt = nil
+    }
+
+    private static func durationText(_ seconds: TimeInterval) -> String {
+        let minutes = max(Int((seconds / 60).rounded()), 1)
+        if minutes < 60 { return "\(minutes) 分钟" }
+        return "\(minutes / 60) 小时 \(minutes % 60) 分钟"
+    }
+
+    @discardableResult
+    private func persist(_ record: MeetingRecord, materials: [SupportingMaterial]) -> Bool {
         do {
             try MeetingHistoryStore.save(record, materialSources: materials)
             savedRecordID = record.id
-            try ProjectLedgerStore.prepareProposals(for: record)
         } catch {
             historyWarning = "历史记录保存失败：\(error.localizedDescription)"
+            return false
         }
+        PendingJobStore.clear(id: pendingJobID)
+        do {
+            try ProjectLedgerStore.prepareProposals(for: record)
+        } catch {
+            historyWarning = "会议已保存，但项目问题建议生成失败：\(error.localizedDescription)"
+        }
+        return true
     }
 
     /// A best-effort second look at the screen. Planning or image extraction
     /// must never turn a usable transcript into a failed meeting.
-    private func addAdaptiveScreenEvidence(to bundle: MeetingAssets) async -> MeetingAssets {
+    private func addAdaptiveScreenEvidence(to bundle: MeetingAssets) async throws -> MeetingAssets {
         guard bundle.hasVideo, bundle.sourceKind == .recordedMedia,
               !bundle.adaptiveScreenReviewCompleted,
               !bundle.transcript.segments.isEmpty else { return bundle }
@@ -700,7 +839,7 @@ final class PipelineRunner {
             updated.adaptiveScreenReviewStats = reviewStats
             return completed(updated)
         } catch is CancellationError {
-            return bundle
+            throw CancellationError()
         } catch {
             detail = "补充画面失败，继续使用已提取内容…"
             var updated = bundle

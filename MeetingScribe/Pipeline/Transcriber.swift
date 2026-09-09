@@ -42,7 +42,7 @@ struct Transcriber {
 
         arguments.append(audioURL.path)
 
-        try await Shell.check(whisper, arguments) { line in
+        let reportProgress: @Sendable (String) -> Void = { line in
             // whisper logs "[00:12:34.000 --> ...]" per segment; use the left
             // timestamp as a progress signal.
             guard let range = line.range(of: #"\[(\d+):(\d+):(\d+)"#, options: .regularExpression)
@@ -52,6 +52,9 @@ struct Transcriber {
                   let m = Double(parts[1]), let s = Double(parts[2]) else { return }
             progress(h * 3600 + m * 60 + s, line)
         }
+        try await Shell.check(whisper, arguments,
+                              onStdoutLine: reportProgress,
+                              onStderrLine: reportProgress)
 
         let srtURL = outputStem.appendingPathExtension("srt")
         let srt = try String(contentsOf: srtURL, encoding: .utf8)

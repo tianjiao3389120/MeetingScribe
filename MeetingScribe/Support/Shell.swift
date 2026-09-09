@@ -40,6 +40,7 @@ enum Shell {
         environment: [String: String]? = nil,
         stdin: String? = nil,
         timeout: TimeInterval? = nil,
+        onStdoutLine: (@Sendable (String) -> Void)? = nil,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Result {
 
@@ -63,6 +64,12 @@ enum Shell {
             let data = handle.availableData
             guard !data.isEmpty else { return }
             collector.appendOut(data)
+            if let onStdoutLine, let chunk = String(data: data, encoding: .utf8) {
+                for line in chunk.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty { onStdoutLine(trimmed) }
+                }
+            }
         }
         errPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -139,10 +146,13 @@ enum Shell {
         environment: [String: String]? = nil,
         stdin: String? = nil,
         timeout: TimeInterval? = nil,
+        onStdoutLine: (@Sendable (String) -> Void)? = nil,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Result {
         let result = try await run(executable, arguments, environment: environment,
-                                   stdin: stdin, timeout: timeout, onStderrLine: onStderrLine)
+                                   stdin: stdin, timeout: timeout,
+                                   onStdoutLine: onStdoutLine,
+                                   onStderrLine: onStderrLine)
         guard result.ok else {
             throw Failure.exit((executable as NSString).lastPathComponent,
                                result.status, result.stderr)

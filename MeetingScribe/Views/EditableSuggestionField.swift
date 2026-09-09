@@ -17,9 +17,17 @@ struct EditableSuggestionField: View {
                 Divider()
                 Text("新增…").tag(newValueToken)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+            }
             if isEnteringNewValue {
                 HStack {
                     TextField("输入新的\(shortTitle)", text: $text)
+                        .textFieldStyle(.roundedBorder)
                     Button("取消") {
                         text = ""
                         isEnteringNewValue = false

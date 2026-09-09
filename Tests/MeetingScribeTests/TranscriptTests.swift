@@ -13,18 +13,6 @@ final class TranscriptTests: XCTestCase {
         XCTAssertNil(original.replacingTexts(from: "只有一行"))
     }
 
-    func testTranslationResponseParsesFencedJSONAndPreservesIDs() throws {
-        let raw = """
-        ```json
-        [{"id":0,"text":"这个功能需要客户确认。"},{"id":1,"text":"明天更新 timeline。"}]
-        ```
-        """
-        let values = try TranscriptTranslator.parseResponse(raw)
-        XCTAssertEqual(values.map(\.segmentID), [0, 1])
-        XCTAssertEqual(values[0].text, "这个功能需要客户确认。")
-        XCTAssertThrowsError(try TranscriptTranslator.parseResponse("不是 JSON"))
-    }
-
     func testParsesMultilineSRTAndSkipsMalformedBlocks() {
         let transcript = Transcript.parse(srt: """
         1
@@ -85,6 +73,23 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(components.day, 13)
         XCTAssertEqual(components.hour, 10)
         XCTAssertEqual(components.minute, 7)
+    }
+
+    func testExternalTranscriptReportsUnreadableCompanionText() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("external-transcript-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let srt = directory.appendingPathComponent("meeting.srt")
+        let text = directory.appendingPathComponent("meeting.txt")
+        try "1\n00:00:00,000 --> 00:00:02,000\n测试\n".write(
+            to: srt, atomically: true, encoding: .utf8)
+        try Data([0xFF, 0xFE, 0x00]).write(to: text)
+
+        XCTAssertThrowsError(try ExternalTranscriptPackage(
+            transcriptURL: srt, textURL: text)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("UTF-8"))
+            }
     }
 
     func testLegacyTranscriptDecodesWithoutSpeakerField() throws {

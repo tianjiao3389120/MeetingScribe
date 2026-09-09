@@ -4,14 +4,16 @@ struct TagInputView: View {
     @Binding var text: String
     let suggestions: [String]
     var placeholder = "标签，用逗号分隔"
+    var showsSuggestionsWhenUnfocused = false
 
     @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             TextField(placeholder, text: $text)
+                .textFieldStyle(.roundedBorder)
                 .focused($focused)
-            if focused && !suggestions.isEmpty {
+            if (focused || showsSuggestionsWhenUnfocused) && !suggestions.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("选择已有标签")
                         .font(.caption)

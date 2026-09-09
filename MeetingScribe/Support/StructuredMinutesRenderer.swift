@@ -48,15 +48,10 @@ enum StructuredMinutesRenderer {
 
         if !value.actionItems.isEmpty || !value.agreements.isEmpty {
             lines += ["", "## 三、待办事项"]
-            let grouped = Dictionary(grouping: value.actionItems) { item in
-                item.owner.isEmpty ? "待明确" : item.owner
-            }
-            for owner in grouped.keys.sorted() {
-                lines += ["", "### \(owner)"]
-                lines += (grouped[owner] ?? []).map { item in
-                    let status = item.status.isEmpty ? "" : " [\(item.status)]"
-                    let due = item.due.isEmpty ? "" : "（\(item.due)）"
-                    return "- [\(item.isClosed ? "x" : " ")] \(item.task)\(due)\(status)\(evidenceSuffix(item.evidence))"
+            for group in actionGroups(in: value) {
+                lines += ["", "### \(group.title)"]
+                lines += group.items.map { item in
+                    actionLine(item, includeEvidence: true)
                 }
             }
             if !value.agreements.isEmpty {
@@ -141,15 +136,10 @@ enum CustomerMinutesRenderer {
 
         if !value.actionItems.isEmpty || !value.agreements.isEmpty {
             lines += ["", "## 三、待办事项"]
-            let grouped = Dictionary(grouping: value.actionItems) {
-                $0.owner.isEmpty ? "待明确" : $0.owner
-            }
-            for owner in grouped.keys.sorted() {
-                lines += ["", "### \(owner)"]
-                lines += (grouped[owner] ?? []).map { item in
-                    let status = item.status.isEmpty ? "" : " [\(item.status)]"
-                    let due = item.due.isEmpty ? "" : "（\(item.due)）"
-                    return "- [\(item.isClosed ? "x" : " ")] \(item.task)\(due)\(status)"
+            for group in actionGroups(in: value) {
+                lines += ["", "### \(group.title)"]
+                lines += group.items.map { item in
+                    actionLine(item, includeEvidence: false)
                 }
             }
             if !value.agreements.isEmpty {
@@ -191,6 +181,39 @@ enum CustomerMinutesRenderer {
             }
             .joined(separator: "\n")
     }
+}
+
+private struct MinutesActionGroup {
+    let title: String
+    let items: [StructuredMinutes.ActionItem]
+}
+
+/// Keep the order of “问题与进展” so the action section reads as its execution view.
+/// Unlinked actions remain visible in a final, explicit bucket.
+private func actionGroups(in value: StructuredMinutes) -> [MinutesActionGroup] {
+    let grouped = Dictionary(grouping: value.actionItems, by: \.issueID)
+    var result = value.issues.compactMap { issue -> MinutesActionGroup? in
+        guard let id = issue.trackingID, let items = grouped[id], !items.isEmpty else { return nil }
+        return MinutesActionGroup(title: issue.title, items: items)
+    }
+    let knownIDs = Set(value.issues.compactMap(\.trackingID))
+    let independent = value.actionItems.filter { item in
+        guard let id = item.issueID else { return true }
+        return !knownIDs.contains(id)
+    }
+    if !independent.isEmpty {
+        result.append(MinutesActionGroup(title: "独立待办", items: independent))
+    }
+    return result
+}
+
+private func actionLine(_ item: StructuredMinutes.ActionItem, includeEvidence: Bool) -> String {
+    let status = item.status.isEmpty ? "" : " [\(item.status)]"
+    let due = item.due.isEmpty ? "" : "（\(item.due)）"
+    let owner = item.owner.isEmpty ? "待明确" : item.owner
+    let evidence = includeEvidence && !item.evidence.isEmpty
+        ? "（证据：\(item.evidence.joined(separator: "、"))）" : ""
+    return "- [\(item.isClosed ? "x" : " ")] \(item.task)\(due)\(status)；责任方：\(owner)\(evidence)"
 }
 
 /// The model may report both the media length and the effective meeting time.

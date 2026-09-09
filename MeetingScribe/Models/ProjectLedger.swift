@@ -3,6 +3,9 @@ import Foundation
 struct ProjectAction: Codable, Identifiable, Sendable, Equatable {
     var id: String
     var workspaceID: UUID
+    /// Stable link to the project issue this action helps resolve.
+    /// Nil keeps independent actions and ledgers saved before this field existed compatible.
+    var issueID: String? = nil
     var task: String
     var owner: String
     var status: String
@@ -100,6 +103,10 @@ struct ProjectIssueAnalysis: Codable, Identifiable, Sendable, Equatable {
 
     var id: String { issueID }
 
+    func isStale(comparedWith issue: ProjectIssue) -> Bool {
+        Set(sourceEventIDs) != Set(issue.events.map(\.id))
+    }
+
     init(issueID: String, workspaceID: UUID, summary: String,
          timeline: [TimelineItem], generatedAt: Date, sourceEventIDs: [UUID]) {
         self.issueID = issueID
@@ -119,6 +126,7 @@ struct ProjectActionEvent: Codable, Identifiable, Sendable, Equatable {
     var occurredAt: Date
     var meetingID: UUID
     var meetingTitle: String
+    var issueID: String? = nil
     var previousStatus: String?
     var currentStatus: String
     var owner: String
@@ -136,6 +144,7 @@ struct ProjectActionProposal: Codable, Identifiable, Sendable, Equatable {
     var meetingDate: Date
     var kind: Kind
     var targetActionID: String?
+    var issueID: String? = nil
     var task: String
     var owner: String
     var status: String

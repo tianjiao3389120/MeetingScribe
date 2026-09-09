@@ -31,8 +31,10 @@ struct MediaExtractor {
     }
 
     /// Writes 16 kHz mono PCM — the only format whisper.cpp accepts.
-    func extractAudio(to destination: URL) async throws {
+    func extractAudio(to destination: URL,
+                      progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws {
         let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
         let tracks = try await asset.loadTracks(withMediaType: .audio)
         guard !tracks.isEmpty else {
             throw Failure.noAudioTrack
@@ -95,10 +97,17 @@ struct MediaExtractor {
                         }
                         guard let buffer = stream.output.copyNextSampleBuffer() else {
                             stream.input.markAsFinished()
-                            stream.writer.finishWriting { continuation.resume() }
+                            stream.writer.finishWriting {
+                                progress(1)
+                                continuation.resume()
+                            }
                             return
                         }
                         stream.input.append(buffer)
+                        let seconds = CMSampleBufferGetPresentationTimeStamp(buffer).seconds
+                        if seconds.isFinite, duration > 0 {
+                            progress(min(max(seconds / duration, 0), 1))
+                        }
                     }
                 }
             }

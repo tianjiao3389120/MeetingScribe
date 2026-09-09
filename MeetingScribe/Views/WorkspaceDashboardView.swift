@@ -4,7 +4,6 @@ struct WorkspaceDashboardView: View {
     @Environment(\.dismiss) private var dismiss
     let workspace: MeetingWorkspace
     let records: [MeetingRecord]
-    var onReviewHistory: (() -> Void)? = nil
     var onOpenMeeting: ((UUID) -> Void)? = nil
     @State private var ledger = ProjectLedger()
     @State private var ledgerError: String?
@@ -12,11 +11,13 @@ struct WorkspaceDashboardView: View {
     @State private var editingIssueProposal: ProjectIssueProposal?
     @State private var editingIssueStatus: ProjectIssue?
     @State private var analyzingIssue: ProjectIssue?
+    @State private var selectedProposalIDs = Set<UUID>()
 
     private var insights: WorkspaceInsights { WorkspaceInsights(records: records) }
+    // Legacy ledger values remain decodable so existing data is not destroyed. They are no
+    // longer surfaced as a task workflow or populated for new meetings.
     private var actions: [ProjectAction] { ledger.actions(for: workspace.id) }
     private var openActions: [ProjectAction] { actions.filter { !$0.isClosed } }
-    private var closedActions: [ProjectAction] { actions.filter(\.isClosed) }
     private var overdueActions: [ProjectAction] { openActions.filter(\.isOverdue) }
     private var blockedActions: [ProjectAction] { openActions.filter(\.isBlocked) }
     private var proposals: [ProjectActionProposal] { ledger.pendingProposals(for: workspace.id) }
@@ -29,6 +30,43 @@ struct WorkspaceDashboardView: View {
     private var acceptedIssueProposals: [ProjectIssueProposal] {
         ledger.acceptedIssueProposals(for: workspace.id)
     }
+    private struct ActionGroup: Identifiable {
+        let id: String
+        let title: String
+        let actions: [MeetingActionInfo]
+    }
+    private struct ProposalGroup: Identifiable {
+        let id: String
+        let title: String
+        let proposals: [ProjectActionProposal]
+    }
+    private struct MeetingActionInfo: Identifiable {
+        let id: String
+        let meetingID: UUID
+        let meetingTitle: String
+        let meetingDate: Date
+        let action: StructuredMinutes.ActionItem
+    }
+    private var meetingActions: [MeetingActionInfo] {
+        records.flatMap { record in
+            (record.structuredSummary?.actionItems ?? []).enumerated().map { index, action in
+                MeetingActionInfo(id: "\(record.id.uuidString)-\(index)", meetingID: record.id,
+                                  meetingTitle: record.title, meetingDate: record.createdAt,
+                                  action: action)
+            }
+        }.sorted { $0.meetingDate > $1.meetingDate }
+    }
+    private var actionGroups: [ActionGroup] {
+        Dictionary(grouping: meetingActions, by: { $0.action.issueID }).map { issueID, values in
+            ActionGroup(id: issueID ?? "independent", title: issueTitle(for: issueID), actions: values)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+    private var proposalGroups: [ProposalGroup] {
+        grouped(proposals).map { issueID, values in
+            ProposalGroup(id: issueID ?? "independent", title: issueTitle(for: issueID),
+                          proposals: values)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,10 +77,6 @@ struct WorkspaceDashboardView: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if let onReviewHistory {
-                    Button("扫描历史待办进展…") { onReviewHistory() }
-                        .help("仅用于补录：扫描已有历史会议中明确提到的待办状态变化")
-                }
                 Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(20)
             Divider()
@@ -50,11 +84,9 @@ struct WorkspaceDashboardView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(spacing: 12) {
                         metric("会议", value: records.count, icon: "calendar")
-                        metric("待确认更新", value: proposals.count + issueProposals.count,
+                        metric("待确认问题", value: issueProposals.count,
                                icon: "tray.and.arrow.down")
-                        metric("未完成", value: openActions.count, icon: "checklist")
-                        metric("逾期 / 阻塞", value: overdueActions.count + blockedActions.count,
-                               icon: "exclamationmark.triangle")
+                        metric("纪要待办", value: meetingActions.count, icon: "checklist")
                     }
                     if let ledgerError {
                         Label(ledgerError, systemImage: "exclamationmark.triangle.fill")
@@ -76,14 +108,30 @@ struct WorkspaceDashboardView: View {
                         ForEach(openIssues) { issue in projectIssueRow(issue) }
                     }
                     closedIssueSection
-                    proposalSection
-                    followUpSection
-                    sectionTitle("项目行动项", count: openActions.count)
-                    if openActions.isEmpty {
-                        Text(proposals.isEmpty ? "还没有项目行动项" : "确认上方建议后将写入项目台账")
+                    sectionTitle("纪要待办（信息）", count: meetingActions.count)
+                    Text("来自各次会议纪要，仅用于回看，不跟踪状态，也不产生待确认更新。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if meetingActions.isEmpty {
+                        Text("还没有会议待办")
                             .foregroundStyle(.secondary).padding(.vertical, 8)
                     } else {
-                        ForEach(openActions) { action in projectActionRow(action) }
+                        ForEach(actionGroups) { group in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(group.title).font(.subheadline.weight(.semibold))
+                                ForEach(group.actions) { item in
+                                    Button { onOpenMeeting?(item.meetingID) } label: {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(item.action.task).font(.callout.weight(.medium))
+                                            HStack {
+                                                Text(item.action.owner.isEmpty ? "负责人待明确" : item.action.owner)
+                                                if !item.action.due.isEmpty { Text("截止：\(item.action.due)") }
+                                                Text("来源：\(item.meetingTitle)")
+                                            }.font(.caption).foregroundStyle(.secondary)
+                                        }.frame(maxWidth: .infinity, alignment: .leading)
+                                    }.buttonStyle(.plain)
+                                }
+                            }
+                        }
                     }
                     sectionTitle("会议时间线", count: insights.records.count)
                     ForEach(insights.records) { record in
@@ -111,9 +159,14 @@ struct WorkspaceDashboardView: View {
         }
         .frame(width: 820, height: 720)
         .onAppear(perform: loadLedger)
+        .onChange(of: proposals.map(\.id)) { _, ids in
+            selectedProposalIDs.formIntersection(ids)
+            if selectedProposalIDs.isEmpty { selectedProposalIDs = defaultSelectedProposalIDs }
+        }
         .sheet(item: $editingProposal) { proposal in
             ActionItemEditorView(action: .init(
                 trackingID: proposal.targetActionID,
+                issueID: proposal.issueID,
                 owner: proposal.owner, task: proposal.task, status: proposal.status,
                 due: proposal.due, evidence: proposal.evidence
             )) { action in
@@ -206,6 +259,25 @@ struct WorkspaceDashboardView: View {
                 if !issue.background.isEmpty { LabeledContent("背景", value: issue.background) }
                 if !issue.rootCause.isEmpty { LabeledContent("根因", value: issue.rootCause) }
                 if !issue.solution.isEmpty { LabeledContent("方案", value: issue.solution) }
+                let linkedActions = actions.filter { $0.issueID == issue.id }
+                if !linkedActions.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("关联待办（\(linkedActions.count)）")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        ForEach(linkedActions) { action in
+                            HStack {
+                                Image(systemName: action.isClosed ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(action.isClosed ? .green : .orange)
+                                Text(action.task).font(.callout)
+                                Spacer()
+                                Text(action.owner.isEmpty ? "待明确" : action.owner)
+                                Text(action.status.isEmpty ? "待确认" : action.status)
+                            }.font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(8)
+                    .background(Color.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                }
                 ForEach(issue.events.sorted(by: { $0.occurredAt > $1.occurredAt })) { event in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(event.meetingTitle).font(.caption.weight(.semibold))
@@ -223,11 +295,15 @@ struct WorkspaceDashboardView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(ledger.analysis(for: issue.id) == nil ? "一键分析" : "查看分析") {
+                let analysis = ledger.analysis(for: issue.id)
+                Button(analysis == nil ? "一键分析" :
+                        (analysis?.isStale(comparedWith: issue) == true ? "重新分析" : "查看分析")) {
                     analyzingIssue = issue
                 }
                     .buttonStyle(.borderless).controlSize(.small)
-                    .help("基于已确认关联的会议和证据生成问题专题分析")
+                    .help(analysis?.isStale(comparedWith: issue) == true
+                          ? "问题已有新进展，原分析已过期"
+                          : "基于已确认关联的会议和证据生成问题专题分析")
                 Button(issue.isClosed ? "重新打开" : "修改状态") {
                     editingIssueStatus = issue
                 }
@@ -260,7 +336,7 @@ struct WorkspaceDashboardView: View {
     private var issueProposalSection: some View {
         if !issueProposals.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("需要确认的问题关联", count: issueProposals.count)
+                sectionTitle("待确认的问题", count: issueProposals.count)
                 Text("确认后才会建立或更新跨会议问题档案；历史背景会在后续纪要生成时作为上下文使用。")
                     .font(.caption).foregroundStyle(.secondary)
                 ForEach(issueProposals) { proposal in
@@ -335,33 +411,61 @@ struct WorkspaceDashboardView: View {
     private var proposalSection: some View {
         if !proposals.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("需要确认的项目更新", count: proposals.count)
-                Text("会议分析不会直接修改项目台账。确认后才会形成可持续跟踪的行动项和变化记录。")
+                HStack {
+                    sectionTitle("待确认的待办", count: proposals.count)
+                    Spacer()
+                    Button(selectedProposalIDs.count == proposals.count ? "取消全选" : "全选") {
+                        selectedProposalIDs = selectedProposalIDs.count == proposals.count
+                            ? [] : Set(proposals.map(\.id))
+                    }.buttonStyle(.borderless)
+                    Button("批量忽略") { resolveSelected(accept: false) }
+                        .disabled(selectedProposalIDs.isEmpty)
+                    Button("确认所选（\(selectedProposalIDs.count)）") {
+                        resolveSelected(accept: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selectedProposalIDs.isEmpty)
+                }
+                Text("新增和普通信息补全已默认勾选；可取消高风险或存疑项，再一次确认写入项目台账。")
                     .font(.caption).foregroundStyle(.secondary)
-                ForEach(proposals) { proposal in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(proposal.kind == .create ? "新增行动项" : "更新行动项")
-                                .font(.caption.weight(.semibold)).foregroundStyle(.blue)
-                            Spacer()
-                            Button("忽略") { resolve(proposal, accept: false) }.buttonStyle(.borderless)
-                            Button("修改后确认") { editingProposal = proposal }.buttonStyle(.borderless)
-                            Button("确认") { resolve(proposal, accept: true) }
-                                .buttonStyle(.borderedProminent).controlSize(.small)
-                        }
-                        Text(proposal.task).font(.callout.weight(.medium))
-                        HStack {
-                            Text("责任人：\(proposal.owner.isEmpty ? "待明确" : proposal.owner)")
-                            if let previous = proposal.previousStatus {
-                                Text("\(previous.isEmpty ? "待确认" : previous) → \(proposal.status.isEmpty ? "待确认" : proposal.status)")
-                            } else {
-                                Text("状态：\(proposal.status.isEmpty ? "待确认" : proposal.status)")
+                ForEach(proposalGroups) { group in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(group.title).font(.subheadline.weight(.semibold))
+                        ForEach(group.proposals) { proposal in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Button {
+                                        if selectedProposalIDs.contains(proposal.id) {
+                                            selectedProposalIDs.remove(proposal.id)
+                                        } else { selectedProposalIDs.insert(proposal.id) }
+                                    } label: {
+                                        Image(systemName: selectedProposalIDs.contains(proposal.id)
+                                              ? "checkmark.square.fill" : "square")
+                                    }.buttonStyle(.plain)
+                                    Text(proposal.kind == .create ? "新增待办" : "更新待办")
+                                        .font(.caption.weight(.semibold)).foregroundStyle(.blue)
+                                    Spacer()
+                                    Button("忽略") { resolve(proposal, accept: false) }.buttonStyle(.borderless)
+                                    Button("修改后确认") { editingProposal = proposal }.buttonStyle(.borderless)
+                                    Button("确认") { resolve(proposal, accept: true) }
+                                        .buttonStyle(.borderedProminent).controlSize(.small)
+                                }
+                                Text(proposal.task).font(.callout.weight(.medium))
+                                HStack {
+                                    Text("责任人：\(proposal.owner.isEmpty ? "待明确" : proposal.owner)")
+                                    if let previous = proposal.previousStatus {
+                                        Text("\(previous.isEmpty ? "待确认" : previous) → \(proposal.status.isEmpty ? "待确认" : proposal.status)")
+                                    } else {
+                                        Text("状态：\(proposal.status.isEmpty ? "待确认" : proposal.status)")
+                                    }
+                                    if !proposal.due.isEmpty { Text("截止：\(proposal.due)") }
+                                }.font(.caption).foregroundStyle(.secondary)
+                                Text("依据：\(proposal.meetingTitle) · \(proposal.evidence.isEmpty ? "未提供时间码" : proposal.evidence.joined(separator: "、"))")
+                                    .font(.caption2).foregroundStyle(.tertiary)
                             }
-                            if !proposal.due.isEmpty { Text("截止：\(proposal.due)") }
-                        }.font(.caption).foregroundStyle(.secondary)
-                        Text("依据：\(proposal.meetingTitle) · \(proposal.evidence.isEmpty ? "未提供时间码" : proposal.evidence.joined(separator: "、"))")
-                            .font(.caption2).foregroundStyle(.tertiary)
-                    }.padding(12).background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                            .padding(12).background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
                 }
             }
         }
@@ -386,6 +490,7 @@ struct WorkspaceDashboardView: View {
     private func loadLedger() {
         do {
             ledger = try ProjectLedgerStore.load()
+            selectedProposalIDs = defaultSelectedProposalIDs
             ledgerError = nil
         }
         catch { ledgerError = "项目台账读取失败：\(error.localizedDescription)" }
@@ -399,7 +504,58 @@ struct WorkspaceDashboardView: View {
                                                 edited: proposal)
                 : try ProjectLedgerStore.ignore(proposalID: originalID ?? proposal.id)
             ledgerError = nil
+            selectedProposalIDs.remove(originalID ?? proposal.id)
         } catch { ledgerError = "项目更新失败：\(error.localizedDescription)" }
+    }
+
+    private func resolveSelected(accept: Bool) {
+        let ids = selectedProposalIDs
+        guard !ids.isEmpty else { return }
+        do {
+            ledger = accept
+                ? try ProjectLedgerStore.accept(proposalIDs: ids)
+                : try ProjectLedgerStore.ignore(proposalIDs: ids)
+            selectedProposalIDs.removeAll()
+            ledgerError = nil
+        } catch { ledgerError = "批量处理待办失败：\(error.localizedDescription)" }
+    }
+
+    private func issueTitle(for issueID: String?) -> String {
+        guard let issueID else { return "独立待办" }
+        if let issue = issues.first(where: { $0.id == issueID }) { return issue.title }
+        if let proposal = issueProposals.first(where: { $0.targetIssueID == issueID }) {
+            return proposal.title
+        }
+        return "独立待办"
+    }
+
+    private var defaultSelectedProposalIDs: Set<UUID> {
+        Set(proposals.filter { proposal in
+            let status = proposal.status.lowercased()
+            let riskyStatus = WorkspaceInsights.isClosed(status: status)
+                || status.contains("阻塞") || status.contains("blocked")
+                || status.contains("受阻") || status.contains("删除")
+            guard !proposal.evidence.isEmpty, !riskyStatus else { return false }
+            if proposal.kind == .create { return true }
+            return ActionTracking.statusIdentity(proposal.previousStatus ?? "")
+                == ActionTracking.statusIdentity(proposal.status)
+        }.map(\.id))
+    }
+
+    private func grouped<T>(_ values: [T]) -> [(String?, [T])] {
+        let pairs: [(String?, T)] = values.map { value in
+            if let action = value as? ProjectAction { return (action.issueID, value) }
+            if let proposal = value as? ProjectActionProposal { return (proposal.issueID, value) }
+            return (nil, value)
+        }
+        let keys = Array(Set(pairs.compactMap(\.0))).sorted {
+            issueTitle(for: $0).localizedCompare(issueTitle(for: $1)) == .orderedAscending
+        }
+        var result = keys.map { key in (Optional(key), pairs.filter { $0.0 == key }.map(\.1)) }
+        let independent = pairs.filter { $0.0 == nil || issueTitle(for: $0.0) == "独立待办" }.map(\.1)
+        result.removeAll { issueTitle(for: $0.0) == "独立待办" }
+        if !independent.isEmpty { result.append((nil, independent)) }
+        return result
     }
 
     private func resolveIssue(_ proposal: ProjectIssueProposal, accept: Bool) {

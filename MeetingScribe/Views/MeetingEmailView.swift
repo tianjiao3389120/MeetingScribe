@@ -42,6 +42,11 @@ struct MeetingMinutesVersionView: View {
         version == .standard ? $standardMinutes : $hongKongMinutes
     }
 
+    private var hongKongEstimate: Int {
+        TokenEstimator.count(HongKongMinutesGenerator.systemPrompt + "\n" + standardMinutes)
+            + max(500, TokenEstimator.count(standardMinutes))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
@@ -58,6 +63,8 @@ struct MeetingMinutesVersionView: View {
                 .pickerStyle(.segmented).labelsHidden().frame(width: 310)
                 Spacer()
                 if version == .hongKong {
+                    Text("预计约 \(hongKongEstimate.formatted()) Token")
+                        .font(.caption).foregroundStyle(.secondary)
                     Button(hongKongMinutes.isEmpty ? "生成香港版本纪要" : "重新生成") {
                         generateHongKongMinutes()
                     }
@@ -123,8 +130,13 @@ struct MeetingMinutesVersionView: View {
         message = "正在生成香港版本纪要…"
         Task {
             do {
-                hongKongMinutes = try await HongKongMinutesGenerator(settings: .shared)
-                    .generateHongKongMinutes(from: standardMinutes)
+                let context = TokenUsageContext(
+                    feature: "生成香港版本纪要", meetingID: meetingID,
+                    meetingTitle: title)
+                hongKongMinutes = try await TokenUsageContext.$current.withValue(context) {
+                    try await HongKongMinutesGenerator(settings: .shared)
+                        .generateHongKongMinutes(from: standardMinutes)
+                }
                 hongKongUsage = GenerationUsage(
                     phases: [GenerationUsage.estimatedPhase(
                         name: "香港版本纪要",

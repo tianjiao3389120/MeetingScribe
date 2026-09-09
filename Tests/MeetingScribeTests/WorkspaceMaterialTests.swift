@@ -145,80 +145,31 @@ final class WorkspaceMaterialTests: XCTestCase {
         XCTAssertEqual(value.actionItems[0].task, "提交上线方案")
     }
 
-    func testProjectLedgerRequiresConfirmationAndKeepsEvidenceHistory() throws {
+    func testPreparingMeetingKeepsActionsAsInfoAndClearsPendingLegacyProposals() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("project-ledger-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let workspaceID = UUID()
-        let meetingID = UUID()
+        let legacy = ProjectActionProposal(
+            workspaceID: workspaceID, meetingID: UUID(), meetingTitle: "旧会议",
+            meetingDate: Date(), kind: .create, task: "旧待办", owner: "张三",
+            status: "进行中", due: "", previousStatus: nil, evidence: ["[01:00]"])
+        try ProjectLedgerStore.save(ProjectLedger(proposals: [legacy]), to: url)
         let minutes = StructuredMinutes(
             title: "项目周会", nature: "", duration: "", agenda: ["进展"],
             participantAssessment: [], issues: [], requirements: [],
-            actionItems: [.init(trackingID: "MS-ACTION-1", owner: "张三",
-                                task: "提交实施方案", status: "进行中",
-                                due: "2026-08-20", evidence: ["[12:30]"])],
+            actionItems: [.init(owner: "李四", task: "发送纪要", status: "待办",
+                                due: "今天", evidence: ["[11:00]"])],
             agreements: [], afterMeeting: [], uncertainties: [])
         let record = MeetingRecord(
-            id: meetingID, createdAt: Date(timeIntervalSince1970: 100),
             title: "项目周会", sourcePath: "/meeting.srt", duration: 60,
             backend: "测试", model: "mock", summaryMarkdown: "纪要",
             structuredSummary: minutes, transcript: Transcript(segments: []),
             speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
 
-        var ledger = try ProjectLedgerStore.prepareProposals(for: record, at: url)
-        XCTAssertTrue(ledger.actions.isEmpty)
-        let proposal = try XCTUnwrap(ledger.pendingProposals(for: workspaceID).first)
-        XCTAssertEqual(proposal.kind, .create)
-
-        ledger = try ProjectLedgerStore.accept(proposalID: proposal.id, at: url)
-        let action = try XCTUnwrap(ledger.actions(for: workspaceID).first)
-        XCTAssertEqual(action.id, "MS-ACTION-1")
-        XCTAssertEqual(action.events.first?.meetingID, meetingID)
-        XCTAssertEqual(action.events.first?.evidence, ["[12:30]"])
+        let ledger = try ProjectLedgerStore.prepareProposals(for: record, at: url)
         XCTAssertTrue(ledger.pendingProposals(for: workspaceID).isEmpty)
-    }
-
-    func testProjectLedgerUpdatesExistingActionButNeverInfersOmittedCompletion() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("project-ledger-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let workspaceID = UUID()
-        func record(id: UUID = UUID(), date: TimeInterval, status: String,
-                    includeAction: Bool = true) -> MeetingRecord {
-            let items: [StructuredMinutes.ActionItem] = includeAction ? [
-                .init(trackingID: "MS-ACTION-1", owner: "张三", task: "提交实施方案",
-                      status: status, due: "2026-08-20", evidence: ["[08:20]"])
-            ] : []
-            let minutes = StructuredMinutes(
-                title: "周会", nature: "", duration: "", agenda: ["进展"],
-                participantAssessment: [], issues: [], requirements: [], actionItems: items,
-                agreements: [], afterMeeting: [], uncertainties: [])
-            return MeetingRecord(id: id, createdAt: Date(timeIntervalSince1970: date),
-                                 title: "周会", sourcePath: "/meeting.srt", duration: 60,
-                                 backend: "测试", model: "mock", summaryMarkdown: "纪要",
-                                 structuredSummary: minutes, transcript: Transcript(segments: []),
-                                 speakerNames: [:], usedSummaryFallback: false,
-                                 workspaceID: workspaceID)
-        }
-
-        var ledger = try ProjectLedgerStore.prepareProposals(
-            for: record(date: 100, status: "进行中"), at: url)
-        ledger = try ProjectLedgerStore.accept(
-            proposalID: try XCTUnwrap(ledger.pendingProposals(for: workspaceID).first?.id), at: url)
-
-        ledger = try ProjectLedgerStore.prepareProposals(
-            for: record(date: 200, status: "已完成"), at: url)
-        let update = try XCTUnwrap(ledger.pendingProposals(for: workspaceID).first)
-        XCTAssertEqual(update.kind, .update)
-        XCTAssertEqual(update.previousStatus, "进行中")
-        ledger = try ProjectLedgerStore.accept(proposalID: update.id, at: url)
-        XCTAssertTrue(try XCTUnwrap(ledger.actions.first).isClosed)
-        XCTAssertEqual(ledger.actions.first?.events.count, 2)
-
-        let count = ledger.proposals.count
-        ledger = try ProjectLedgerStore.prepareProposals(
-            for: record(date: 300, status: "", includeAction: false), at: url)
-        XCTAssertEqual(ledger.proposals.count, count)
+        XCTAssertTrue(ledger.actions(for: workspaceID).isEmpty)
     }
 
     func testProjectIssueLedgerRequiresConfirmationAndKeepsTimeline() throws {
@@ -258,6 +209,51 @@ final class WorkspaceMaterialTests: XCTestCase {
         ledger = try ProjectLedgerStore.acceptIssue(proposalID: update.id, at: url)
         XCTAssertEqual(ledger.issues.first?.events.count, 2)
         XCTAssertEqual(ledger.issues.first?.events.last?.progress, "完成三轮分析")
+    }
+
+    func testProjectIssueUpdateKeepsExistingStatusWhenProposalStatusIsBlank() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("project-issue-blank-status-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workspaceID = UUID()
+        let issue = ProjectIssue(
+            id: "MS-ISSUE-1", workspaceID: workspaceID, title: "引擎异常", aliases: [],
+            background: "", rootCause: "待查", solution: "分析日志", status: "进行中",
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 100), sourceMeetingID: UUID(), events: [])
+        let proposal = ProjectIssueProposal(
+            workspaceID: workspaceID, meetingID: UUID(), meetingTitle: "周会",
+            meetingDate: Date(timeIntervalSince1970: 200), kind: .update,
+            targetIssueID: issue.id, title: issue.title, background: "", rootCause: "待查",
+            solution: "分析日志", progress: "新增日志", status: "", previousStatus: issue.status,
+            evidence: ["[10:00]"])
+        try ProjectLedgerStore.save(
+            ProjectLedger(issues: [issue], issueProposals: [proposal]), to: url)
+
+        let ledger = try ProjectLedgerStore.acceptIssue(proposalID: proposal.id, at: url)
+        XCTAssertEqual(ledger.issues[0].status, "进行中")
+        XCTAssertEqual(ledger.issues[0].events.last?.currentStatus, "进行中")
+    }
+
+    func testProjectIssueCreationRejectsDuplicateStableID() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("project-issue-duplicate-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workspaceID = UUID()
+        let issue = ProjectIssue(
+            id: "MS-ISSUE-1", workspaceID: workspaceID, title: "既有问题", aliases: [],
+            background: "", rootCause: "", solution: "", status: "进行中",
+            createdAt: Date(), updatedAt: Date(), sourceMeetingID: UUID(), events: [])
+        let proposal = ProjectIssueProposal(
+            workspaceID: workspaceID, meetingID: UUID(), meetingTitle: "周会",
+            meetingDate: Date(), kind: .create, targetIssueID: issue.id, title: "重复问题",
+            background: "", rootCause: "", solution: "", progress: "", status: "进行中",
+            previousStatus: nil, evidence: ["[01:00]"])
+        try ProjectLedgerStore.save(
+            ProjectLedger(issues: [issue], issueProposals: [proposal]), to: url)
+
+        XCTAssertThrowsError(try ProjectLedgerStore.acceptIssue(proposalID: proposal.id, at: url))
+        XCTAssertEqual(try ProjectLedgerStore.load(from: url).issues.count, 1)
     }
 
     func testIssueProposalCanBeManuallyAssociatedWithExistingIssue() throws {
@@ -315,8 +311,59 @@ final class WorkspaceMaterialTests: XCTestCase {
         let customer = MeetingWorkspace(name: "中银香港", kind: .customer)
         let other = MeetingWorkspace(name: "其他客户", kind: .customer)
         XCTAssertEqual(MeetingWorkspaceStore.resolve(
-            id: nil, customerName: " 中银香港 ", projectName: "主机安全",
+            id: nil, customerName: " 中银香港 ", projectName: nil,
             from: [other, customer])?.id, customer.id)
+    }
+
+    func testWorkspaceResolverNeverMatchesProjectOutsideTypedCustomer() {
+        let customerA = MeetingWorkspace(name: "客户 A", kind: .customer)
+        let customerB = MeetingWorkspace(name: "客户 B", kind: .customer)
+        let projectB = MeetingWorkspace(name: "同名项目", kind: .project,
+                                        customerID: customerB.id)
+        let values = [customerA, customerB, projectB]
+
+        XCTAssertNil(MeetingWorkspaceStore.resolve(
+            id: nil, customerName: "不存在的客户", projectName: "同名项目", from: values))
+        XCTAssertNil(MeetingWorkspaceStore.resolve(
+            id: nil, customerName: "客户 A", projectName: "同名项目", from: values))
+        XCTAssertNil(MeetingWorkspaceStore.resolve(
+            id: nil, customerName: nil, projectName: "同名项目", from: values))
+    }
+
+    func testIssueTrackingOnlyMatchesConfirmedProjectIssues() {
+        let confirmed = ProjectIssue(
+            id: "MS-ISSUE-CONFIRMED", workspaceID: UUID(), title: "供应商引擎异常",
+            aliases: [], background: "组件退出", rootCause: "待查", solution: "分析日志",
+            status: "进行中", createdAt: Date(), updatedAt: Date(),
+            sourceMeetingID: UUID(), events: [])
+        var minutes = StructuredMinutes(
+            title: "周会", nature: "", duration: "", agenda: [], participantAssessment: [],
+            issues: [.init(title: "供应商引擎异常", status: "进行中", background: "组件退出",
+                           rootCause: "待查", solution: "分析日志", progress: "", evidence: [])],
+            requirements: [], actionItems: [], agreements: [], afterMeeting: [], uncertainties: [])
+
+        IssueTracking.prepare(&minutes, confirmedIssues: [confirmed])
+        XCTAssertEqual(minutes.issues[0].trackingID, confirmed.id)
+
+        minutes.issues[0].trackingID = nil
+        IssueTracking.prepare(&minutes, confirmedIssues: [])
+        XCTAssertNotEqual(minutes.issues[0].trackingID, confirmed.id)
+    }
+
+    func testIssueTrackingResolvesNewIssueTitleReferenceForAction() {
+        var minutes = StructuredMinutes(
+            title: "周会", nature: "", duration: "", agenda: [], participantAssessment: [],
+            issues: [.init(title: "日志积压", status: "进行中", background: "",
+                           rootCause: "待查", solution: "扩容", progress: "", evidence: [])],
+            requirements: [],
+            actionItems: [.init(issueID: "日志积压", owner: "张三", task: "提交扩容方案",
+                                status: "待执行", due: "", evidence: [])],
+            agreements: [], afterMeeting: [], uncertainties: [])
+
+        IssueTracking.prepare(&minutes, confirmedIssues: [])
+
+        XCTAssertNotNil(minutes.issues[0].trackingID)
+        XCTAssertEqual(minutes.actionItems[0].issueID, minutes.issues[0].trackingID)
     }
 
     func testRemovingMeetingPrunesOnlyPendingLedgerReferences() throws {

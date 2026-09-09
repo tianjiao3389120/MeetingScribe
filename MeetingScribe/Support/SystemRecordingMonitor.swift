@@ -9,17 +9,20 @@ import Observation
 final class SystemRecordingMonitor {
     private(set) var isWatching = false
     private(set) var detectedURL: URL?
+    private(set) var didTimeOut = false
     private(set) var folder: URL = SystemRecordingMonitor.captureFolder()
 
     private var startedAt = Date.distantFuture
     private var timer: Timer?
     private var previousSizes: [URL: Int64] = [:]
+    private static let maximumWait: TimeInterval = 8 * 60 * 60
 
     func begin() {
         stop()
         folder = Self.captureFolder()
         startedAt = Date().addingTimeInterval(-1)
         detectedURL = nil
+        didTimeOut = false
         previousSizes = [:]
         isWatching = true
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -43,6 +46,11 @@ final class SystemRecordingMonitor {
 
     private func poll() {
         guard isWatching else { return }
+        if Date().timeIntervalSince(startedAt) >= Self.maximumWait {
+            didTimeOut = true
+            stop()
+            return
+        }
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .creationDateKey,
                                          .contentModificationDateKey, .fileSizeKey]
         guard let files = try? FileManager.default.contentsOfDirectory(

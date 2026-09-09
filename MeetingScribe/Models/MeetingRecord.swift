@@ -39,6 +39,9 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     /// Generation time is separate from the immutable meeting/recording time.
     /// Optional so existing libraries remain decodable.
     var generatedAt: Date?
+    /// Stable identity of the source meeting shared by all generated versions.
+    /// Legacy records fall back to their normalized source path.
+    var meetingGroupID: UUID?
 
     init(id: UUID = UUID(), createdAt: Date = Date(), title: String,
          sourcePath: String, duration: TimeInterval, backend: String,
@@ -82,6 +85,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.adaptiveScreenReviewStats = nil
         self.generationUsage = nil
         self.generatedAt = Date()
+        self.meetingGroupID = nil
     }
 
     var sourceURL: URL { URL(fileURLWithPath: sourcePath) }

@@ -71,6 +71,7 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root)[0].workspaceID, workspaceID)
         let updatedSibling = try XCTUnwrap(try MeetingHistoryStore.loadAll(root: root)
             .first { $0.id == sibling.id })
+        XCTAssertEqual(updatedSibling.title, "客户项目周会")
         XCTAssertEqual(updatedSibling.customerName, "中银香港")
         XCTAssertEqual(updatedSibling.projectName, "HIDS项目")
         XCTAssertEqual(updatedSibling.tags ?? [], ["双周会", "客户"])
@@ -100,6 +101,35 @@ final class MeetingHistoryStoreTests: XCTestCase {
                 speakerNames: [:], usedSummaryFallback: true), root: root)
         }
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).count, 2)
+    }
+
+    func testStableMeetingGroupKeepsMovedSourceVersionsTogether() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-group-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let groupID = UUID()
+        var first = MeetingRecord(
+            title: "原版本", sourcePath: "/old/location/meeting.mov", duration: 60,
+            backend: "测试", model: "mock", summaryMarkdown: "版本一",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        first.meetingGroupID = groupID
+        var second = MeetingRecord(
+            title: "新版本", sourcePath: "/new/location/meeting.mov", duration: 60,
+            backend: "测试", model: "mock", summaryMarkdown: "版本二",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        second.meetingGroupID = groupID
+        try MeetingHistoryStore.save(first, root: root)
+        try MeetingHistoryStore.save(second, root: root)
+
+        _ = try MeetingHistoryStore.updateLibraryState(
+            id: first.id, favorite: true, archived: true, root: root)
+        let versions = try MeetingHistoryStore.loadAll(root: root)
+        XCTAssertEqual(Set(versions.compactMap(\.meetingGroupID)), [groupID])
+        XCTAssertTrue(versions.allSatisfy {
+            ($0.isFavorite ?? false) && ($0.isArchived ?? false)
+        })
     }
 
     func testMaterialsAreCopiedIntoManagedHistory() throws {
@@ -140,24 +170,48 @@ final class MeetingHistoryStoreTests: XCTestCase {
             structuredSummary: nil, transcript: Transcript(segments: []),
             speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
         try MeetingHistoryStore.save(record, root: root)
-
         try MeetingHistoryStore.clearWorkspaceReferences([workspaceID], root: root)
         XCTAssertNil(try MeetingHistoryStore.loadAll(root: root)[0].workspaceID)
     }
+
 
     func testPendingJobRoundTripAndConditionalClear() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("pending-job-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
-        let job = PendingMeetingJob(sourcePath: "/meeting.mov", workspaceID: UUID(),
-                                    tags: ["双周会"], materialPaths: ["/agenda.pdf"])
+        let groupID = UUID()
+        let job = PendingMeetingJob(sourcePath: "/meeting.srt", workspaceID: UUID(),
+                                    tags: ["双周会"], materialPaths: ["/agenda.pdf"],
+                                    sourcePaths: ["/meeting.srt", "/meeting.txt", "/meeting.m4a"],
+                                    meetingGroupID: groupID)
         try PendingJobStore.save(job, to: url)
         XCTAssertEqual(PendingJobStore.load(from: url)?.tags, ["双周会"])
+        XCTAssertEqual(PendingJobStore.load(from: url)?.sourcePaths?.count, 3)
+        XCTAssertEqual(PendingJobStore.load(from: url)?.meetingGroupID, groupID)
 
         PendingJobStore.clear(id: UUID(), at: url)
         XCTAssertNotNil(PendingJobStore.load(from: url))
         PendingJobStore.clear(id: job.id, at: url)
         XCTAssertNil(PendingJobStore.load(from: url))
+    }
+
+    func testPendingIssueReviewDraftRoundTrip() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-review-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let record = MeetingRecord(
+            title: "待确认会议", sourcePath: "/meeting.srt", duration: 60,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        let draft = PendingIssueReviewDraft(
+            record: record, materialPaths: ["/agenda.pdf"], reasons: ["问题边界重叠"])
+
+        try PendingIssueReviewStore.save(draft, to: url)
+        XCTAssertEqual(PendingIssueReviewStore.load(from: url)?.record.id, record.id)
+        XCTAssertEqual(PendingIssueReviewStore.load(from: url)?.reasons, ["问题边界重叠"])
+        PendingIssueReviewStore.clear(at: url)
+        XCTAssertNil(PendingIssueReviewStore.load(from: url))
     }
 
     func testStorageOverviewReportsHistoryAndMissingSources() throws {
@@ -181,13 +235,17 @@ final class MeetingHistoryStoreTests: XCTestCase {
         let record = MeetingRecord(
             title: "日志治理双周会", sourcePath: "/meeting.mov", duration: 10,
             backend: "测试", model: "mock", summaryMarkdown: "讨论告警优化",
-            structuredSummary: nil, transcript: Transcript(segments: []),
+            structuredSummary: nil, transcript: Transcript(segments: [
+                .init(id: 0, start: 0, end: 2, text: "Falcon Gateway 灰度发布")
+            ]),
             speakerNames: [0: "张三"], usedSummaryFallback: false,
             tags: ["客户", "UAT"])
         XCTAssertTrue(MeetingSearch.matches(
             record, workspaceName: "香港银行", query: "香港银行 UAT 张三"))
         XCTAssertFalse(MeetingSearch.matches(
             record, workspaceName: "香港银行", query: "香港银行 UAT 李四"))
+        XCTAssertTrue(MeetingSearch.matches(
+            record, workspaceName: "香港银行", query: "Falcon 灰度"))
     }
 
     func testEmailDraftsPersistWithMeetingHistory() throws {
@@ -227,6 +285,12 @@ final class MeetingHistoryStoreTests: XCTestCase {
             structuredSummary: minutes, transcript: Transcript(segments: []),
             speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
         try MeetingHistoryStore.save(record, root: root)
+        let sibling = MeetingRecord(
+            title: "旧版本", sourcePath: record.sourcePath, duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "旧纪要",
+            structuredSummary: minutes, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false, workspaceID: workspaceID)
+        try MeetingHistoryStore.save(sibling, root: root)
 
         var updated = try MeetingHistoryStore.updateLibraryState(
             id: record.id, favorite: true, root: root)
@@ -239,6 +303,25 @@ final class MeetingHistoryStoreTests: XCTestCase {
         XCTAssertTrue(MeetingLibrary.filter([updated], scope: .all).isEmpty)
         XCTAssertEqual(MeetingLibrary.filter([updated], scope: .archived).count, 1)
         XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).first?.isFavorite, true)
+        let versions = try MeetingHistoryStore.loadAll(root: root)
+        XCTAssertTrue(versions.allSatisfy { $0.isFavorite == true && $0.isArchived == true })
+    }
+
+    func testStagedRemovalCanBeRestoredBeforeFinalDeletion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("staged-removal-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = MeetingRecord(
+            title: "可恢复删除", sourcePath: "/meeting.mov", duration: 10,
+            backend: "测试", model: "mock", summaryMarkdown: "纪要",
+            structuredSummary: nil, transcript: Transcript(segments: []),
+            speakerNames: [:], usedSummaryFallback: false)
+        try MeetingHistoryStore.save(record, root: root)
+
+        let staged = try XCTUnwrap(MeetingHistoryStore.stageRemoval(id: record.id, root: root))
+        XCTAssertTrue(try MeetingHistoryStore.loadAll(root: root).isEmpty)
+        try MeetingHistoryStore.restoreRemoval(id: record.id, stagedAt: staged, root: root)
+        XCTAssertEqual(try MeetingHistoryStore.loadAll(root: root).map(\.id), [record.id])
     }
 
     func testEditingActionPersistsAndRegeneratesMarkdown() throws {

@@ -152,6 +152,9 @@ final class Settings {
     var alwaysReviewIssues: Bool {
         didSet { defaults.set(alwaysReviewIssues, forKey: Keys.alwaysReviewIssues) }
     }
+    var tokenWarningThreshold: Int {
+        didSet { defaults.set(tokenWarningThreshold, forKey: Keys.tokenWarningThreshold) }
+    }
 
     // MARK: OpenAI-compatible providers
 
@@ -200,6 +203,7 @@ final class Settings {
         static let minutesInstructions = "minutesInstructions"
         static let keepIntermediates = "keepIntermediates"
         static let alwaysReviewIssues = "alwaysReviewIssues"
+        static let tokenWarningThreshold = "tokenWarningThreshold"
         static let providerID = "providerID"
         static let providerBaseURL = "providerBaseURL"
         static let providerModel = "providerModel"
@@ -235,6 +239,7 @@ final class Settings {
             ?? Settings.defaultMinutesInstructions
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
         alwaysReviewIssues = defaults.object(forKey: Keys.alwaysReviewIssues) as? Bool ?? false
+        tokenWarningThreshold = defaults.object(forKey: Keys.tokenWarningThreshold) as? Int ?? 12_000
         let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.openAI.id
         let preset = ProviderPreset.preset(id: storedProvider)
         let providerWasRemoved = !ProviderPreset.all.contains { $0.id == storedProvider }

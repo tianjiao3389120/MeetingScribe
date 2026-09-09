@@ -28,11 +28,15 @@ struct ContentView: View {
                              historySelection = id
                              showHistory = true
                          },
+                         onOpenLibrary: { showHistory = true },
+                         onOpenSettings: { showSettings = true },
                          onPick: { pendingInput = $0 })
             case .done:
                 ResultView(runner: runner, savedPath: $savedPath)
             case .reviewingIssues:
                 IssuePreflightView(runner: runner)
+            case .reviewingRequest:
+                RequestPreviewView(runner: runner)
             default:
                 ProgressPanel(runner: runner)
             }
@@ -93,7 +97,11 @@ struct ContentView: View {
         }
         .onAppear {
             loadRecentMeetings()
-            if interruptedJob == nil { interruptedJob = PendingJobStore.load() }
+            if let draft = PendingIssueReviewStore.load() {
+                restore(draft)
+            } else if interruptedJob == nil {
+                interruptedJob = PendingJobStore.load()
+            }
             Task { await AutomaticBackupManager.runIfNeeded() }
         }
         .onChange(of: runner.stage) { _, stage in
@@ -142,6 +150,7 @@ struct ContentView: View {
                                                workspace: workspace, materials: materials)
             } else {
                 runner.run(url: record.sourceURL, recordedAt: record.createdAt,
+                           meetingGroupID: record.meetingGroupID ?? record.id,
                            title: record.title,
                            meetingContext: record.meetingContext ?? "",
                            minutesTemplateID: record.minutesTemplateID ?? MinutesTemplate.general.id,
@@ -154,8 +163,9 @@ struct ContentView: View {
     }
 
     private func resume(_ job: PendingMeetingJob) {
-        let source = URL(fileURLWithPath: job.sourcePath)
-        guard FileManager.default.fileExists(atPath: source.path) else {
+        let paths = job.sourcePaths ?? [job.sourcePath]
+        let urls = paths.map(URL.init(fileURLWithPath:))
+        guard urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
             PendingJobStore.clear(id: job.id)
             return
         }
@@ -168,11 +178,39 @@ struct ContentView: View {
                     try MaterialExtractor.extract(from: URL(fileURLWithPath: path))
                 }).value { materials.append(value) }
             }
-            runner.run(url: source, title: job.title, meetingContext: job.meetingContext ?? "",
-                       minutesTemplateID: job.minutesTemplateID ?? MinutesTemplate.general.id,
-                       recognitionScenario: job.recognitionScenario ?? .autoMultilingual,
-                       workspace: workspace, customerName: job.customerName ?? "",
-                       projectName: job.projectName ?? "", tags: job.tags, materials: materials)
+            do {
+                switch try MeetingInput.classify(urls) {
+                case .media(let source):
+                    runner.run(url: source, meetingGroupID: job.meetingGroupID,
+                               title: job.title, meetingContext: job.meetingContext ?? "",
+                               minutesTemplateID: job.minutesTemplateID ?? MinutesTemplate.general.id,
+                               recognitionScenario: job.recognitionScenario ?? .autoMultilingual,
+                               workspace: workspace, customerName: job.customerName ?? "",
+                               projectName: job.projectName ?? "", tags: job.tags, materials: materials)
+                case .externalTranscript(let package):
+                    runner.run(imported: package, title: job.title,
+                               meetingGroupID: job.meetingGroupID,
+                               meetingContext: job.meetingContext ?? "",
+                               minutesTemplateID: job.minutesTemplateID ?? MinutesTemplate.general.id,
+                               recognitionScenario: job.recognitionScenario ?? .autoMultilingual,
+                               workspace: workspace, customerName: job.customerName ?? "",
+                               projectName: job.projectName ?? "", tags: job.tags, materials: materials)
+                }
+            } catch {
+                PendingJobStore.clear(id: job.id)
+            }
+        }
+    }
+
+    private func restore(_ draft: PendingIssueReviewDraft) {
+        Task {
+            var materials: [SupportingMaterial] = []
+            for path in draft.materialPaths {
+                if let value = try? await Task.detached(operation: {
+                    try MaterialExtractor.extract(from: URL(fileURLWithPath: path))
+                }).value { materials.append(value) }
+            }
+            runner.restoreIssueReview(draft, materials: materials)
         }
     }
 }
@@ -185,6 +223,8 @@ private struct DropZone: View {
     let recordingMonitor: SystemRecordingMonitor
     let recentMeetings: [MeetingRecord]
     let onOpenMeeting: (UUID) -> Void
+    let onOpenLibrary: () -> Void
+    let onOpenSettings: () -> Void
     let onPick: (MeetingInput) -> Void
 
     @State private var rejection: String?
@@ -225,60 +265,73 @@ private struct DropZone: View {
         ]
     }
 
+    private var pendingIssueCount: Int {
+        ((try? ProjectLedgerStore.load())?.issueProposals ?? [])
+            .filter { $0.resolution == .pending }.count
+    }
+
+    private var monthlyTokenUsage: Int {
+        let calendar = Calendar.current
+        return TokenUsageLedger.load().filter {
+            calendar.isDate($0.startedAt, equalTo: Date(), toGranularity: .month)
+        }.reduce(0) { $0 + $1.totalTokens }
+    }
+
     var body: some View {
-        VStack(spacing: 18) {
-            Spacer()
-
-            Image(systemName: "wave.3.right.circle")
-                .font(.system(size: 44, weight: .thin))
-                .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
-
-            VStack(spacing: 6) {
-                Text(isTargeted ? "松开即可导入" : "开始一次会议")
-                    .font(.title2.weight(.semibold))
-                Text("拖入录音、录像，或妙记导出的逐字稿")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 10) {
-                Button { pick() } label: {
-                    Label("导入会议", systemImage: "square.and.arrow.down")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(isTargeted ? "松开即可导入" : "今天要处理什么会议？")
+                        .font(.system(size: 26, weight: .bold))
+                    Text("录制或导入会议，自动生成可追踪的项目纪要。")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                Button { openSystemScreenshot() } label: {
-                    Label("录制会议", systemImage: "record.circle")
-                }
-            }
-            .controlSize(.large)
 
-            if let recording = recordingMonitor.detectedURL {
-                Button {
-                    if let url = recordingMonitor.consume() { accept([url]) }
-                } label: {
-                    Label("导入刚录制的 \(recording.lastPathComponent)",
-                          systemImage: "square.and.arrow.down")
-                }
-            } else if recordingMonitor.isWatching {
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.small)
-                    Text("等待系统录制完成…").lineLimit(1)
-                }.font(.caption).foregroundStyle(.secondary)
-            }
+                homeActions
 
-            if let error {
+                if recordingMonitor.isWatching {
+                VStack(spacing: 8) {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text("等待系统录制完成").font(.callout.weight(.medium))
+                    }
+                    Text("请在系统录屏工具中选择录制范围并确认麦克风；结束后将自动进入会议准备。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    HStack {
+                        Button("取消等待") { recordingMonitor.stop() }
+                        Button("重新打开系统录屏") { openSystemScreenshot() }
+                        Button("手动导入录屏") { pick() }
+                    }.controlSize(.small)
+                }
+                } else if recordingMonitor.didTimeOut {
+                VStack(spacing: 7) {
+                    Text("暂未发现新的系统录屏").font(.callout.weight(.medium))
+                    Text("录屏可能保存到了其他位置，可以手动选择文件或重新等待。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Button("重新等待") { openSystemScreenshot() }
+                        Button("手动导入录屏") { pick() }
+                    }.controlSize(.small)
+                }
+                }
+
+                if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.red)
                     .padding(.horizontal, 40)
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)
-            }
+                }
 
-            if !recentMeetings.isEmpty {
-                Divider().frame(maxWidth: 500)
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("最近会议").font(.headline)
+                if !recentMeetings.isEmpty {
+                    HStack {
+                        Text("最近会议").font(.headline)
+                        Spacer()
+                        Button("查看全部", action: onOpenLibrary).buttonStyle(.link)
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
                     ForEach(recentMeetings) { record in
                         Button { onOpenMeeting(record.id) } label: {
                             HStack(spacing: 9) {
@@ -298,38 +351,60 @@ private struct DropZone: View {
                                     .font(.caption).foregroundStyle(.tertiary)
                             }
                             .contentShape(Rectangle())
-                            .padding(.vertical, 3)
+                            .padding(.horizontal, 14).padding(.vertical, 11)
                         }.buttonStyle(.plain)
+                        if record.id != recentMeetings.last?.id { Divider().padding(.leading, 14) }
+                    }
+                    }
+                    .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.2)) }
+                }
+
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("需要关注").font(.headline)
+                        if pendingIssueCount > 0 {
+                            Button("\(pendingIssueCount) 个项目问题更新待确认", action: onOpenLibrary)
+                                .buttonStyle(.link)
+                        } else {
+                            Label("没有需要确认的项目更新", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    .font(.callout).frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
+                    .padding(16).background(.background, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.2)) }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack { Text("本月模型用量").font(.headline); Spacer(); Button("明细", action: onOpenSettings).buttonStyle(.link) }
+                        Text("\(monthlyTokenUsage.formatted()) Token")
+                            .font(.title3.monospacedDigit().weight(.semibold))
+                        Text("单次高消耗提醒：\(Settings.shared.tokenWarningThreshold.formatted()) Token")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
+                    .padding(16).background(.background, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.2)) }
+                }
+
+                HStack(spacing: 14) {
+                    ForEach(runtimeReadiness) { item in
+                        HStack(spacing: 5) {
+                            Circle().fill(item.ready ? Color.green : Color.orange)
+                                .frame(width: 7, height: 7)
+                            Text(item.text)
+                        }
                     }
                 }
-                .frame(maxWidth: 500, alignment: .leading)
-            }
+                .font(.caption).foregroundStyle(.secondary)
 
-            HStack(spacing: 14) {
-                ForEach(runtimeReadiness) { item in
-                    HStack(spacing: 5) {
-                        Circle().fill(item.ready ? Color.green : Color.orange)
-                            .frame(width: 7, height: 7)
-                        Text(item.text)
-                    }
-                }
             }
-            .font(.caption).foregroundStyle(.secondary)
-
-            Spacer()
+            .padding(30)
+            .frame(maxWidth: 920, alignment: .leading)
         }
-        .frame(maxWidth: 560, maxHeight: .infinity)
-        .padding(.horizontal, 28)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(isTargeted ? Color.accentColor.opacity(0.06) : Color.clear)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [7, 5]))
-                        .foregroundStyle(isTargeted ? Color.accentColor : Color.secondary.opacity(0.3))
-                }
-                .padding(.vertical, 18)
+            Color.accentColor.opacity(isTargeted ? 0.07 : 0)
         )
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             guard !providers.isEmpty else { return false }
@@ -350,7 +425,12 @@ private struct DropZone: View {
             group.notify(queue: .main) { accept(urls) }
             return true
         }
-        .alert("无法处理这个文件", isPresented: Binding(
+        .onChange(of: recordingMonitor.detectedURL) { _, url in
+            guard let url else { return }
+            _ = recordingMonitor.consume()
+            accept([url])
+        }
+        .alert("无法导入所选文件", isPresented: Binding(
             get: { rejection != nil }, set: { if !$0 { rejection = nil } }
         )) {
             Button("好") { rejection = nil }
@@ -359,8 +439,46 @@ private struct DropZone: View {
         }
     }
 
+    private var homeActions: some View {
+        HStack(spacing: 14) {
+            Button { openSystemScreenshot() } label: {
+                VStack(alignment: .leading, spacing: 7) {
+                    Image(systemName: "record.circle.fill").font(.title2)
+                    Text("录制会议").font(.title3).fontWeight(.semibold)
+                    Text("使用 macOS 系统录屏，完成后自动处理")
+                        .font(.caption).foregroundStyle(.white.opacity(0.82))
+                }
+                .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+                .padding(18)
+            }.buttonStyle(HomePrimaryActionStyle())
+
+            compactAction(title: "导入会议", subtitle: "音频、视频或 SRT",
+                          icon: "square.and.arrow.down", action: pick)
+            compactAction(title: "会议资料库", subtitle: "查找已有纪要",
+                          icon: "books.vertical", action: onOpenLibrary)
+        }
+    }
+
+    private func compactAction(title: String, subtitle: String, icon: String,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: icon).font(.title2)
+                Text(title).font(.headline)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(width: 155, alignment: .leading)
+            .frame(minHeight: 92, alignment: .leading)
+            .padding(18)
+        }.buttonStyle(HomeSecondaryActionStyle())
+    }
+
     private func accept(_ urls: [URL]) {
-        do { onPick(try MeetingInput.classify(urls)) }
+        do {
+            let input = try MeetingInput.classify(urls)
+            recordingMonitor.stop()
+            onPick(input)
+        }
         catch { rejection = error.localizedDescription }
     }
 
@@ -369,7 +487,7 @@ private struct DropZone: View {
         panel.allowedContentTypes = [.audiovisualContent, .plainText,
                                      UTType(filenameExtension: "srt")!]
         panel.allowsMultipleSelection = true
-        panel.message = "可选择单个录音/录像，或同时选择妙记 SRT、TXT 和原始音频"
+        panel.message = "选择一个音频或视频；也可选择一份 SRT，并附带 TXT 和原始音频。TXT 不能单独导入。"
         if panel.runModal() == .OK { accept(panel.urls) }
     }
 
@@ -384,6 +502,25 @@ private struct DropZone: View {
         }
     }
 
+}
+
+private struct HomePrimaryActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .background(Color.accentColor.opacity(configuration.isPressed ? 0.82 : 1),
+                        in: RoundedRectangle(cornerRadius: 14))
+            .shadow(color: Color.accentColor.opacity(0.22), radius: 10, y: 5)
+    }
+}
+
+private struct HomeSecondaryActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.secondary.opacity(configuration.isPressed ? 0.13 : 0.07),
+                        in: RoundedRectangle(cornerRadius: 14))
+            .overlay { RoundedRectangle(cornerRadius: 14).stroke(Color.secondary.opacity(0.2)) }
+    }
 }
 
 // MARK: - Issue preflight
@@ -583,10 +720,14 @@ private struct ProgressPanel: View {
                 Text(runner.stage.label)
                     .font(.title2.weight(.medium))
 
-                if runner.progress > 0 {
+                if runner.stage.hasMeasurableProgress
+                    && (runner.stage != .transcribing || runner.progress > 0) {
                     ProgressView(value: runner.progress)
                         .progressViewStyle(.linear)
                         .frame(width: 320)
+                    Text("\(Int((runner.progress * 100).rounded()))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                         .progressViewStyle(.linear)
@@ -597,6 +738,15 @@ private struct ProgressPanel: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                if let estimate = runner.estimatedRemainingText {
+                    Text(estimate)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if runner.stage != .reviewingRequest {
+                    Text("完成 2 次处理后，将根据本机历史显示剩余时间")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             StageTrack(current: runner.stage)
@@ -607,6 +757,48 @@ private struct ProgressPanel: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private extension PipelineRunner.Stage {
+    var hasMeasurableProgress: Bool {
+        switch self {
+        case .extractingAudio, .transcribing, .separatingSpeakers,
+             .extractingFrames, .readingScreen:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+private struct RequestPreviewView: View {
+    let runner: PipelineRunner
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("提交给大模型前预览").font(.title2.weight(.semibold))
+                Text("以下是即将提交的实际文本；确认前不会调用大模型。")
+                    .foregroundStyle(.secondary)
+            }
+            TextEditor(text: .constant(runner.requestPreview))
+                .font(.system(.callout, design: .monospaced))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay { RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)) }
+            HStack {
+                Button("取消本次处理", role: .cancel) { runner.cancel() }
+                Button("复制完整请求") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(runner.requestPreview, forType: .string)
+                }
+                Spacer()
+                Button("确认并生成纪要") { runner.confirmRequestPreview() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
     }
 }
 

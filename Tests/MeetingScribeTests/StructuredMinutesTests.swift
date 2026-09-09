@@ -157,8 +157,30 @@ final class StructuredMinutesTests: XCTestCase {
         XCTAssertTrue(markdown.contains("### 日志积压 [进行中]"))
         XCTAssertTrue(markdown.contains("- **背景**：业务量增长导致日志持续增加"))
         XCTAssertTrue(markdown.range(of: "**背景**")!.lowerBound < markdown.range(of: "**根因**")!.lowerBound)
-        XCTAssertTrue(markdown.contains("- [ ] 提交方案（周五） [进行中]（证据：[20:00]）"))
+        XCTAssertTrue(markdown.contains(
+            "- [ ] 提交方案（周五） [进行中]；责任方：张三（证据：[20:00]）"))
         XCTAssertTrue(markdown.contains("### 协作约定"))
+    }
+
+    func testActionItemsAreGroupedByIssueAndShowOwner() throws {
+        var value = try XCTUnwrap(Analyzer.parseStructured(json))
+        value.issues[0].trackingID = "MS-ISSUE-LOG"
+        value.actionItems[0].issueID = "MS-ISSUE-LOG"
+        value.actionItems.append(.init(
+            owner: "李四", task: "发送会议材料", status: "待执行", due: "",
+            evidence: ["[21:00]"]))
+
+        let internalMarkdown = StructuredMinutesRenderer.markdown(from: value)
+        let customerMarkdown = CustomerMinutesRenderer.markdown(from: value)
+
+        XCTAssertTrue(internalMarkdown.contains(
+            "### 日志积压\n- [ ] 提交方案（周五） [进行中]；责任方：张三（证据：[20:00]）"))
+        XCTAssertTrue(internalMarkdown.contains(
+            "### 独立待办\n- [ ] 发送会议材料 [待执行]；责任方：李四（证据：[21:00]）"))
+        XCTAssertFalse(internalMarkdown.contains("### 张三"))
+        XCTAssertTrue(customerMarkdown.contains("### 日志积压"))
+        XCTAssertTrue(customerMarkdown.contains("；责任方：张三"))
+        XCTAssertFalse(customerMarkdown.contains("证据："))
     }
 
     func testIssueWithoutBackgroundRemainsBackwardCompatible() throws {

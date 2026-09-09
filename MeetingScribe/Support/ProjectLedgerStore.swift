@@ -2,11 +2,12 @@ import Foundation
 
 enum ProjectLedgerStore {
     enum Failure: LocalizedError {
-        case proposalNotFound, actionNotFound
+        case proposalNotFound, actionNotFound, duplicateIssueID
         var errorDescription: String? {
             switch self {
             case .proposalNotFound: "找不到这条项目更新建议。"
             case .actionNotFound: "建议关联的项目行动项不存在。"
+            case .duplicateIssueID: "项目问题 ID 已存在，无法重复创建。"
             }
         }
     }
@@ -56,33 +57,10 @@ enum ProjectLedgerStore {
                                  at url: URL = fileURL) throws -> ProjectLedger {
         guard let workspaceID = record.workspaceID,
               let structured = record.structuredSummary else { return try load(from: url) }
-        let actions = structured.actionItems
         var ledger = try load(from: url)
-        ledger.proposals.removeAll { $0.meetingID == record.id && $0.resolution == .pending }
-        for action in actions where !action.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let trackingID = action.trackingID
-            let target = ledger.actions.first { item in
-                (trackingID != nil && item.id == trackingID)
-                    || ActionTracking.identity(item.task) == ActionTracking.identity(action.task)
-            }
-            if let target {
-                let changed = target.task != action.task || target.owner != action.owner
-                    || target.status != action.status || target.due != action.due
-                guard changed, !action.evidence.isEmpty else { continue }
-                ledger.proposals.append(.init(
-                    workspaceID: workspaceID, meetingID: record.id, meetingTitle: record.title,
-                    meetingDate: record.createdAt, kind: .update, targetActionID: target.id,
-                    task: action.task, owner: action.owner, status: action.status, due: action.due,
-                    previousStatus: target.status, evidence: action.evidence))
-            } else {
-                ledger.proposals.append(.init(
-                    workspaceID: workspaceID, meetingID: record.id, meetingTitle: record.title,
-                    meetingDate: record.createdAt, kind: .create,
-                    targetActionID: trackingID, task: action.task, owner: action.owner,
-                    status: action.status, due: action.due, previousStatus: nil,
-                    evidence: action.evidence))
-            }
-        }
+        // Action items are meeting facts, not a second task-management ledger. Remove any
+        // still-pending legacy action proposals and keep project confirmation for issues only.
+        ledger.proposals.removeAll { $0.workspaceID == workspaceID && $0.resolution == .pending }
         ledger.issueProposals.removeAll {
             $0.meetingID == record.id && $0.resolution == .pending
         }
@@ -102,6 +80,7 @@ enum ProjectLedgerStore {
                     solution: issue.solution, progress: issue.progress, status: issue.status,
                     previousStatus: target.status, evidence: issue.evidence))
             } else {
+                guard !issue.evidence.isEmpty else { continue }
                 ledger.issueProposals.append(.init(
                     workspaceID: workspaceID, meetingID: record.id,
                     meetingTitle: record.title, meetingDate: record.createdAt,
@@ -128,7 +107,8 @@ enum ProjectLedgerStore {
             let id = proposal.targetActionID ?? "PA-\(UUID().uuidString.uppercased())"
             let event = event(for: proposal, kind: .created, previousStatus: nil)
             ledger.actions.append(ProjectAction(
-                id: id, workspaceID: proposal.workspaceID, task: proposal.task,
+                id: id, workspaceID: proposal.workspaceID, issueID: proposal.issueID,
+                task: proposal.task,
                 owner: proposal.owner, status: proposal.status, due: proposal.due,
                 createdAt: proposal.meetingDate, updatedAt: proposal.meetingDate,
                 sourceMeetingID: proposal.meetingID, events: [event]))
@@ -137,6 +117,7 @@ enum ProjectLedgerStore {
                   let actionIndex = ledger.actions.firstIndex(where: { $0.id == targetID })
             else { throw Failure.actionNotFound }
             let previous = ledger.actions[actionIndex].status
+            ledger.actions[actionIndex].issueID = proposal.issueID
             ledger.actions[actionIndex].task = proposal.task
             ledger.actions[actionIndex].owner = proposal.owner
             ledger.actions[actionIndex].status = proposal.status
@@ -156,6 +137,30 @@ enum ProjectLedgerStore {
         guard let index = ledger.proposals.firstIndex(where: { $0.id == proposalID })
         else { throw Failure.proposalNotFound }
         ledger.proposals[index].resolution = .ignored
+        try save(ledger, to: url)
+        return ledger
+    }
+
+    /// Applies a selection as one atomic ledger write. If any proposal is invalid,
+    /// nothing is persisted, preventing a half-confirmed batch.
+    @discardableResult
+    static func accept(proposalIDs: Set<UUID>, at url: URL = fileURL) throws -> ProjectLedger {
+        var ledger = try load(from: url)
+        for proposalID in proposalIDs {
+            try accept(proposalID: proposalID, in: &ledger)
+        }
+        try save(ledger, to: url)
+        return ledger
+    }
+
+    @discardableResult
+    static func ignore(proposalIDs: Set<UUID>, at url: URL = fileURL) throws -> ProjectLedger {
+        var ledger = try load(from: url)
+        for proposalID in proposalIDs {
+            guard let index = ledger.proposals.firstIndex(where: { $0.id == proposalID })
+            else { throw Failure.proposalNotFound }
+            ledger.proposals[index].resolution = .ignored
+        }
         try save(ledger, to: url)
         return ledger
     }
@@ -182,6 +187,8 @@ enum ProjectLedgerStore {
         switch proposal.kind {
         case .create:
             let id = proposal.targetIssueID ?? "MS-ISSUE-\(UUID().uuidString.uppercased())"
+            guard !ledger.issues.contains(where: { $0.id == id })
+            else { throw Failure.duplicateIssueID }
             proposal.targetIssueID = id
             ledger.issues.append(ProjectIssue(
                 id: id, workspaceID: proposal.workspaceID, title: proposal.title,
@@ -195,6 +202,9 @@ enum ProjectLedgerStore {
                   let index = ledger.issues.firstIndex(where: { $0.id == targetID })
             else { throw Failure.actionNotFound }
             let previous = ledger.issues[index].status
+            if proposal.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                proposal.status = previous
+            }
             if ledger.issues[index].title != proposal.title,
                !ledger.issues[index].aliases.contains(ledger.issues[index].title) {
                 ledger.issues[index].aliases.append(ledger.issues[index].title)
@@ -295,8 +305,39 @@ enum ProjectLedgerStore {
                               previousStatus: String?) -> ProjectActionEvent {
         ProjectActionEvent(kind: kind, occurredAt: proposal.meetingDate,
                            meetingID: proposal.meetingID, meetingTitle: proposal.meetingTitle,
+                           issueID: proposal.issueID,
                            previousStatus: previousStatus, currentStatus: proposal.status,
                            owner: proposal.owner, due: proposal.due, evidence: proposal.evidence)
+    }
+
+    private static func accept(proposalID: UUID, in ledger: inout ProjectLedger) throws {
+        guard let proposalIndex = ledger.proposals.firstIndex(where: { $0.id == proposalID })
+        else { throw Failure.proposalNotFound }
+        let proposal = ledger.proposals[proposalIndex]
+        switch proposal.kind {
+        case .create:
+            let id = proposal.targetActionID ?? "PA-\(UUID().uuidString.uppercased())"
+            ledger.actions.append(ProjectAction(
+                id: id, workspaceID: proposal.workspaceID, issueID: proposal.issueID,
+                task: proposal.task, owner: proposal.owner, status: proposal.status,
+                due: proposal.due, createdAt: proposal.meetingDate,
+                updatedAt: proposal.meetingDate, sourceMeetingID: proposal.meetingID,
+                events: [event(for: proposal, kind: .created, previousStatus: nil)]))
+        case .update:
+            guard let targetID = proposal.targetActionID,
+                  let actionIndex = ledger.actions.firstIndex(where: { $0.id == targetID })
+            else { throw Failure.actionNotFound }
+            let previous = ledger.actions[actionIndex].status
+            ledger.actions[actionIndex].issueID = proposal.issueID
+            ledger.actions[actionIndex].task = proposal.task
+            ledger.actions[actionIndex].owner = proposal.owner
+            ledger.actions[actionIndex].status = proposal.status
+            ledger.actions[actionIndex].due = proposal.due
+            ledger.actions[actionIndex].updatedAt = proposal.meetingDate
+            ledger.actions[actionIndex].events.append(event(
+                for: proposal, kind: .updated, previousStatus: previous))
+        }
+        ledger.proposals[proposalIndex].resolution = .accepted
     }
 
     private static func issueEvent(for proposal: ProjectIssueProposal,

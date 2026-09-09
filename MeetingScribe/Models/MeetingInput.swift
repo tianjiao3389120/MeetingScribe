@@ -104,9 +104,13 @@ struct ExternalTranscriptPackage: Sendable {
         self.textURL = textURL
         self.audioURL = audioURL
         transcript = parsed
-        if let textURL,
-           let text = try? String(contentsOf: textURL, encoding: .utf8) {
-            metadata = ExternalTranscriptMetadata.parseMiaojii(text)
+        if let textURL {
+            do {
+                let text = try String(contentsOf: textURL, encoding: .utf8)
+                metadata = ExternalTranscriptMetadata.parseMiaojii(text)
+            } catch {
+                throw Failure.unreadableCompanionText(textURL.lastPathComponent)
+            }
         } else {
             metadata = ExternalTranscriptMetadata()
         }
@@ -114,7 +118,14 @@ struct ExternalTranscriptPackage: Sendable {
 
     enum Failure: LocalizedError {
         case emptyTranscript
-        var errorDescription: String? { "SRT 中没有找到有效的字幕时间段。" }
+        case unreadableCompanionText(String)
+        var errorDescription: String? {
+            switch self {
+            case .emptyTranscript: return "SRT 中没有找到有效的字幕时间段。"
+            case .unreadableCompanionText(let name):
+                return "无法读取配套 TXT“\(name)”，请确认文件使用 UTF-8 编码。"
+            }
+        }
     }
 }
 

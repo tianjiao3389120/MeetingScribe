@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AVFoundation
 
 struct MeetingPreparationView: View {
     let input: MeetingInput
@@ -18,7 +19,6 @@ struct MeetingPreparationView: View {
     @State private var materialError: String?
     @State private var showNewWorkspace = false
     @State private var newName = ""
-    @State private var newCustomerID: UUID?
     @State private var newCustomerName = ""
     @State private var newContext = ""
     @State private var meetingTitle: String
@@ -26,6 +26,9 @@ struct MeetingPreparationView: View {
     @State private var selectedTemplateID = MinutesTemplate.general.id
     @State private var recognitionScenario: RecognitionScenario
     @State private var showAdvanced = false
+    @State private var estimatedTokens: Int?
+    @State private var showTokenWarning = false
+    @AppStorage("previewBeforeAnalysis") private var previewBeforeAnalysis = false
 
     init(input: MeetingInput,
          onStart: @escaping (String, RecognitionScenario, MeetingWorkspace?, String, String, String, String, [String], [SupportingMaterial]) -> Void,
@@ -49,9 +52,16 @@ struct MeetingPreparationView: View {
             projectName: projectName,
             from: workspaces)
     }
+    private var formalProject: MeetingWorkspace? {
+        resolvedWorkspace?.isProject == true ? resolvedWorkspace : nil
+    }
 
     private var customers: [MeetingWorkspace] { workspaces.filter(\.isCustomer) }
     private var projects: [MeetingWorkspace] { workspaces.filter(\.isProject) }
+    private var isExternalTranscript: Bool {
+        if case .externalTranscript = input { return true }
+        return false
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,93 +77,171 @@ struct MeetingPreparationView: View {
                     TextField("会议名称", text: $meetingTitle)
                     Text("使用文件名开始，完成后会自动优化名称。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Picker("本次识别场景", selection: $recognitionScenario) {
-                        ForEach(RecognitionScenario.allCases) { scenario in
-                            Text(scenario.displayName).tag(scenario)
-                        }
-                    }
-                    Text(recognitionScenario.explanation)
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Section("项目") {
-                    EditableSuggestionField(title: "客户（可选，留空归入未知）",
-                                            text: $customerName,
-                                            suggestions: customerSuggestions)
-                    EditableSuggestionField(title: "项目名称（可选，留空归入未知）",
-                                            text: $projectName,
-                                            suggestions: projectSuggestions)
-                    TagInputView(text: $tagsText, suggestions: tagSuggestions,
-                                 placeholder: "会议类型/标签，例如：双周会")
-                    HStack {
-                        Button("新建项目…") { showNewWorkspace.toggle() }
-                        if let workspace = selectedWorkspace, !workspace.context.isEmpty {
-                            Text(workspace.context).font(.caption).foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
-                    if selectedWorkspace == nil,
-                       let workspace = resolvedWorkspace,
-                       workspace.isCustomer,
-                       !projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text("“\(projectName)”尚未建为正式项目，本次将归入客户“\(workspace.name)”，问题关联仍会正常生成。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if showNewWorkspace {
-                        GroupBox {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Picker("所属客户", selection: $newCustomerID) {
-                                    Text("新建客户").tag(UUID?.none)
-                                    ForEach(customers) { Text($0.name).tag(Optional($0.id)) }
-                                }
-                                if newCustomerID == nil {
-                                    TextField("新客户名称", text: $newCustomerName)
-                                }
-                                TextField("项目名称", text: $newName)
-                                TextField("长期背景（可选）", text: $newContext)
-                                Button("创建并选择") { createWorkspace() }
-                                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty
-                                              || (newCustomerID == nil
-                                                  && newCustomerName.trimmingCharacters(in: .whitespaces).isEmpty))
-                            }.padding(4)
-                        }
-                    }
-                }
-
-                Section("本次会议材料") {
-                    if materials.isEmpty {
-                        Text("可添加 PDF、TXT、Markdown、CSV、JSON、PNG 或 JPEG。材料只用于本次分析。")
+                    if isExternalTranscript {
+                        LabeledContent("输入类型", value: "外部 SRT 逐字稿")
+                        Text("将直接使用现有字幕生成纪要，不会重新转录或分离说话人。附带音频仅作为来源记录保留。")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
-                        ForEach(materials) { material in
-                            HStack {
-                                Label(material.name, systemImage: icon(for: material.kind))
-                                    .lineLimit(1)
-                                Spacer()
-                                Text("\(material.extractedText.count) 字")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Button(role: .destructive) {
-                                    materials.removeAll { $0.id == material.id }
-                                } label: { Image(systemName: "xmark.circle") }
-                                    .buttonStyle(.borderless)
+                        Picker("本次识别场景", selection: $recognitionScenario) {
+                            ForEach(RecognitionScenario.allCases) { scenario in
+                                Text(scenario.displayName).tag(scenario)
+                            }
+                        }
+                        Text(recognitionScenario.explanation)
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Section("项目") {
+                    Picker("正式项目关联", selection: $selectedWorkspaceID) {
+                        Text("不关联项目").tag(UUID?.none)
+                        ForEach(projects) { project in
+                            let customer = customers.first { $0.id == project.customerID }?.name ?? "未归属客户"
+                            Text("\(customer) / \(project.name)").tag(Optional(project.id))
+                        }
+                    }
+                    if formalProject == nil {
+                        Button(showNewWorkspace ? "收起新建项目" : "新建项目") {
+                            showNewWorkspace.toggle()
+                        }
+                        if showNewWorkspace {
+                            GroupBox {
+                                VStack(alignment: .leading, spacing: 16) {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text("客户名称").font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                        TextField("请输入客户名称", text: $newCustomerName)
+                                            .textFieldStyle(.roundedBorder)
+                                            .controlSize(.large)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text("项目名称").font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                        TextField("请输入项目名称", text: $newName)
+                                            .textFieldStyle(.roundedBorder)
+                                            .controlSize(.large)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text("会议标签").font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                        TagInputView(text: $tagsText, suggestions: tagSuggestions,
+                                                     placeholder: "输入标签，用逗号分隔")
+                                            .controlSize(.large)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text("长期背景（可选）").font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                        ZStack(alignment: .topLeading) {
+                                            TextEditor(text: $newContext)
+                                                .scrollContentBackground(.hidden)
+                                                .padding(6)
+                                                .frame(minHeight: 72)
+                                                .background(Color(nsColor: .controlBackgroundColor),
+                                                            in: RoundedRectangle(cornerRadius: 7))
+                                                .overlay {
+                                                    RoundedRectangle(cornerRadius: 7)
+                                                        .stroke(Color.secondary.opacity(0.28))
+                                                }
+                                            if newContext.isEmpty {
+                                                Text("补充项目背景，帮助后续会议保持上下文")
+                                                    .foregroundStyle(.tertiary)
+                                                    .padding(.horizontal, 11)
+                                                    .padding(.vertical, 10)
+                                                    .allowsHitTesting(false)
+                                            }
+                                        }
+                                    }
+
+                                    HStack {
+                                        if newCustomerName.trimmingCharacters(in: .whitespaces).isEmpty
+                                            || newName.trimmingCharacters(in: .whitespaces).isEmpty {
+                                            Text("请填写客户名称和项目名称")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Button("创建并关联") { createWorkspace() }
+                                            .buttonStyle(.borderedProminent)
+                                            .controlSize(.large)
+                                            .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty
+                                                      || newCustomerName.trimmingCharacters(
+                                                        in: .whitespaces).isEmpty)
+                                    }
+                                }.padding(8)
+                            } label: {
+                                Label("创建新的正式项目", systemImage: "folder.badge.plus")
+                                    .font(.headline)
                             }
                         }
                     }
-                    HStack {
-                        Button("添加材料…") { pickMaterials() }.disabled(extracting)
-                        if extracting { ProgressView().controlSize(.small) }
-                        if let materialError {
-                            Text(materialError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                    if formalProject != nil {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("本次会议类型/标签").font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            TagInputView(text: $tagsText, suggestions: projectTagSuggestions,
+                                         placeholder: "例如：双周会、项目汇报",
+                                         showsSuggestionsWhenUnfocused: true)
+                                .controlSize(.large)
                         }
+                    }
+                    if let workspace = selectedWorkspace, !workspace.context.isEmpty {
+                        Text(workspace.context).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    if let project = formalProject {
+                        Label("已关联正式项目：\(customerName) / \(project.name)",
+                              systemImage: "link.circle.fill")
+                            .font(.caption).foregroundStyle(.green)
+                    } else {
+                        Text("未选择正式项目，本次不会写入项目问题和项目待办。")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
                 Section {
                     DisclosureGroup("更多选项", isExpanded: $showAdvanced) {
-                        Picker("纪要模板", selection: $selectedTemplateID) {
+                        Toggle("生成纪要前预览提交内容", isOn: $previewBeforeAnalysis)
+                        Text("开启后会在调用大模型前暂停，可检查并复制实际提交的提示词和会议内容。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("本次会议材料").font(.callout.weight(.medium))
+                            if materials.isEmpty {
+                                Text("可添加 PDF、TXT、Markdown、CSV、JSON、PNG 或 JPEG。材料只用于本次分析。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                ForEach(materials) { material in
+                                    HStack {
+                                        Label(material.name, systemImage: icon(for: material.kind))
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text("\(material.extractedText.count) 字")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        Button(role: .destructive) {
+                                            materials.removeAll { $0.id == material.id }
+                                        } label: { Image(systemName: "xmark.circle") }
+                                            .buttonStyle(.borderless)
+                                    }
+                                }
+                            }
+                            HStack {
+                                Button("添加材料…") { pickMaterials() }
+                                    .disabled(extracting || materials.count >= MaterialExtractor.maxFiles)
+                                if extracting { ProgressView().controlSize(.small) }
+                                if let materialError {
+                                    Text(materialError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                                }
+                            }
+                        }
+                        Divider()
+                        Picker("纪要侧重点", selection: $selectedTemplateID) {
                             ForEach(MinutesTemplate.all) { Text($0.name).tag($0.id) }
                         }
+                        Text("默认使用通用会议；仅影响本次生成的内容侧重点。")
+                            .font(.caption).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("本次背景（可选）").font(.callout.weight(.medium))
+                            Text("本次补充说明（可选）").font(.callout.weight(.medium))
                             TextEditor(text: $meetingContext)
                                 .frame(minHeight: 72)
                                 .padding(5)
@@ -163,6 +251,8 @@ struct MeetingPreparationView: View {
                                     RoundedRectangle(cornerRadius: 6)
                                         .stroke(Color.secondary.opacity(0.3))
                                 }
+                            Text("仅补充本次会议特有的信息，不会修改项目的长期背景。")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -171,36 +261,66 @@ struct MeetingPreparationView: View {
 
             Divider()
             HStack {
+                if let preflightError {
+                    Label(preflightError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red).lineLimit(2)
+                }
                 Spacer()
+                if let estimatedTokens {
+                    Text("预计约 \(estimatedTokens.formatted()) Token")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .help("按媒体时长、材料文字和最多发送的画面数估算；实际消耗以模型返回为准。")
+                }
                 Button("取消") { onCancel() }
-                Button("开始处理") { start() }
-                    .keyboardShortcut(.defaultAction).disabled(extracting)
+                Button("开始处理") {
+                    if let estimatedTokens,
+                       estimatedTokens >= Settings.shared.tokenWarningThreshold {
+                        showTokenWarning = true
+                    } else { start() }
+                }
+                    .keyboardShortcut(.defaultAction).disabled(extracting || preflightError != nil)
             }.padding(14)
         }
         .frame(width: 600, height: 510)
         .onAppear(perform: loadWorkspaces)
+        .task { await refreshTokenEstimate() }
+        .onChange(of: materials.count) { _, _ in Task { await refreshTokenEstimate() } }
+        .alert("本次任务预计消耗较高", isPresented: $showTokenWarning) {
+            Button("取消", role: .cancel) {}
+            Button("仍然开始") { start() }
+        } message: {
+            Text("预计约 \((estimatedTokens ?? 0).formatted()) Token，已达到提醒阈值 \(Settings.shared.tokenWarningThreshold.formatted())。实际用量可能因模型推理、缓存和图片计费而变化。")
+        }
         .onChange(of: selectedWorkspaceID) { _, id in
             if let workspace = workspaces.first(where: { $0.id == id }) {
-                selectedTemplateID = workspace.defaultTemplateID ?? MinutesTemplate.general.id
+                showNewWorkspace = false
                 projectName = workspace.name
                 customerName = customers.first { $0.id == workspace.customerID }?.name ?? ""
+            } else {
+                projectName = ""
+                customerName = ""
             }
         }
-        .onChange(of: customerName) { _, _ in syncWorkspace() }
-        .onChange(of: projectName) { _, _ in syncWorkspace() }
     }
 
     private func loadWorkspaces() {
         workspaces = (try? MeetingWorkspaceStore.load()) ?? []
         priorRecords = (try? MeetingHistoryStore.loadAll()) ?? []
         tagSuggestions = MeetingTags.suggestions(from: priorRecords)
+        if case .externalTranscript(let package) = input {
+            tagSuggestions = MeetingTags.parse(
+                (tagSuggestions + package.metadata.keywords).joined(separator: ","))
+        }
     }
 
     private func createWorkspace() {
-        var customerID = newCustomerID
+        let enteredCustomer = newCustomerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        var customerID = customers.first {
+            $0.name.localizedCaseInsensitiveCompare(enteredCustomer) == .orderedSame
+        }?.id
         if customerID == nil {
             let customer = MeetingWorkspace(
-                name: newCustomerName.trimmingCharacters(in: .whitespacesAndNewlines),
+                name: enteredCustomer,
                 kind: .customer)
             workspaces.append(customer)
             customerID = customer.id
@@ -209,10 +329,16 @@ struct MeetingPreparationView: View {
             name: newName.trimmingCharacters(in: .whitespacesAndNewlines),
             kind: .project,
             customerID: customerID,
+            meetingTypes: MeetingTags.parse(tagsText),
             context: newContext.trimmingCharacters(in: .whitespacesAndNewlines))
         workspaces.append(workspace)
         do {
             try MeetingWorkspaceStore.save(workspaces)
+            // Commit the visible classification and stable project selection together.
+            // Setting only the ID first makes the text-field onChange handlers race the
+            // selection handler and can clear the newly-created project immediately.
+            customerName = customers.first { $0.id == customerID }?.name ?? ""
+            projectName = workspace.name
             selectedWorkspaceID = workspace.id
             showNewWorkspace = false
             newName = ""; newCustomerName = ""; newContext = ""
@@ -250,6 +376,7 @@ struct MeetingPreparationView: View {
                         break
                     }
                     if material.extractedText.count > remaining {
+                        failures.append("\(material.name) 内容超过总量上限，已截取前 \(remaining) 字")
                         material = SupportingMaterial(
                             id: material.id, sourceURL: material.sourceURL, kind: material.kind,
                             extractedText: String(material.extractedText.prefix(remaining)),
@@ -268,38 +395,71 @@ struct MeetingPreparationView: View {
     private func start() {
         let tags = MeetingTags.parse(tagsText)
         let title = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let customer = customerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let project = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { materialError = "会议名称不能为空。"; return }
-        onStart(title, recognitionScenario, resolvedWorkspace,
+        onStart(title, recognitionScenario, formalProject,
                 meetingContext.trimmingCharacters(in: .whitespacesAndNewlines),
-                selectedTemplateID, customerName, projectName,
+                selectedTemplateID, customer, project,
                 tags, materials)
     }
 
-    private var customerSuggestions: [String] {
-        MeetingTags.parse((customers.map(\.name) + priorRecords.compactMap(\.customerName))
-            .joined(separator: ","))
+    private func refreshTokenEstimate() async {
+        let duration: TimeInterval
+        switch input {
+        case .media(let url):
+            duration = (try? await AVURLAsset(url: url).load(.duration).seconds) ?? 60
+        case .externalTranscript(let package):
+            let text = (try? String(contentsOf: package.transcriptURL, encoding: .utf8)) ?? ""
+            duration = max(60, Double(TokenEstimator.count(text)) / 260 * 60)
+        }
+        let materialText = materials.map(\.extractedText).joined(separator: "\n")
+        let settings = Settings.shared
+        estimatedTokens = TokenBudgetEstimator.meeting(
+            duration: duration, materialText: materialText,
+            includesVision: settings.backend == .openAICompatible && settings.providerSupportsVision,
+            frameDensity: settings.frameDensity)
     }
 
-    private var projectSuggestions: [String] {
-        let customer = customerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let customerIDs = Set(customers.filter {
-            $0.name.localizedCaseInsensitiveCompare(customer) == .orderedSame
-        }.map(\.id))
-        let values = projects.filter { $0.customerID.map(customerIDs.contains) == true }.map(\.name)
-            + priorRecords.filter {
-                ($0.customerName ?? "").localizedCaseInsensitiveCompare(customer) == .orderedSame
-            }.compactMap(\.projectName)
-        return MeetingTags.parse(values.joined(separator: ","))
+    private var preflightError: String? {
+        guard FileManager.default.fileExists(atPath: input.primaryURL.path) else {
+            return "源文件已被移动或删除，请重新选择。"
+        }
+        let settings = Settings.shared
+        switch settings.backend {
+        case .codexCLI where ToolLocator.path(for: .codex) == nil:
+            return "Codex CLI 未安装，请先在设置中配置纪要引擎。"
+        case .claudeCLI where ToolLocator.path(for: .claude) == nil:
+            return "Claude Code 未安装，请先在设置中配置纪要引擎。"
+        case .openAICompatible where settings.providerModel.isEmpty:
+            return "尚未选择 API 模型，请先在设置中配置。"
+        case .openAICompatible where settings.provider.requiresKey && !settings.providerKeyExists:
+            return "纪要引擎缺少 API Key，请先在设置中配置。"
+        default: break
+        }
+        if !isExternalTranscript,
+           ToolLocator.path(for: .whisper) == nil || ToolLocator.modelPath() == nil
+                || ToolLocator.vadModelPath() == nil {
+            return "本地转录引擎未就绪，请先完成 Whisper、模型和 VAD 配置。"
+        }
+        return nil
     }
 
-    private func syncWorkspace() {
-        let customer = customerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let project = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
-        selectedWorkspaceID = projects.first { value in
-            guard value.name.localizedCaseInsensitiveCompare(project) == .orderedSame,
-                  let parent = customers.first(where: { $0.id == value.customerID }) else { return false }
-            return parent.name.localizedCaseInsensitiveCompare(customer) == .orderedSame
-        }?.id
+    /// A project's choices come from both its configured meeting types and meetings already
+    /// filed under that project. This is computed from the current selection so switching
+    /// projects immediately switches the visible choices as well.
+    private var projectTagSuggestions: [String] {
+        guard let project = formalProject else { return [] }
+        let customer = customers.first { $0.id == project.customerID }?.name
+        let historicalTags = priorRecords.filter { record in
+            if record.workspaceID == project.id { return true }
+            // Retain compatibility with older records created before stable project IDs.
+            return record.workspaceID == nil
+                && record.projectName == project.name
+                && (customer == nil || record.customerName == customer)
+        }.flatMap { $0.tags ?? [] }
+        return MeetingTags.parse(
+            (project.configuredMeetingTypes + historicalTags).joined(separator: ","))
     }
 
     private func icon(for kind: SupportingMaterial.Kind) -> String {

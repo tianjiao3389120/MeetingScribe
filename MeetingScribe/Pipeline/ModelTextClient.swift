@@ -37,22 +37,47 @@ struct ModelTextClient {
 
     func complete(system: String, user: String,
                   timeout: TimeInterval = 900) async throws -> String {
-        let raw: String
+        let startedAt = Date()
+        let estimatedInput = TokenEstimator.count(system + "\n" + user)
+        let backendName: String
+        let modelName: String
         switch backend {
-        case .codex(let executable):
-            raw = try await Shell.check(
-                executable, ToolLocator.codexExecArguments,
-                stdin: Self.prompt(system: system, user: user), timeout: timeout).stdout
-        case .claude(let executable):
-            raw = try await Shell.check(
-                executable, ["-p", "--output-format", "text"],
-                stdin: Self.prompt(system: system, user: user), timeout: timeout).stdout
-        case .api(let client):
-            raw = try await client.complete(system: system, user: user, images: [])
+        case .codex: backendName = "Codex CLI"; modelName = "Codex CLI"
+        case .claude: backendName = "Claude CLI"; modelName = "Claude CLI"
+        case .api(let client): backendName = "API"; modelName = client.model
         }
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw Failure.emptyResponse }
-        return text
+        do {
+            let raw: String
+            var actualInput: Int?
+            var actualOutput: Int?
+            switch backend {
+            case .codex(let executable):
+                raw = try await Shell.check(
+                    executable, ToolLocator.codexExecArguments,
+                    stdin: Self.prompt(system: system, user: user), timeout: timeout).stdout
+            case .claude(let executable):
+                raw = try await Shell.check(
+                    executable, ["-p", "--output-format", "text"],
+                    stdin: Self.prompt(system: system, user: user), timeout: timeout).stdout
+            case .api(let client):
+                let result = try await client.completeDetailed(system: system, user: user, images: [])
+                raw = result.text; actualInput = result.inputTokens; actualOutput = result.outputTokens
+            }
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw Failure.emptyResponse }
+            TokenUsageLedger.record(
+                startedAt: startedAt, backend: backendName, model: modelName,
+                inputTokens: actualInput ?? estimatedInput,
+                outputTokens: actualOutput ?? TokenEstimator.count(text),
+                isEstimated: actualInput == nil || actualOutput == nil, status: .succeeded)
+            return text
+        } catch {
+            TokenUsageLedger.record(
+                startedAt: startedAt, backend: backendName, model: modelName,
+                inputTokens: estimatedInput, outputTokens: 0, isEstimated: true,
+                status: error is CancellationError ? .cancelled : .failed, error: error)
+            throw error
+        }
     }
 
     private static func prompt(system: String, user: String) -> String {

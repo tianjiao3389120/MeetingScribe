@@ -58,6 +58,7 @@ struct MeetingAssets: Sendable {
     var sourceURL: URL
     var sourceKind: SourceKind = .recordedMedia
     var relatedSourceURLs: [URL] = []
+    var meetingGroupID: UUID? = nil
     var recordedAt: Date = Date()
     var customTitle: String?
     var meetingContext: String = ""

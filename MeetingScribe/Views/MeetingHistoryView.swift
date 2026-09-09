@@ -21,11 +21,8 @@ struct MeetingHistoryView: View {
     @State private var dashboardWorkspace: MeetingWorkspace?
     @State private var editingTranscript: MeetingRecord?
     @State private var editingSpeakers: MeetingRecord?
-    @State private var translatingTranscript: MeetingRecord?
     @State private var minutesVersionRecord: MeetingRecord?
     @State private var editingAction: ActionEditTarget?
-    @State private var pendingActionReviewWorkspace: MeetingWorkspace?
-    @State private var isReviewingActions = false
     @State private var detailTab: DetailTab = .customer
     @State private var meetingTypeFilter = ""
     @State private var customerFilter = ""
@@ -157,7 +154,6 @@ struct MeetingHistoryView: View {
                         .frame(minWidth: 270, idealWidth: 310, maxWidth: 370)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
-
                 if let record = selected {
                     historyDetail(record)
                 } else {
@@ -197,10 +193,6 @@ struct MeetingHistoryView: View {
             WorkspaceDashboardView(
                 workspace: workspace,
                 records: records.filter { $0.workspaceID == workspace.id },
-                onReviewHistory: {
-                    dashboardWorkspace = nil
-                    pendingActionReviewWorkspace = workspace
-                },
                 onOpenMeeting: { id in
                     dashboardWorkspace = nil
                     selection = id
@@ -224,13 +216,6 @@ struct MeetingHistoryView: View {
                     if regenerate { onReprocess(updated) }
                 } catch { self.error = "说话人信息保存失败：\(error.localizedDescription)" }
             } onCancel: { editingSpeakers = nil }
-        }
-        .sheet(item: $translatingTranscript) { record in
-            TranscriptTranslationView(record: record) { updated in
-                if let index = records.firstIndex(where: { $0.id == updated.id }) {
-                    records[index] = updated
-                }
-            }
         }
         .sheet(item: $minutesVersionRecord) { record in
             MeetingMinutesVersionView(
@@ -278,15 +263,6 @@ struct MeetingHistoryView: View {
             if let kept = pendingVersionCleanup {
                 Text("将保留：\(versionLabel(kept))。其他 \(max(versions(for: kept).count - 1, 0)) 个版本将被删除；原始媒体不会被删除。")
             }
-        }
-        .alert("回溯历史待办？", isPresented: Binding(
-            get: { pendingActionReviewWorkspace != nil },
-            set: { if !$0 { pendingActionReviewWorkspace = nil } }
-        )) {
-            Button("取消", role: .cancel) { pendingActionReviewWorkspace = nil }
-            Button("开始分析") { startHistoricalActionReview() }
-        } message: {
-            Text("将按时间顺序分析“\(pendingActionReviewWorkspace?.name ?? "当前项目")”的后续会议，并为明确提及的历史待办生成状态建议。不会直接修改待办状态，分析会消耗大模型 Token。")
         }
     }
 
@@ -508,6 +484,11 @@ struct MeetingHistoryView: View {
                 if record.emailDrafts?.hongKongTraditional.isEmpty == false {
                     Image(systemName: "character.book.closed.fill").foregroundStyle(.secondary)
                 }
+                if record.structuredSummary == nil {
+                    Label("基础纪要", systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .help("该版本没有结构化问题和待办能力")
+                }
                 let versions = versions(for: record)
                 if versions.count > 1 {
                     Text("\(versions.count) 个版本")
@@ -584,7 +565,6 @@ struct MeetingHistoryView: View {
                         }
                         .help(count > 0 ? "打开需要确认的问题关联" : "打开项目问题档案")
                     }
-                    Button("复制纪要") { copyMinutes(record) }
                     Menu("更多") {
                         Button("编辑会议信息…") { editingClassification = record }
                         Menu("导出会议资料") {
@@ -610,6 +590,8 @@ struct MeetingHistoryView: View {
                         if FileManager.default.fileExists(atPath: record.sourcePath) {
                             Button("打开源文件") { NSWorkspace.shared.open(record.sourceURL) }
                             Button("重新处理") { onReprocess(record) }
+                        } else if record.sourceKind == MeetingAssets.SourceKind.importedTranscript.rawValue {
+                            Button("使用内部逐字稿重新生成") { onReprocess(record) }
                         } else {
                             Button("重新定位源文件…") { relinkSource(record) }
                         }
@@ -632,7 +614,6 @@ struct MeetingHistoryView: View {
                         }
                         Divider()
                         Button("校正识别并重新生成…") { editingTranscript = record }
-                        Button("生成双语逐字稿…") { translatingTranscript = record }
                         Divider()
                         Button(record.isArchived == true ? "移出归档" : "归档") {
                             toggleArchived(record)
@@ -670,36 +651,12 @@ struct MeetingHistoryView: View {
                             error = "打开纪要失败：\(openError.localizedDescription)"
                         }
                     }
-                    Button("更多") { minutesVersionRecord = record }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
         case .actions:
             if let actions = record.structuredSummary?.actionItems, !actions.isEmpty {
                 List {
-                    let suggestions = pendingSuggestions(for: record)
-                    if !suggestions.isEmpty {
-                        Section {
-                            ForEach(suggestions) { suggestion in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack {
-                                        Text(suggestion.task).font(.body.weight(.medium))
-                                        Spacer()
-                                        Button("确认更新") { applySuggestion(record, suggestion) }
-                                    }
-                                    Text("\(statusText(suggestion.previousStatus)) → \(statusText(suggestion.proposedStatus))")
-                                        .font(.caption).foregroundStyle(.blue)
-                                }.padding(.vertical, 4)
-                            }
-                        } header: {
-                            HStack {
-                                Text("历史待办状态建议")
-                                Spacer()
-                                Button("全部确认") { applyAllSuggestions(record) }
-                                    .font(.caption).buttonStyle(.borderless)
-                            }
-                        }
-                    }
                     Section("本次会议待办") {
                         ForEach(actions.indices, id: \.self) { index in
                             let action = actions[index]
@@ -869,7 +826,8 @@ struct MeetingHistoryView: View {
     }
 
     private func versionKey(_ record: MeetingRecord) -> String {
-        record.sourceURL.standardizedFileURL.path
+        if let id = record.meetingGroupID { return "meeting:\(id.uuidString.lowercased())" }
+        return record.sourceURL.standardizedFileURL.path
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .lowercased()
     }
@@ -944,44 +902,6 @@ struct MeetingHistoryView: View {
         return workspaces.first { $0.id == id }
     }
 
-    private var actionReviewWorkspace: MeetingWorkspace? {
-        if let selectedFilterWorkspace { return selectedFilterWorkspace }
-        guard let id = selected?.workspaceID else { return nil }
-        return workspaces.first { $0.id == id }
-    }
-
-    private func startHistoricalActionReview() {
-        guard let workspace = pendingActionReviewWorkspace else { return }
-        pendingActionReviewWorkspace = nil
-        isReviewingActions = true
-        error = nil
-        exportMessage = "正在准备“\(workspace.name)”的历史待办回溯…"
-        let snapshot = records
-        Task {
-            do {
-                let result = try await HistoricalActionReviewService(settings: .shared).run(
-                    records: snapshot, workspaceID: workspace.id
-                ) { message in
-                    Task { @MainActor in exportMessage = message }
-                }
-                for updated in result.updatedRecords {
-                    if let index = records.firstIndex(where: { $0.id == updated.id }) {
-                        records[index] = updated
-                    }
-                }
-                exportMessage = result.reviewedMeetings == 0
-                    ? "没有需要回溯的历史待办。"
-                    : "回溯完成：检查 \(result.reviewedMeetings) 场后续会议，生成 \(result.suggestions) 条待确认建议。"
-                if result.suggestions > 0 {
-                    selection = result.updatedRecords.last?.id
-                    detailTab = .actions
-                }
-            } catch {
-                self.error = "历史待办回溯失败：\(error.localizedDescription)"
-            }
-            isReviewingActions = false
-        }
-    }
 
     private func migrateHistoricalTitlesIfNeeded() {
         let key = "meetingHistory.didMigrateTitlesAndDates.v2"
@@ -1028,6 +948,11 @@ struct MeetingHistoryView: View {
         do {
             let updated = try MeetingHistoryStore.updateLibraryState(
                 id: record.id, favorite: favorite, archived: archived)
+            let key = versionKey(record)
+            for index in records.indices where versionKey(records[index]) == key {
+                if let favorite { records[index].isFavorite = favorite }
+                if let archived { records[index].isArchived = archived }
+            }
             if let index = records.firstIndex(where: { $0.id == record.id }) { records[index] = updated }
             error = nil
         } catch { self.error = "保存失败：\(error.localizedDescription)" }
@@ -1048,51 +973,21 @@ struct MeetingHistoryView: View {
         }
     }
 
-    private func pendingSuggestions(for record: MeetingRecord) -> [ActionStatusSuggestion] {
-        let applied = Set(record.appliedActionSuggestionIDs ?? [])
-        return (record.actionStatusSuggestions ?? []).filter { !applied.contains($0.id) }
-    }
-
-    private func applySuggestion(_ record: MeetingRecord, _ suggestion: ActionStatusSuggestion) {
-        do {
-            for updated in try MeetingHistoryStore.applyActionSuggestion(
-                sourceMeetingID: record.id, suggestionID: suggestion.id) {
-                if let index = records.firstIndex(where: { $0.id == updated.id }) {
-                    records[index] = updated
-                }
-            }
-            error = nil
-        } catch { self.error = "状态更新失败：\(error.localizedDescription)" }
-    }
-
-    private func applyAllSuggestions(_ record: MeetingRecord) {
-        for suggestion in pendingSuggestions(for: record) {
-            applySuggestion(records.first(where: { $0.id == record.id }) ?? record, suggestion)
-        }
-    }
-
-    private func statusText(_ value: String) -> String { value.isEmpty ? "待确认" : value }
-
     private func removePending() {
         guard let record = pendingDelete else { return }
         pendingDelete = nil
+        var staged: URL?
         do {
-            try MeetingHistoryStore.remove(id: record.id)
+            staged = try MeetingHistoryStore.stageRemoval(id: record.id)
             try ProjectLedgerStore.removePendingReferences(to: [record.id])
+            MeetingHistoryStore.finalizeRemoval(stagedAt: staged)
             records.removeAll { $0.id == record.id }
             selection = records.first?.id
             error = nil
         } catch {
+            if let staged { try? MeetingHistoryStore.restoreRemoval(id: record.id, stagedAt: staged) }
             self.error = "删除失败：\(error.localizedDescription)"
         }
-    }
-
-    private func copyMinutes(_ record: MeetingRecord) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(
-            CustomerMinutesRenderer.markdown(for: record), forType: .string)
-        exportMessage = "纪要已复制"
-        error = nil
     }
 
     private func relinkSource(_ record: MeetingRecord) {
@@ -1136,15 +1031,24 @@ struct MeetingHistoryView: View {
             error = "当前选中的是“未生成纪要”版本。为避免误删，请先在历史版本菜单中选择“已生成纪要”版本。"
             return
         }
+        var staged: [(UUID, URL)] = []
         do {
-            for record in obsolete { try MeetingHistoryStore.remove(id: record.id) }
+            for record in obsolete {
+                if let url = try MeetingHistoryStore.stageRemoval(id: record.id) {
+                    staged.append((record.id, url))
+                }
+            }
             let removed = Set(obsolete.map(\.id))
             try ProjectLedgerStore.removePendingReferences(to: removed)
+            staged.forEach { MeetingHistoryStore.finalizeRemoval(stagedAt: $0.1) }
             records.removeAll { removed.contains($0.id) }
             selection = kept.id
             exportMessage = "已清理 \(obsolete.count) 个其他版本"
             error = nil
         } catch {
+            for (id, url) in staged.reversed() {
+                try? MeetingHistoryStore.restoreRemoval(id: id, stagedAt: url)
+            }
             self.error = "版本清理失败：\(error.localizedDescription)"
             load()
         }
@@ -1249,7 +1153,8 @@ private struct HistoricalSpeakerEditorView: View {
                 Button("仅保存") { save(regenerate: false) }
                 Button("保存并重新生成") { save(regenerate: true) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!FileManager.default.fileExists(atPath: record.sourcePath))
+                    .disabled(!FileManager.default.fileExists(atPath: record.sourcePath)
+                              && record.sourceKind != MeetingAssets.SourceKind.importedTranscript.rawValue)
             }.padding(14)
         }.frame(width: 720, height: 500)
     }

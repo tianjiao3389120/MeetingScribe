@@ -7,6 +7,12 @@ import Foundation
 /// instead of a bespoke integration per vendor.
 struct OpenAICompatibleClient {
 
+    struct Completion: Sendable {
+        let text: String
+        let inputTokens: Int?
+        let outputTokens: Int?
+    }
+
     let baseURL: String
     let apiKey: String?
     let model: String
@@ -26,6 +32,16 @@ struct OpenAICompatibleClient {
         images: [Attachment],
         onProgress: @Sendable (String) -> Void = { _ in }
     ) async throws -> String {
+        try await completeDetailed(system: system, user: user, images: images,
+                                   onProgress: onProgress).text
+    }
+
+    func completeDetailed(
+        system: String,
+        user: String,
+        images: [Attachment],
+        onProgress: @Sendable (String) -> Void = { _ in }
+    ) async throws -> Completion {
 
         var content: [[String: Any]] = []
 
@@ -66,6 +82,9 @@ struct OpenAICompatibleClient {
                 "stream": true,
             ]
             body[usesOpenAICompletionTokenParameter ? "max_completion_tokens" : "max_tokens"] = 8192
+            if usesOpenAICompletionTokenParameter {
+                body["stream_options"] = ["include_usage": true]
+            }
         }
 
         var request = URLRequest(url: try endpoint())
@@ -89,6 +108,8 @@ struct OpenAICompatibleClient {
         var text = ""
         var reportedAt = Date.distantPast
         var outputFinished = false
+        var inputTokens: Int?
+        var outputTokens: Int?
 
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
@@ -100,6 +121,11 @@ struct OpenAICompatibleClient {
 
             if let error = event["error"] as? [String: Any] {
                 throw Failure.stream(error["message"] as? String ?? "未知错误")
+            }
+
+            if let usage = event["usage"] as? [String: Any] {
+                inputTokens = (usage["input_tokens"] ?? usage["prompt_tokens"]) as? Int
+                outputTokens = (usage["output_tokens"] ?? usage["completion_tokens"]) as? Int
             }
 
             if apiStyle == .responses {
@@ -121,9 +147,12 @@ struct OpenAICompatibleClient {
                         onProgress("模型正在处理较长内容…")
                     }
                 } else if type == "response.completed",
-                          text.isEmpty,
                           let response = event["response"] as? [String: Any] {
-                    text = Self.responseOutputText(from: response)
+                    if text.isEmpty { text = Self.responseOutputText(from: response) }
+                    if let usage = response["usage"] as? [String: Any] {
+                        inputTokens = usage["input_tokens"] as? Int
+                        outputTokens = usage["output_tokens"] as? Int
+                    }
                     outputFinished = !text.isEmpty
                 } else if type == "response.output_text.done" {
                     if text.isEmpty, let finalText = event["text"] as? String {
@@ -171,7 +200,7 @@ struct OpenAICompatibleClient {
 
         let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { throw Failure.empty }
-        return result
+        return Completion(text: result, inputTokens: inputTokens, outputTokens: outputTokens)
     }
 
     /// Some Responses-compatible gateways buffer deltas and only include text

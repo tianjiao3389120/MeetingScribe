@@ -28,6 +28,26 @@ final class ProjectIssueAnalysisServiceTests: XCTestCase {
         XCTAssertEqual(loaded.analysis(for: issue.id)?.summary, "第二版")
     }
 
+    func testSavedAnalysisBecomesStaleWhenIssueGetsANewEvent() {
+        let first = ProjectIssueEvent(
+            kind: .created, occurredAt: Date(), meetingID: UUID(), meetingTitle: "首次会议",
+            previousStatus: nil, currentStatus: "进行中", title: "问题", background: "",
+            rootCause: "", solution: "", progress: "", evidence: [])
+        var issue = ProjectIssue(
+            id: "ISSUE-1", workspaceID: UUID(), title: "问题", aliases: [], background: "",
+            rootCause: "", solution: "", status: "进行中", createdAt: Date(),
+            updatedAt: Date(), sourceMeetingID: first.meetingID, events: [first])
+        let analysis = ProjectIssueAnalysis(
+            issueID: issue.id, workspaceID: issue.workspaceID, summary: "总结", timeline: [],
+            generatedAt: Date(), sourceEventIDs: [first.id])
+        XCTAssertFalse(analysis.isStale(comparedWith: issue))
+        issue.events.append(ProjectIssueEvent(
+            kind: .updated, occurredAt: Date(), meetingID: UUID(), meetingTitle: "后续会议",
+            previousStatus: "进行中", currentStatus: "等待中", title: "问题", background: "",
+            rootCause: "", solution: "", progress: "新增进展", evidence: ["屏幕 12:34"]))
+        XCTAssertTrue(analysis.isStale(comparedWith: issue))
+    }
+
     func testAnalysisResponseParsesAndRemovesEvidenceTimecodes() throws {
         let raw = #"{"summary":"问题仍在排查。[12:34]","timeline":[{"date":"2026-08-01","meetingTitle":"周会","change":"已取得日志（[01:20]）"}]}"#
         let report = try ProjectIssueAnalysisService.parse(raw)
@@ -44,7 +64,7 @@ final class ProjectIssueAnalysisServiceTests: XCTestCase {
             meetingID: associatedID, meetingTitle: "二月周会",
             previousStatus: "待确认", currentStatus: "进行中", title: "引擎崩溃",
             background: "批处理期间发生", rootCause: "仍在排查", solution: "收集日志",
-            progress: "已取得错误码", evidence: ["[01:00]"])
+            progress: "已取得错误码", evidence: ["屏幕 01:00"])
         let issue = ProjectIssue(
             id: "ISSUE-1", workspaceID: workspaceID, title: "引擎崩溃", aliases: [],
             background: "生产异常", rootCause: "待确认", solution: "继续取证", status: "进行中",

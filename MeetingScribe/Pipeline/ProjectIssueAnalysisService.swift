@@ -23,6 +23,10 @@ struct ProjectIssueAnalysisService {
 
     let settings: Settings
 
+    static func estimatedTokens(issue: ProjectIssue, records: [MeetingRecord]) -> Int {
+        TokenEstimator.count(systemPrompt + "\n" + sourceMaterial(issue: issue, records: records)) + 900
+    }
+
     func analyze(issue: ProjectIssue, records: [MeetingRecord]) async throws -> Report {
         let material = Self.sourceMaterial(issue: issue, records: records)
         let raw = try await ModelTextClient(settings: settings).complete(
@@ -122,7 +126,12 @@ struct ProjectIssueAnalysisService {
     }
 
     private static func parseEvidenceTime(_ raw: String) -> TimeInterval? {
-        let value = raw.trimmingCharacters(in: CharacterSet(charactersIn: "[]（）() "))
+        let pattern = #"(?<!\d)(\d{1,2}:\d{2}(?::\d{2})?)(?!\d)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: raw, range: NSRange(raw.startIndex..., in: raw)),
+              let range = Range(match.range(at: 1), in: raw) else { return nil }
+        let value = String(raw[range])
         let parts = value.split(separator: ":").compactMap { Double($0) }
         if parts.count == 2 { return parts[0] * 60 + parts[1] }
         if parts.count == 3 { return parts[0] * 3600 + parts[1] * 60 + parts[2] }

@@ -64,6 +64,14 @@ struct ProjectIssueAnalysisView: View {
                 } actions: {
                     Button("重试") { startAnalysis() }
                 }
+            } else if summary.isEmpty {
+                ContentUnavailableView {
+                    Label("尚未生成问题分析", systemImage: "sparkles")
+                } description: {
+                    Text("将发送 \(issue.events.count) 条已确认进展，预计约 \(ProjectIssueAnalysisService.estimatedTokens(issue: issue, records: records).formatted()) Token。")
+                } actions: {
+                    Button("开始分析") { startAnalysis() }
+                }
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
@@ -84,7 +92,6 @@ struct ProjectIssueAnalysisView: View {
             }
         }
         .frame(width: 820, height: 700)
-        .task { if summary.isEmpty { startAnalysis() } }
     }
 
     private var visualTimeline: some View {
@@ -119,8 +126,17 @@ struct ProjectIssueAnalysisView: View {
         didCopy = false
         Task {
             do {
-                let report = try await ProjectIssueAnalysisService(settings: .shared)
-                    .analyze(issue: issue, records: records)
+                let related = records.first { record in
+                    issue.events.contains { $0.meetingID == record.id }
+                }
+                let context = TokenUsageContext(
+                    feature: "项目问题分析", customer: related?.customerName,
+                    project: related?.projectName, meetingID: related?.id,
+                    meetingTitle: issue.title)
+                let report = try await TokenUsageContext.$current.withValue(context) {
+                    try await ProjectIssueAnalysisService(settings: .shared)
+                        .analyze(issue: issue, records: records)
+                }
                 let updated = try ProjectLedgerStore.saveIssueAnalysis(
                     issue: issue, report: report)
                 summary = report.summary

@@ -44,7 +44,10 @@ struct AdaptiveFramePlanner {
     func plan(transcript: Transcript, duration: TimeInterval) async throws -> [Request] {
         let candidates = Self.candidateTimeline(from: transcript)
         guard !candidates.isEmpty else { return [] }
-        let raw = try await ModelTextClient(settings: settings).complete(
+        let context = (TokenUsageContext.current ?? TokenUsageContext(feature: "画面节点规划"))
+            .replacingFeature("画面节点规划")
+        let raw = try await TokenUsageContext.$current.withValue(context) {
+            try await ModelTextClient(settings: settings).complete(
             system: "你负责为会议录像选择需要补看屏幕的时间点。只输出 JSON，不要解释。",
             user: """
             阅读逐字稿，找出屏幕画面可能补充关键事实的节点，例如：信息密集的汇报、含糊的“这里/这个”、
@@ -58,6 +61,7 @@ struct AdaptiveFramePlanner {
             \(candidates)
             """,
             timeout: 180)
+        }
         let planned = Self.parse(raw, duration: duration)
         // A model may conservatively return an empty list (or malformed JSON)
         // even when the transcript explicitly says "看这里" during a screen

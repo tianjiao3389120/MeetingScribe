@@ -83,7 +83,7 @@ struct PromptBuilder {
       }],
       "actionItems": [{
         "trackingID": "关联历史待办时填写其 MS-... ID，否则为 null；严禁把 ID 写入 task 或其他正文",
-        "issueID": "该待办明确服务于某个问题时填写对应 MS-ISSUE-... ID，否则为 null",
+        "issueID": "该待办明确服务于某个问题时填写对应标识：历史问题使用 MS-ISSUE-... ID，本次新问题使用 issues 中完全一致的 title；独立待办填 null",
         "owner": "责任方或待明确", "task": "可执行任务", "status": "状态",
         "due": "截止时间", "evidence": ["[12:34]"]
       }],

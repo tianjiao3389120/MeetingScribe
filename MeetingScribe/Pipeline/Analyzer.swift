@@ -21,38 +21,59 @@ struct Analyzer {
     let assets: MeetingAssets
     let settings: Settings
 
-    func run(progress: @escaping @Sendable (String) -> Void) async throws -> Result {
+    /// Builds the same text and image selection used by `run`, without invoking a model.
+    /// Keeping this here makes the user-visible preview an exact representation of the request.
+    func requestPreview() -> String {
+        let prepared = prepareRequest()
+        let images = prepared.imageIDs.isEmpty
+            ? "无"
+            : prepared.imageIDs.sorted().map(String.init).joined(separator: "、")
+        return """
+        ===== 系统提示词 =====
+        \(PromptBuilder.systemPrompt)
+
+        ===== 用户提交内容 =====
+        \(prepared.timeline)
+
+        ===== 随请求发送的画面编号 =====
+        \(images)
+        """
+    }
+
+    private func prepareRequest() -> (modelAssets: MeetingAssets, imageIDs: Set<Int>, timeline: String) {
         let selectedAdaptiveIDs = Self.selectAdaptiveOCRCaptures(
             from: assets.captures, limit: 6)
         var modelAssets = assets
         modelAssets.captures = assets.captures.filter {
             $0.evidenceReason == nil || selectedAdaptiveIDs.contains($0.id)
         }
-        // Only offer images to a backend that can actually take them; otherwise
-        // every capture goes in as OCR text and nothing is silently dropped.
         let canSendImages: Bool
         switch settings.backend {
-        case .codexCLI:         canSendImages = false
-        case .claudeCLI:        canSendImages = false   // `claude -p` takes stdin text only
+        case .codexCLI: canSendImages = false
+        case .claudeCLI: canSendImages = false
         case .openAICompatible: canSendImages = settings.providerSupportsVision
         }
-
         let imageIDs = canSendImages
             ? PromptBuilder.selectImageCaptures(from: modelAssets.captures, limit: 12)
             : []
         let combinedContext = [modelAssets.recognitionScenario.analysisGuidance,
                                modelAssets.workspace?.context ?? "",
                                modelAssets.meetingContext,
-                               ActionTracking.promptContext(for: modelAssets.workspace?.id),
                                IssueTracking.promptContext(for: modelAssets.workspace?.id),
                                "纪要模板（\(MinutesTemplate.template(id: modelAssets.minutesTemplateID).name)）：\(MinutesTemplate.template(id: modelAssets.minutesTemplateID).instructions)",
                                "本次纪要附加要求：\(settings.minutesInstructions)"]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: "\n")
-        let builder = PromptBuilder(assets: modelAssets,
-                                    contextHint: combinedContext,
-                                    imageCaptureIDs: imageIDs)
-        let timeline = builder.buildTimeline()
+        let timeline = PromptBuilder(assets: modelAssets,
+                                     contextHint: combinedContext,
+                                     imageCaptureIDs: imageIDs).buildTimeline()
+        return (modelAssets, imageIDs, timeline)
+    }
+
+    func run(progress: @escaping @Sendable (String) -> Void) async throws -> Result {
+        let prepared = prepareRequest()
+        let imageIDs = prepared.imageIDs
+        let timeline = prepared.timeline
 
         let raw: String
         switch settings.backend {
@@ -186,8 +207,12 @@ struct Analyzer {
                 补充屏幕OCR：
                 \(String(evidence.prefix(14_000)))
                 """
-            let raw = try await ModelTextClient(settings: settings).complete(
-                system: system, user: user, timeout: 300)
+            let context = (TokenUsageContext.current ?? TokenUsageContext(feature: "画面证据修复"))
+                .replacingFeature("画面证据修复")
+            let raw = try await TokenUsageContext.$current.withValue(context) {
+                try await ModelTextClient(settings: settings).complete(
+                    system: system, user: user, timeout: 300)
+            }
             return (Self.parseStructured(raw) ?? minutes,
                     GenerationUsage.estimatedPhase(name: "画面证据修复",
                                                    input: system + "\n" + user, output: raw))
@@ -245,12 +270,30 @@ struct Analyzer {
             return .init(caption: "会议材料图片《\(material.name)》：", jpeg: jpeg)
         }
 
-        return try await client.complete(
-            system: PromptBuilder.systemPrompt,
-            user: timeline,
-            images: materialAttachments + attachments,
-            onProgress: progress
-        )
+        let startedAt = Date()
+        let images = materialAttachments + attachments
+        let estimatedInput = TokenEstimator.count(PromptBuilder.systemPrompt + "\n" + timeline)
+            + images.count * 900
+        do {
+            let result = try await client.completeDetailed(
+                system: PromptBuilder.systemPrompt, user: timeline,
+                images: images, onProgress: progress)
+            TokenUsageLedger.record(
+                startedAt: startedAt, backend: settings.provider.name,
+                model: settings.providerModel,
+                inputTokens: result.inputTokens ?? estimatedInput,
+                outputTokens: result.outputTokens ?? TokenEstimator.count(result.text),
+                isEstimated: result.inputTokens == nil || result.outputTokens == nil,
+                status: .succeeded)
+            return result.text
+        } catch {
+            TokenUsageLedger.record(
+                startedAt: startedAt, backend: settings.provider.name,
+                model: settings.providerModel, inputTokens: estimatedInput,
+                outputTokens: 0, isEstimated: true,
+                status: error is CancellationError ? .cancelled : .failed, error: error)
+            throw error
+        }
     }
 
     // MARK: - Local CLI

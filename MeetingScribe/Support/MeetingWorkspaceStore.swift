@@ -39,15 +39,20 @@ enum MeetingWorkspaceStore {
             (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }
         let customer = normalized(customerName), project = normalized(projectName)
-        if !project.isEmpty {
+        // A project name is only unique inside its customer. Never use a project-only
+        // match: identical names under different customers would silently pollute the
+        // wrong project's recognition memory, issues, and action ledger.
+        if !customer.isEmpty, !project.isEmpty {
             let customerIDs = Set(workspaces.filter {
                 $0.isCustomer && normalized($0.name) == customer
             }.map(\.id))
+            guard !customerIDs.isEmpty else { return nil }
             if let match = workspaces.first(where: {
                 $0.isProject && normalized($0.name) == project
-                    && (customerIDs.isEmpty || $0.customerID.map(customerIDs.contains) == true)
+                    && $0.customerID.map(customerIDs.contains) == true
             }) { return match }
         }
+        if !project.isEmpty { return nil }
         if !customer.isEmpty {
             return workspaces.first { $0.isCustomer && normalized($0.name) == customer }
         }

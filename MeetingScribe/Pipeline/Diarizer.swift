@@ -171,15 +171,15 @@ struct Diarizer {
              modelDirectory.appendingPathComponent(embeddingModel).path,
              output.path,
              String(speakerCount)],
-            timeout: 3600
-        ) { line in
+            timeout: 3600,
+            onStderrLine: { line in
             // The script reports "PROGRESS <done> <total>" on stderr.
             let parts = line.split(separator: " ")
             guard parts.count == 3, parts[0] == "PROGRESS",
                   let done = Double(parts[1]), let total = Double(parts[2]), total > 0
             else { return }
             progress(done / total)
-        }
+        })
 
         let data = try Data(contentsOf: output)
         let payload = try JSONDecoder().decode(Payload.self, from: data)
