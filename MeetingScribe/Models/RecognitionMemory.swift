@@ -33,9 +33,8 @@ struct RecognitionMemoryEntry: Codable, Identifiable, Sendable, Equatable {
 }
 
 enum RecognitionMemoryStore {
-    static let directory = FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("MeetingScribe/RecognitionMemory", isDirectory: true)
+    static let directory = AppDirectories.applicationSupport
+        .appendingPathComponent("RecognitionMemory", isDirectory: true)
     static let entriesURL = directory.appendingPathComponent("entries.json")
 
     static func load(from url: URL = entriesURL) -> [RecognitionMemoryEntry] {

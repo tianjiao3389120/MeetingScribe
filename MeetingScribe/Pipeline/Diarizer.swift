@@ -11,7 +11,9 @@ struct Diarizer {
     /// Everything this feature installs lives here, so removing the directory
     /// fully uninstalls it.
     static let supportDirectory: URL = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        // Runtime, models, and voice profiles are shared with the release app.
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MeetingScribe", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base

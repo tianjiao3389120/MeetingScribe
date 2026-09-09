@@ -11,9 +11,8 @@ enum ProjectLedgerStore {
         }
     }
 
-    static let fileURL = FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("MeetingScribe/project-ledger.json")
+    static let fileURL = AppDirectories.applicationSupport
+        .appendingPathComponent("project-ledger.json")
 
     static func load(from url: URL = fileURL) throws -> ProjectLedger {
         guard FileManager.default.fileExists(atPath: url.path) else { return ProjectLedger() }

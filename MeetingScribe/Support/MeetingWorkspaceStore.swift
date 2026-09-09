@@ -3,9 +3,8 @@ import Foundation
 enum MeetingWorkspaceStore {
     private static let fallbackCustomerID = UUID(
         uuidString: "00000000-0000-4000-8000-000000000101")!
-    static let fileURL = FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("MeetingScribe/workspaces.json")
+    static let fileURL = AppDirectories.applicationSupport
+        .appendingPathComponent("workspaces.json")
 
     static func load(from url: URL = fileURL) throws -> [MeetingWorkspace] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }

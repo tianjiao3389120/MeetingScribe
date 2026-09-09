@@ -1,9 +1,8 @@
 import Foundation
 
 enum PendingJobStore {
-    static let fileURL = FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("MeetingScribe/pending-job.json")
+    static let fileURL = AppDirectories.applicationSupport
+        .appendingPathComponent("pending-job.json")
 
     static func save(_ job: PendingMeetingJob, to url: URL = fileURL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),

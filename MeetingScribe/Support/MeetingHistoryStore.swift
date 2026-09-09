@@ -29,8 +29,7 @@ enum MeetingHistoryStore {
         }
     }
     static let defaultDirectory: URL = {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MeetingScribe/Meetings", isDirectory: true)
+        AppDirectories.applicationSupport.appendingPathComponent("Meetings", isDirectory: true)
     }()
 
     static func save(_ sourceRecord: MeetingRecord, root: URL = defaultDirectory,

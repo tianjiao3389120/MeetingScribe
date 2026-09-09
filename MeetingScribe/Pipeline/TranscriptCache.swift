@@ -13,8 +13,7 @@ enum TranscriptCache {
     static let diarizationVersion = "diarization-v3|pyannote-int8|campplus|threshold0.8|min0.5-0.6|embeddings1"
 
     private static let directory: URL = {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MeetingScribe/transcripts", isDirectory: true)
+        let base = AppDirectories.caches.appendingPathComponent("transcripts", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }()
@@ -112,8 +111,7 @@ enum TranscriptCache {
 enum DiarizationCache {
 
     private static let directory: URL = {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MeetingScribe/speakers", isDirectory: true)
+        let base = AppDirectories.caches.appendingPathComponent("speakers", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }()

@@ -1,9 +1,8 @@
 import Foundation
 
 enum FeedbackStore {
-    static let directory = FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("MeetingScribe/Feedback", isDirectory: true)
+    static let directory = AppDirectories.applicationSupport
+        .appendingPathComponent("Feedback", isDirectory: true)
     static let candidatesURL = directory.appendingPathComponent("glossary-candidates.json")
 
     static func load(meetingID: UUID, root: URL = directory) -> MeetingFeedback? {
