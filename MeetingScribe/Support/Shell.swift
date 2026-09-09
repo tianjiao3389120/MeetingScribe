@@ -45,7 +45,10 @@ enum Shell {
 
         let debug = await PipelineDebugSession.current()
         let toolName = (executable as NSString).lastPathComponent
-        await debug?.writeLog("ENGINE START", "工具：\(toolName)\n路径：\(executable)\n参数：\(arguments.joined(separator: " "))")
+        let argumentLines = arguments.enumerated()
+            .map { "[\($0.offset)] \($0.element)" }
+            .joined(separator: "\n")
+        await debug?.writeLog("ENGINE START", "工具：\(toolName)\n路径：\(executable)\n参数：\n\(argumentLines)")
 
         let process = Process()
         let controller = ProcessController(process)
@@ -139,7 +142,7 @@ enum Shell {
         let result = Result(status: process.terminationStatus,
                             stdout: collector.stdoutString,
                             stderr: collector.stderrString)
-        await debug?.writeLog("ENGINE END · \(toolName)", "退出码：\(result.status)\nstdout：\n\(result.stdout)\nstderr：\n\(result.stderr)")
+        await debug?.writeLog("ENGINE END · \(toolName)", "退出码：\(result.status)\nstdout：\n\(result.stdout.isEmpty ? "<空>" : result.stdout)\nstderr：\n\(result.stderr.isEmpty ? "<空>" : result.stderr)")
         return result
     }
 

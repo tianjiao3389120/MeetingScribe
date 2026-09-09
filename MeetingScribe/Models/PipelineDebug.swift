@@ -18,8 +18,8 @@ struct PipelineDebugEvent: Identifiable {
     let createdAt = Date()
 }
 
-/// In-memory inspection and pause gate for one pipeline run. It intentionally
-/// never writes payloads to the meeting library or to disk.
+/// Inspection and pause gate for one pipeline run. Debug payloads are written
+/// to the run-specific log/artifact directory, never to the meeting library.
 @Observable
 @MainActor
 final class PipelineDebugSession {
@@ -75,9 +75,18 @@ final class PipelineDebugSession {
     @MainActor static func current() -> PipelineDebugSession? { activeSession }
 
     func writeLog(_ title: String, _ body: String) {
-        guard let data = "\n===== \(title) =====\n\(body)\n".data(using: .utf8) else { return }
-        try? logHandle?.seekToEnd()
-        try? logHandle?.write(contentsOf: data)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let formattedBody = body
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "  \($0)" }
+            .joined(separator: "\n")
+        guard let data = "\n[\(timestamp)] [\(title)]\n\(formattedBody)\n".data(using: .utf8) else { return }
+        do {
+            try logHandle?.seekToEnd()
+            try logHandle?.write(contentsOf: data)
+        } catch {
+            // Debug logging must never interrupt the meeting pipeline.
+        }
     }
 
     func writeArtifact(_ data: Data, name: String) -> URL? {

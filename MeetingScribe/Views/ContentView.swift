@@ -601,76 +601,12 @@ private struct ProgressPanel: View {
 
             StageTrack(current: runner.stage)
 
-            if Settings.shared.pipelineDebugEnabled {
-                PipelineDebugPanel(session: runner.debugSession)
-                    .frame(maxWidth: 620, maxHeight: 190)
-            }
-
             Button("取消", role: .cancel) { runner.cancel() }
                 .controlSize(.large)
 
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct PipelineDebugPanel: View {
-    let session: PipelineDebugSession
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Label("流水线调试", systemImage: "ladybug")
-                    .font(.headline)
-                Spacer()
-                if session.isPaused { Text("等待终端确认").foregroundStyle(.orange) }
-            }
-            if let logURL = session.logURL {
-                Text("完整日志：\(logURL.path)")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-            if let node = session.pausedNode, let phase = session.pausedPhase {
-                Text("已暂停：\(node) · \(phase.rawValue)。请在终端执行继续命令。")
-                    .font(.caption).foregroundStyle(.orange)
-                if let command = session.continueCommand {
-                    Text("终端确认：\(command)")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-            }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 5) {
-                    ForEach(session.events) { event in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(event.node) · \(event.phase.rawValue)")
-                                .font(.caption.weight(.semibold))
-                            Text(String(event.payload.prefix(600))
-                                 + (event.payload.count > 600 ? "\n…完整内容请查看日志" : ""))
-                                .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            if let image = event.image {
-                                Image(decorative: image, scale: 1, orientation: .up)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxHeight: 100)
-                                    .clipShape(RoundedRectangle(cornerRadius: 5))
-                            }
-                        }
-                        .padding(6)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
-                    }
-                }
-            }
-        }
-        .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.orange.opacity(0.45)))
     }
 }
 
