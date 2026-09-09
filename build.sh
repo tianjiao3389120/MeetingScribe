@@ -10,7 +10,9 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 APP_NAME="MeetingScribe"
-BUNDLE_ID="com.meetingscribe.app"
+# Local builds are isolated from the installed release by default.
+# Use MEETINGSCRIBE_BUNDLE_ID=com.meetingscribe.app for a release namespace.
+BUNDLE_ID="${MEETINGSCRIBE_BUNDLE_ID:-com.meetingscribe.dev}"
 VERSION="1.0"
 ICON_FILE="Assets/AppIcon.icns"
 ENTITLEMENTS_FILE="MeetingScribe.entitlements"
