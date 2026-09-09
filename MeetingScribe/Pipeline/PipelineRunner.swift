@@ -448,7 +448,8 @@ final class PipelineRunner {
                 }
             }
             try Task.checkCancellation()
-            await debugSession.after("提取画面", output: "保留画面：\(captures.count)")
+            await debugSession.after("提取画面", output: "保留画面：\(captures.count)",
+                                     image: captures.first?.image)
 
             stage = .readingScreen
             await debugSession.before("识别屏幕文字", input: "待 OCR 画面：\(captures.count)")

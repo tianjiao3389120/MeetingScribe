@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Observation
 
 enum PipelineDebugPhase: String {
@@ -11,6 +12,7 @@ struct PipelineDebugEvent: Identifiable {
     let node: String
     let phase: PipelineDebugPhase
     let payload: String
+    let image: CGImage?
     let createdAt = Date()
 }
 
@@ -43,9 +45,9 @@ final class PipelineDebugSession {
         }
     }
 
-    func after(_ node: String, output: String) async {
+    func after(_ node: String, output: String, image: CGImage? = nil) async {
         guard Settings.shared.pipelineDebugEnabled else { return }
-        append(node, .after, output)
+        append(node, .after, output, image: image)
         if Settings.shared.pipelineDebugPauseAfter {
             await pause(node, phase: .after)
         }
@@ -59,8 +61,9 @@ final class PipelineDebugSession {
         value?.resume()
     }
 
-    private func append(_ node: String, _ phase: PipelineDebugPhase, _ payload: String) {
-        events.append(PipelineDebugEvent(node: node, phase: phase, payload: payload))
+    private func append(_ node: String, _ phase: PipelineDebugPhase, _ payload: String,
+                        image: CGImage? = nil) {
+        events.append(PipelineDebugEvent(node: node, phase: phase, payload: payload, image: image))
         if events.count > 300 { events.removeFirst(events.count - 300) }
     }
 

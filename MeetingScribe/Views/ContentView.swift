@@ -646,6 +646,13 @@ private struct PipelineDebugPanel: View {
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                            if let image = event.image {
+                                Image(decorative: image, scale: 1, orientation: .up)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxHeight: 100)
+                                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                            }
                         }
                         .padding(6)
                         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
