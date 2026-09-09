@@ -61,6 +61,7 @@ final class PipelineRunner {
     private var pendingJobID: UUID?
 
     func cancel() {
+        debugSession.resume()
         task?.cancel()
         PendingJobStore.clear(id: pendingJobID)
         task = nil

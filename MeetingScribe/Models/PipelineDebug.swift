@@ -27,10 +27,12 @@ final class PipelineDebugSession {
     var isPaused: Bool { continuation != nil }
 
     func reset() {
+        let value = continuation
+        continuation = nil
+        value?.resume()
         events = []
         pausedNode = nil
         pausedPhase = nil
-        continuation = nil
     }
 
     func before(_ node: String, input: String) async {
