@@ -36,7 +36,11 @@ struct ModelTextClient {
     }
 
     func complete(system: String, user: String,
-                  timeout: TimeInterval = 900) async throws -> String {
+                  timeout: TimeInterval = 900,
+                  debug: PipelineDebugSession? = nil) async throws -> String {
+        let activeDebug: PipelineDebugSession?
+        if let debug { activeDebug = debug } else { activeDebug = await PipelineDebugSession.current() }
+        await activeDebug?.writeLog("MODEL TEXT REQUEST", "system:\n\(system)\n\nuser:\n\(user)")
         let raw: String
         switch backend {
         case .codex(let executable):
@@ -51,6 +55,7 @@ struct ModelTextClient {
             raw = try await client.complete(system: system, user: user, images: [])
         }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        await activeDebug?.writeLog("MODEL TEXT RESPONSE", text)
         guard !text.isEmpty else { throw Failure.emptyResponse }
         return text
     }

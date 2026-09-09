@@ -631,6 +631,12 @@ private struct PipelineDebugPanel: View {
                         .buttonStyle(.borderedProminent)
                 }
             }
+            if let logURL = session.logURL {
+                Text("完整日志：\(logURL.path)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
             if let node = session.pausedNode, let phase = session.pausedPhase {
                 Text("已暂停：\(node) · \(phase.rawValue)。请检查下方输入/输出后确认继续。")
                     .font(.caption).foregroundStyle(.orange)
@@ -641,7 +647,8 @@ private struct PipelineDebugPanel: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(event.node) · \(event.phase.rawValue)")
                                 .font(.caption.weight(.semibold))
-                            Text(event.payload)
+                            Text(String(event.payload.prefix(600))
+                                 + (event.payload.count > 600 ? "\n…完整内容请查看日志" : ""))
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)

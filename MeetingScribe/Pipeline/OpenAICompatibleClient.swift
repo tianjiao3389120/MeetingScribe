@@ -24,8 +24,12 @@ struct OpenAICompatibleClient {
         system: String,
         user: String,
         images: [Attachment],
-        onProgress: @Sendable (String) -> Void = { _ in }
+        onProgress: @Sendable (String) -> Void = { _ in },
+        debug: PipelineDebugSession? = nil
     ) async throws -> String {
+
+        let activeDebug: PipelineDebugSession?
+        if let debug { activeDebug = debug } else { activeDebug = await PipelineDebugSession.current() }
 
         var content: [[String: Any]] = []
 
@@ -76,6 +80,12 @@ struct OpenAICompatibleClient {
         }
         for (name, value) in httpHeaders { request.setValue(value, forHTTPHeaderField: name) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        var attachmentSummary = ""
+        for (index, image) in images.enumerated() {
+            let stored = await activeDebug?.writeArtifact(image.jpeg, name: "model-image-\(index + 1).jpg")
+            attachmentSummary += "\(image.caption)\(stored.map { " 文件：\($0.path)" } ?? "")\n"
+        }
+        await activeDebug?.writeLog("MODEL API REQUEST", "endpoint：\(request.url?.absoluteString ?? "")\nmodel：\(model)\nsystem：\n\(system)\n\nuser：\n\(user)\n\nattachments：\n\(attachmentSummary)")
         request.timeoutInterval = 900
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -171,6 +181,7 @@ struct OpenAICompatibleClient {
 
         let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { throw Failure.empty }
+        await activeDebug?.writeLog("MODEL API RESPONSE", result)
         return result
     }
 

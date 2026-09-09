@@ -21,7 +21,8 @@ struct Analyzer {
     let assets: MeetingAssets
     let settings: Settings
 
-    func run(progress: @escaping @Sendable (String) -> Void) async throws -> Result {
+    func run(debug: PipelineDebugSession? = nil,
+             progress: @escaping @Sendable (String) -> Void) async throws -> Result {
         let selectedAdaptiveIDs = Self.selectAdaptiveOCRCaptures(
             from: assets.captures, limit: 6)
         var modelAssets = assets
@@ -58,23 +59,24 @@ struct Analyzer {
         switch settings.backend {
         case .codexCLI:
             progress("正在通过本机 Codex CLI 生成纪要…")
-            raw = try await runLocalCLI(timeline: timeline)
+            raw = try await runLocalCLI(timeline: timeline, debug: debug)
         case .claudeCLI:
             progress("正在通过本机 Claude Code 生成纪要…")
-            raw = try await runLocalCLI(timeline: timeline)
+            raw = try await runLocalCLI(timeline: timeline, debug: debug)
         case .openAICompatible:
             let preset = settings.provider
             progress("正在调用 \(preset.name)（\(settings.providerModel)）生成纪要…")
             raw = try await runOpenAICompatible(timeline: timeline,
                                                 imageIDs: imageIDs,
-                                                progress: progress)
+                                                progress: progress,
+                                                debug: debug)
         }
 
         var phases = [GenerationUsage.estimatedPhase(
             name: "主纪要", input: PromptBuilder.systemPrompt + "\n" + timeline, output: raw)]
         if let structured = Self.parseStructured(raw) {
             let (reviewed, repairUsage) = await repairScreenEvidenceIfNeeded(
-                structured, progress: progress)
+                structured, progress: progress, debug: debug)
             if let repairUsage { phases.append(repairUsage) }
             return Result(markdown: StructuredMinutesRenderer.markdown(from: reviewed),
                           structured: reviewed, usedFallback: false,
@@ -151,7 +153,8 @@ struct Analyzer {
     /// analysis fail and never repeats transcription, extraction, or OCR.
     private func repairScreenEvidenceIfNeeded(
         _ minutes: StructuredMinutes,
-        progress: @escaping @Sendable (String) -> Void
+        progress: @escaping @Sendable (String) -> Void,
+        debug: PipelineDebugSession?
     ) async -> (StructuredMinutes, GenerationUsage.Phase?) {
         guard Self.shouldRepairScreenEvidence(minutes: minutes,
                                               assets: assets,
@@ -187,7 +190,7 @@ struct Analyzer {
                 \(String(evidence.prefix(14_000)))
                 """
             let raw = try await ModelTextClient(settings: settings).complete(
-                system: system, user: user, timeout: 300)
+                system: system, user: user, timeout: 300, debug: debug)
             return (Self.parseStructured(raw) ?? minutes,
                     GenerationUsage.estimatedPhase(name: "画面证据修复",
                                                    input: system + "\n" + user, output: raw))
@@ -220,7 +223,8 @@ struct Analyzer {
     private func runOpenAICompatible(
         timeline: String,
         imageIDs: Set<Int>,
-        progress: @escaping @Sendable (String) -> Void
+        progress: @escaping @Sendable (String) -> Void,
+        debug: PipelineDebugSession?
     ) async throws -> String {
         let client = OpenAICompatibleClient(
             baseURL: settings.providerBaseURL,
@@ -249,7 +253,8 @@ struct Analyzer {
             system: PromptBuilder.systemPrompt,
             user: timeline,
             images: materialAttachments + attachments,
-            onProgress: progress
+            onProgress: progress,
+            debug: debug
         )
     }
 
@@ -258,14 +263,14 @@ struct Analyzer {
     /// The CLI is an agentic tool, not a plain inference endpoint — it can only
     /// take text on stdin. Screen captures therefore reach it as OCR text; the
     /// diagram images are dropped. That is the tradeoff for using this backend.
-    private func runLocalCLI(timeline: String) async throws -> String {
+    private func runLocalCLI(timeline: String, debug: PipelineDebugSession?) async throws -> String {
         let prompt = """
         以下是会议材料，请按上述要求输出结构化 JSON。不要有任何前言、说明或追问。
 
         \(timeline)
         """
         return try await ModelTextClient(settings: settings).complete(
-            system: PromptBuilder.systemPrompt, user: prompt)
+            system: PromptBuilder.systemPrompt, user: prompt, debug: debug)
     }
 
     private func jpegData(from image: CGImage, quality: CGFloat = 0.72) -> Data? {

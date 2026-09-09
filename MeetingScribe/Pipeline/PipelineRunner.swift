@@ -524,7 +524,7 @@ final class PipelineRunner {
         assets = bundle
 
         let analyzer = Analyzer(assets: bundle, settings: Settings.shared)
-        let result = try await analyzer.run { [weak self] message in
+        let result = try await analyzer.run(debug: debugSession) { [weak self] message in
             Task { @MainActor in self?.detail = message }
         }
         await debugSession.after("生成纪要", output: "Markdown：\(result.markdown.count) 字，结构化结果：\(result.structured == nil ? "无" : "有")，回退：\(result.usedFallback)")
