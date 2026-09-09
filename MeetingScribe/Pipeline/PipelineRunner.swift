@@ -344,6 +344,7 @@ final class PipelineRunner {
             progress = 1
             detail = "复用已缓存的转录结果（\(cached.segments.count) 段）"
             usedCachedTranscript = true
+            saveDebugTranscript(cached, label: "transcript-cached")
         }
 
         var diarization: Diarization?
@@ -374,6 +375,9 @@ final class PipelineRunner {
             try Task.checkCancellation()
             audioURL = wav
             await debugSession.after("提取音轨", output: "WAV：\(wav.path)，大小：\(Self.fileSize(wav))")
+            if let artifact = debugSession.copyArtifact(from: wav, name: "audio.wav") {
+                debugSession.writeLog("音频输出", artifact.path)
+            }
         }
 
         if transcript == nil, let audioURL {
@@ -398,6 +402,7 @@ final class PipelineRunner {
             if let transcriptKey { TranscriptCache.save(fresh, key: transcriptKey) }
             transcript = fresh
             await debugSession.after("语音转录", output: "片段：\(fresh.segments.count)，文本预览：\(Self.preview(fresh.timecodedText))")
+            saveDebugTranscript(fresh, label: "transcript")
         }
 
         // Silent or music-only input yields nothing to summarise; fail here
@@ -450,6 +455,10 @@ final class PipelineRunner {
             try Task.checkCancellation()
             await debugSession.after("提取画面", output: "保留画面：\(captures.count)",
                                      image: captures.first?.image)
+            for capture in captures {
+                _ = debugSession.writeImageArtifact(capture.image,
+                                                    name: String(format: "frame-%04d.png", capture.id))
+            }
 
             stage = .readingScreen
             await debugSession.before("识别屏幕文字", input: "待 OCR 画面：\(captures.count)")
@@ -463,6 +472,10 @@ final class PipelineRunner {
             try Task.checkCancellation()
             detail = "保留 \(captures.count) 个不同画面"
             await debugSession.after("识别屏幕文字", output: "OCR 完成：\(captures.filter { !$0.recognizedText.isEmpty }.count) 个画面有文字")
+            let ocr = captures.map {
+                "【画面 \($0.id) · \($0.timecode)】\n\($0.textBlock)"
+            }.joined(separator: "\n\n")
+            _ = debugSession.writeTextArtifact(ocr, name: "screen-ocr.txt")
         }
 
         if var identified = diarization {
@@ -628,6 +641,13 @@ final class PipelineRunner {
 
     private static func preview(_ value: String) -> String {
         return value
+    }
+
+    private func saveDebugTranscript(_ transcript: Transcript, label: String) {
+        _ = debugSession.writeTextArtifact(transcript.timecodedText, name: "\(label).txt")
+        if let data = try? JSONEncoder().encode(transcript) {
+            _ = debugSession.writeArtifact(data, name: "\(label).json")
+        }
     }
 
     private static func fileSize(_ url: URL) -> String {

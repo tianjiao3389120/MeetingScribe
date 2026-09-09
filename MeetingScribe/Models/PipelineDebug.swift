@@ -1,5 +1,7 @@
 import Foundation
 import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import Observation
 
 enum PipelineDebugPhase: String {
@@ -82,6 +84,42 @@ final class PipelineDebugSession {
             writeLog("ARTIFACT ERROR", "\(url.path)：\(error.localizedDescription)")
             return nil
         }
+    }
+
+    func writeTextArtifact(_ text: String, name: String) -> URL? {
+        writeArtifact(Data(text.utf8), name: uniqueName(name))
+    }
+
+    func copyArtifact(from source: URL, name: String) -> URL? {
+        guard let directory = artifactDirectory else { return nil }
+        let destination = directory.appendingPathComponent(uniqueName(name))
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+            writeLog("ARTIFACT", destination.path)
+            return destination
+        } catch {
+            writeLog("ARTIFACT ERROR", "\(source.path) -> \(destination.path)：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func writeImageArtifact(_ image: CGImage, name: String) -> URL? {
+        guard let directory = artifactDirectory else { return nil }
+        let destination = directory.appendingPathComponent(uniqueName(name))
+        guard let writer = CGImageDestinationCreateWithURL(
+            destination as CFURL, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(writer, image, nil)
+        guard CGImageDestinationFinalize(writer) else { return nil }
+        writeLog("ARTIFACT", destination.path)
+        return destination
+    }
+
+    private func uniqueName(_ name: String) -> String {
+        let url = artifactDirectory?.appendingPathComponent(name)
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return name }
+        let stem = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        return "\(stem)-\(UUID().uuidString.prefix(8)).\(ext)"
     }
 
     func before(_ node: String, input: String) async {

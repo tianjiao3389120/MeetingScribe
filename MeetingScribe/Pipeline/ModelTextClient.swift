@@ -41,6 +41,8 @@ struct ModelTextClient {
         let activeDebug: PipelineDebugSession?
         if let debug { activeDebug = debug } else { activeDebug = await PipelineDebugSession.current() }
         await activeDebug?.writeLog("MODEL TEXT REQUEST", "system:\n\(system)\n\nuser:\n\(user)")
+        _ = await activeDebug?.writeTextArtifact(system, name: "model-system.txt")
+        _ = await activeDebug?.writeTextArtifact(user, name: "model-user.txt")
         let raw: String
         switch backend {
         case .codex(let executable):
@@ -56,6 +58,7 @@ struct ModelTextClient {
         }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         await activeDebug?.writeLog("MODEL TEXT RESPONSE", text)
+        _ = await activeDebug?.writeTextArtifact(text, name: "model-response.txt")
         guard !text.isEmpty else { throw Failure.emptyResponse }
         return text
     }

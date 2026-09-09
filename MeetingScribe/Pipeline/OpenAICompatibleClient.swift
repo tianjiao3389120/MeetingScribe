@@ -86,6 +86,8 @@ struct OpenAICompatibleClient {
             attachmentSummary += "\(image.caption)\(stored.map { " 文件：\($0.path)" } ?? "")\n"
         }
         await activeDebug?.writeLog("MODEL API REQUEST", "endpoint：\(request.url?.absoluteString ?? "")\nmodel：\(model)\nsystem：\n\(system)\n\nuser：\n\(user)\n\nattachments：\n\(attachmentSummary)")
+        _ = await activeDebug?.writeTextArtifact(system, name: "model-api-system.txt")
+        _ = await activeDebug?.writeTextArtifact(user, name: "model-api-user.txt")
         request.timeoutInterval = 900
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -182,6 +184,7 @@ struct OpenAICompatibleClient {
         let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { throw Failure.empty }
         await activeDebug?.writeLog("MODEL API RESPONSE", result)
+        _ = await activeDebug?.writeTextArtifact(result, name: "model-api-response.txt")
         return result
     }
 
