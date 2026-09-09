@@ -186,6 +186,14 @@ struct SettingsView: View {
                             .help("关闭时仅在检测到问题可能重复、从属或边界不清时暂停确认")
                         Text("仅用于排查转录问题，会持续占用临时目录空间；正常使用建议关闭。")
                             .font(.caption).foregroundStyle(.secondary)
+                        Divider()
+                        Toggle("流水线数据调试模式", isOn: $settings.pipelineDebugEnabled)
+                        if settings.pipelineDebugEnabled {
+                            Toggle("每个节点运行前暂停", isOn: $settings.pipelineDebugPauseBefore)
+                            Toggle("每个节点运行后暂停", isOn: $settings.pipelineDebugPauseAfter)
+                            Text("开启后会在处理页显示节点输入/输出摘要；数据只保留在当前运行内，不写入会议历史。")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                         DisclosureGroup("查看内置完整提示词（只读）") {
                             ScrollView {
                                 Text(PromptBuilder.systemPrompt)

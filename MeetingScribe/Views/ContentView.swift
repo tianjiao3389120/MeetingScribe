@@ -601,12 +601,61 @@ private struct ProgressPanel: View {
 
             StageTrack(current: runner.stage)
 
+            if Settings.shared.pipelineDebugEnabled {
+                PipelineDebugPanel(session: runner.debugSession)
+                    .frame(maxWidth: 620, maxHeight: 190)
+            }
+
             Button("取消", role: .cancel) { runner.cancel() }
                 .controlSize(.large)
 
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct PipelineDebugPanel: View {
+    let session: PipelineDebugSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label("流水线调试", systemImage: "ladybug")
+                    .font(.headline)
+                Spacer()
+                if session.isPaused {
+                    Text("等待确认")
+                        .foregroundStyle(.orange)
+                    Button("确认继续") { session.resume() }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            if let node = session.pausedNode, let phase = session.pausedPhase {
+                Text("已暂停：\(node) · \(phase.rawValue)。请检查下方输入/输出后确认继续。")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 5) {
+                    ForEach(session.events) { event in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(event.node) · \(event.phase.rawValue)")
+                                .font(.caption.weight(.semibold))
+                            Text(event.payload)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(6)
+                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.orange.opacity(0.45)))
     }
 }
 
