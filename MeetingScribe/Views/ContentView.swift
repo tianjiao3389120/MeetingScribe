@@ -624,12 +624,7 @@ private struct PipelineDebugPanel: View {
                 Label("流水线调试", systemImage: "ladybug")
                     .font(.headline)
                 Spacer()
-                if session.isPaused {
-                    Text("等待确认")
-                        .foregroundStyle(.orange)
-                    Button("确认继续") { session.resume() }
-                        .buttonStyle(.borderedProminent)
-                }
+                if session.isPaused { Text("等待终端确认").foregroundStyle(.orange) }
             }
             if let logURL = session.logURL {
                 Text("完整日志：\(logURL.path)")
@@ -638,7 +633,7 @@ private struct PipelineDebugPanel: View {
                     .textSelection(.enabled)
             }
             if let node = session.pausedNode, let phase = session.pausedPhase {
-                Text("已暂停：\(node) · \(phase.rawValue)。请检查下方输入/输出后确认继续。")
+                Text("已暂停：\(node) · \(phase.rawValue)。请在终端执行继续命令。")
                     .font(.caption).foregroundStyle(.orange)
                 if let command = session.continueCommand {
                     Text("终端确认：\(command)")

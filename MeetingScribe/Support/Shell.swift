@@ -43,6 +43,10 @@ enum Shell {
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Result {
 
+        let debug = await PipelineDebugSession.current()
+        let toolName = (executable as NSString).lastPathComponent
+        await debug?.writeLog("ENGINE START", "工具：\(toolName)\n路径：\(executable)\n参数：\(arguments.joined(separator: " "))")
+
         let process = Process()
         let controller = ProcessController(process)
         process.executableURL = URL(fileURLWithPath: executable)
@@ -68,10 +72,15 @@ enum Shell {
             let data = handle.availableData
             guard !data.isEmpty else { return }
             collector.appendErr(data)
-            if let onStderrLine, let chunk = String(data: data, encoding: .utf8) {
+            if let chunk = String(data: data, encoding: .utf8) {
                 for line in chunk.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
                     let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    if !trimmed.isEmpty { onStderrLine(trimmed) }
+                    if !trimmed.isEmpty {
+                        onStderrLine?(trimmed)
+                        Task { @MainActor in
+                            debug?.writeLog("ENGINE STDERR · \(toolName)", trimmed)
+                        }
+                    }
                 }
             }
         }
@@ -127,9 +136,11 @@ enum Shell {
             break
         }
 
-        return Result(status: process.terminationStatus,
-                      stdout: collector.stdoutString,
-                      stderr: collector.stderrString)
+        let result = Result(status: process.terminationStatus,
+                            stdout: collector.stdoutString,
+                            stderr: collector.stderrString)
+        await debug?.writeLog("ENGINE END · \(toolName)", "退出码：\(result.status)\nstdout：\n\(result.stdout)\nstderr：\n\(result.stderr)")
+        return result
     }
 
     @discardableResult
