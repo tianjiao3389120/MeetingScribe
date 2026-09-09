@@ -640,6 +640,12 @@ private struct PipelineDebugPanel: View {
             if let node = session.pausedNode, let phase = session.pausedPhase {
                 Text("已暂停：\(node) · \(phase.rawValue)。请检查下方输入/输出后确认继续。")
                     .font(.caption).foregroundStyle(.orange)
+                if let command = session.continueCommand {
+                    Text("终端确认：\(command)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 5) {

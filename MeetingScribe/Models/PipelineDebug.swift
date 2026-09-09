@@ -29,8 +29,10 @@ final class PipelineDebugSession {
     private(set) var pausedPhase: PipelineDebugPhase?
     private(set) var logURL: URL?
     private(set) var artifactDirectory: URL?
+    private(set) var continueCommand: String?
     private var continuation: CheckedContinuation<Void, Never>?
     private var logHandle: FileHandle?
+    private var controlMonitor: Task<Void, Never>?
 
     var isPaused: Bool { continuation != nil }
 
@@ -44,6 +46,9 @@ final class PipelineDebugSession {
         logHandle = nil
         logURL = nil
         artifactDirectory = nil
+        continueCommand = nil
+        controlMonitor?.cancel()
+        controlMonitor = nil
         if Settings.shared.pipelineDebugEnabled {
             let id = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
             let runID = "\(id)-\(UUID().uuidString.prefix(8))"
@@ -57,9 +62,11 @@ final class PipelineDebugSession {
             FileManager.default.createFile(atPath: url.path, contents: nil)
             logURL = url
             artifactDirectory = artifacts
+            let control = artifacts.appendingPathComponent("continue")
+            continueCommand = "touch \"\(control.path)\""
             logHandle = try? FileHandle(forWritingTo: url)
             Self.activeSession = self
-            writeLog("RUN", "日志：\(url.path)\n调试文件：\(artifacts.path)")
+            writeLog("RUN", "日志：\(url.path)\n调试文件：\(artifacts.path)\n终端继续命令：\(continueCommand ?? "")")
         } else if Self.activeSession === self {
             Self.activeSession = nil
         }
@@ -139,6 +146,8 @@ final class PipelineDebugSession {
     }
 
     func resume() {
+        controlMonitor?.cancel()
+        controlMonitor = nil
         pausedNode = nil
         pausedPhase = nil
         let value = continuation
@@ -156,8 +165,27 @@ final class PipelineDebugSession {
     private func pause(_ node: String, phase: PipelineDebugPhase) async {
         pausedNode = node
         pausedPhase = phase
+        if let continueCommand {
+            writeLog("TERMINAL WAIT", "节点：\(node) · \(phase.rawValue)\n执行以下命令确认继续：\n\(continueCommand)")
+            if let control = artifactDirectory?.appendingPathComponent("continue") {
+                try? FileManager.default.removeItem(at: control)
+            }
+            controlMonitor = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    if let self, let control = self.artifactDirectory?.appendingPathComponent("continue"),
+                       FileManager.default.fileExists(atPath: control.path) {
+                        try? FileManager.default.removeItem(at: control)
+                        self.resume()
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             self.continuation = continuation
         }
+        controlMonitor?.cancel()
+        controlMonitor = nil
     }
 }
