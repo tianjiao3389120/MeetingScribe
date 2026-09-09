@@ -319,11 +319,11 @@ final class PipelineRunner {
 
         stage = .probing
         progress = 0
-        await debugSession.before("读取文件", input: "文件：\(url.path)")
+        await debugSession.start("读取文件", input: "文件：\(url.path)")
         let info = try await extractor.probe()
         guard info.hasAudio else { throw MediaExtractor.Failure.noAudioTrack }
         detail = "时长 \(TranscriptSegment.humanDuration(info.duration))" + (info.hasVideo ? "，含画面" : "")
-        await debugSession.after("读取文件", output: "音频：\(info.hasAudio)，视频：\(info.hasVideo)，时长：\(info.duration)s")
+        await debugSession.finish("读取文件", output: "音频：\(info.hasAudio)，视频：\(info.hasVideo)，时长：\(info.duration)s")
 
         // --- transcription and diarization ---------------------------------
         let transcriptKey = TranscriptCache.key(for: url,
@@ -368,13 +368,13 @@ final class PipelineRunner {
         if needsAudio {
             usedCachedTranscript = transcript != nil
             stage = .extractingAudio
-            await debugSession.before("提取音轨", input: "需要音轨：转录或声纹缓存未命中")
+            await debugSession.start("提取音轨", input: "需要音轨：转录或声纹缓存未命中")
             try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
             let wav = work.appendingPathComponent("audio.wav")
             try await extractor.extractAudio(to: wav)
             try Task.checkCancellation()
             audioURL = wav
-            await debugSession.after("提取音轨", output: "WAV：\(wav.path)，大小：\(Self.fileSize(wav))")
+            await debugSession.finish("提取音轨", output: "WAV：\(wav.path)，大小：\(Self.fileSize(wav))")
             if let artifact = debugSession.copyArtifact(from: wav, name: "audio.wav") {
                 debugSession.writeLog("音频输出", artifact.path)
             }
@@ -383,7 +383,7 @@ final class PipelineRunner {
         if transcript == nil, let audioURL {
             usedCachedTranscript = false
             stage = .transcribing
-            await debugSession.before("语音转录", input: "语言：\(recognitionScenario.whisperLanguage)，提示词长度：\(transcriptionPrompt.count)\n提示词全文：\n\(transcriptionPrompt)")
+            await debugSession.start("语音转录", input: "语言：\(recognitionScenario.whisperLanguage)，提示词长度：\(transcriptionPrompt.count)\n提示词全文：\n\(transcriptionPrompt)")
             progress = 0
             RecognitionMemoryStore.recordPromptUsage(
                 workspaceID: workspace?.id, context: learningContext)
@@ -395,13 +395,14 @@ final class PipelineRunner {
                     guard let self else { return }
                     self.progress = min(seconds / max(info.duration, 1), 1)
                     self.detail = "已转录 \(TranscriptSegment.timecode(seconds)) / \(TranscriptSegment.timecode(info.duration))"
+                    self.debugSession.progress("语音转录", "已处理 \(TranscriptSegment.timecode(seconds)) / \(TranscriptSegment.timecode(info.duration))")
                 }
             }
             try Task.checkCancellation()
             let fresh = RecognitionMemoryStore.apply(to: raw, workspaceID: workspace?.id)
             if let transcriptKey { TranscriptCache.save(fresh, key: transcriptKey) }
             transcript = fresh
-            await debugSession.after("语音转录", output: "片段：\(fresh.segments.count)，文本预览：\(Self.preview(fresh.timecodedText))")
+            await debugSession.finish("语音转录", output: "片段：\(fresh.segments.count)，文本预览：\(Self.preview(fresh.timecodedText))")
             saveDebugTranscript(fresh, label: "transcript")
         }
 
@@ -411,7 +412,7 @@ final class PipelineRunner {
 
         if wantsSpeakers, diarization == nil, let audioURL {
             stage = .separatingSpeakers
-            await debugSession.before("分离说话人", input: "指定人数：\(speakerCount == 0 ? "自动" : String(speakerCount))")
+            await debugSession.start("分离说话人", input: "指定人数：\(speakerCount == 0 ? "自动" : String(speakerCount))")
             progress = 0
             detail = "分析声纹特征…"
             do {
@@ -422,11 +423,12 @@ final class PipelineRunner {
                     Task { @MainActor in
                         self?.progress = fraction
                         self?.detail = String(format: "分离说话人 %.0f%%", fraction * 100)
+                        self?.debugSession.progress("分离说话人", String(format: "进度 %.0f%%", fraction * 100))
                     }
                 }
                 if let speakerKey { DiarizationCache.save(result, key: speakerKey) }
                 diarization = result
-                await debugSession.after("分离说话人", output: "片段：\(result.segments.count)，声纹：\(result.embeddings.count)")
+                await debugSession.finish("分离说话人", output: "片段：\(result.segments.count)，声纹：\(result.embeddings.count)")
             } catch {
                 // Speaker labels are an enhancement; losing them should not
                 // cost the user the transcript they already paid for.
@@ -439,7 +441,7 @@ final class PipelineRunner {
         var captures: [ScreenCapture] = []
         if info.hasVideo, settings.frameDensity != .off {
             stage = .extractingFrames
-            await debugSession.before("提取画面", input: "采样密度：\(settings.frameDensity.displayName)，上限：\(settings.frameDensity.maxFrames)")
+            await debugSession.start("提取画面", input: "采样密度：\(settings.frameDensity.displayName)，上限：\(settings.frameDensity.maxFrames)")
             progress = 0
             let density = settings.frameDensity
             captures = try await extractor.extractFrames(
@@ -450,10 +452,11 @@ final class PipelineRunner {
                 Task { @MainActor in
                     self?.progress = value
                     self?.detail = "扫描画面变化…"
+                    self?.debugSession.progress("提取画面", String(format: "扫描进度 %.0f%%", value * 100))
                 }
             }
             try Task.checkCancellation()
-            await debugSession.after("提取画面", output: "保留画面：\(captures.count)",
+            await debugSession.finish("提取画面", output: "保留画面：\(captures.count)",
                                      image: captures.first?.image)
             for capture in captures {
                 _ = debugSession.writeImageArtifact(capture.image,
@@ -461,17 +464,18 @@ final class PipelineRunner {
             }
 
             stage = .readingScreen
-            await debugSession.before("识别屏幕文字", input: "待 OCR 画面：\(captures.count)")
+            await debugSession.start("识别屏幕文字", input: "待 OCR 画面：\(captures.count)")
             progress = 0
             captures = await TextRecognizer.annotate(captures) { [weak self] value in
                 Task { @MainActor in
                     self?.progress = value
                     self?.detail = "识别屏幕文字…"
+                    self?.debugSession.progress("识别屏幕文字", String(format: "OCR 进度 %.0f%%", value * 100))
                 }
             }
             try Task.checkCancellation()
             detail = "保留 \(captures.count) 个不同画面"
-            await debugSession.after("识别屏幕文字", output: "OCR 完成：\(captures.filter { !$0.recognizedText.isEmpty }.count) 个画面有文字")
+            await debugSession.finish("识别屏幕文字", output: "OCR 完成：\(captures.filter { !$0.recognizedText.isEmpty }.count) 个画面有文字")
             let ocr = captures.map {
                 "【画面 \($0.id) · \($0.timecode)】\n\($0.textBlock)"
             }.joined(separator: "\n\n")
@@ -526,7 +530,7 @@ final class PipelineRunner {
         stage = .analyzing
         progress = 0
         detail = ""
-        await debugSession.before("生成纪要", input: "逐字稿片段：\(originalBundle.transcript.segments.count)，画面：\(originalBundle.captures.count)，材料：\(originalBundle.materials.count)")
+        await debugSession.start("生成纪要", input: "逐字稿片段：\(originalBundle.transcript.segments.count)，画面：\(originalBundle.captures.count)，材料：\(originalBundle.materials.count)")
 
         var bundle = await addAdaptiveScreenEvidence(to: originalBundle)
         if var stats = bundle.adaptiveScreenReviewStats {
@@ -540,7 +544,7 @@ final class PipelineRunner {
         let result = try await analyzer.run(debug: debugSession) { [weak self] message in
             Task { @MainActor in self?.detail = message }
         }
-        await debugSession.after("生成纪要", output: "Markdown：\(result.markdown.count) 字，结构化结果：\(result.structured == nil ? "无" : "有")，回退：\(result.usedFallback)")
+        await debugSession.finish("生成纪要", output: "Markdown：\(result.markdown.count) 字，结构化结果：\(result.structured == nil ? "无" : "有")，回退：\(result.usedFallback)")
         var generationUsage = result.usage
         let adaptiveCandidates = AdaptiveFramePlanner.candidateTimeline(from: originalBundle.transcript)
         if originalBundle.hasVideo, originalBundle.sourceKind == .recordedMedia,
@@ -632,7 +636,7 @@ final class PipelineRunner {
             return
         }
         persist(storedRecord, materials: bundle.materials)
-        await debugSession.after("保存会议记录", output: "记录 ID：\(storedRecord.id.uuidString)，标题：\(storedRecord.title)")
+        await debugSession.finish("保存会议记录", output: "记录 ID：\(storedRecord.id.uuidString)，标题：\(storedRecord.title)")
 
         stage = .done
         progress = 1

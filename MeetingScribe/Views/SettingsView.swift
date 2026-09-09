@@ -189,8 +189,7 @@ struct SettingsView: View {
                         Divider()
                         Toggle("流水线数据调试模式", isOn: $settings.pipelineDebugEnabled)
                         if settings.pipelineDebugEnabled {
-                            Toggle("每个节点运行前暂停", isOn: $settings.pipelineDebugPauseBefore)
-                            Toggle("每个节点运行后暂停", isOn: $settings.pipelineDebugPauseAfter)
+                            Toggle("每个节点运行中暂停确认", isOn: $settings.pipelineDebugPauseDuring)
                             Text("开启后会在处理页显示节点输入/输出摘要；数据只保留在当前运行内，不写入会议历史。")
                                 .font(.caption).foregroundStyle(.orange)
                         }

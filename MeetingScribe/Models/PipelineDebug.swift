@@ -5,8 +5,7 @@ import UniformTypeIdentifiers
 import Observation
 
 enum PipelineDebugPhase: String {
-    case before = "运行前"
-    case after = "运行后"
+    case running = "运行中"
 }
 
 struct PipelineDebugEvent: Identifiable {
@@ -138,20 +137,22 @@ final class PipelineDebugSession {
         return "\(stem)-\(UUID().uuidString.prefix(8)).\(ext)"
     }
 
-    func before(_ node: String, input: String) async {
+    func start(_ node: String, input: String) async {
         guard Settings.shared.pipelineDebugEnabled else { return }
-        append(node, .before, input)
-        if Settings.shared.pipelineDebugPauseBefore {
-            await pause(node, phase: .before)
+        append(node, .running, "输入：\n\(input)")
+        if Settings.shared.pipelineDebugPauseDuring {
+            await pause(node)
         }
     }
 
-    func after(_ node: String, output: String, image: CGImage? = nil) async {
+    func finish(_ node: String, output: String, image: CGImage? = nil) async {
         guard Settings.shared.pipelineDebugEnabled else { return }
-        append(node, .after, output, image: image)
-        if Settings.shared.pipelineDebugPauseAfter {
-            await pause(node, phase: .after)
-        }
+        append(node, .running, "输出：\n\(output)", image: image)
+    }
+
+    func progress(_ node: String, _ message: String) {
+        guard Settings.shared.pipelineDebugEnabled else { return }
+        writeLog("NODE PROGRESS · \(node)", message)
     }
 
     func resume() {
@@ -171,11 +172,11 @@ final class PipelineDebugSession {
         if events.count > 300 { events.removeFirst(events.count - 300) }
     }
 
-    private func pause(_ node: String, phase: PipelineDebugPhase) async {
+    private func pause(_ node: String) async {
         pausedNode = node
-        pausedPhase = phase
+        pausedPhase = .running
         if let continueCommand {
-            writeLog("TERMINAL WAIT", "节点：\(node) · \(phase.rawValue)\n执行以下命令确认继续：\n\(continueCommand)")
+            writeLog("TERMINAL WAIT · \(node)", "节点已暂停，等待终端确认。\n执行：\n\(continueCommand)")
             if let control = artifactDirectory?.appendingPathComponent("continue") {
                 try? FileManager.default.removeItem(at: control)
             }
@@ -184,6 +185,7 @@ final class PipelineDebugSession {
                     if let self, let control = self.artifactDirectory?.appendingPathComponent("continue"),
                        FileManager.default.fileExists(atPath: control.path) {
                         try? FileManager.default.removeItem(at: control)
+                        self.writeLog("TERMINAL CONTINUE RECEIVED · \(node)", "已检测到 continue 文件，节点继续执行。")
                         self.resume()
                         return
                     }

@@ -153,15 +153,12 @@ final class Settings {
         didSet { defaults.set(alwaysReviewIssues, forKey: Keys.alwaysReviewIssues) }
     }
     /// Hidden pipeline inspector. Disabled by default and never persisted as
-    /// meeting content; it only controls the live debug panel.
+    /// meeting content; it only controls terminal debug logging and pauses.
     var pipelineDebugEnabled: Bool {
         didSet { defaults.set(pipelineDebugEnabled, forKey: Keys.pipelineDebugEnabled) }
     }
-    var pipelineDebugPauseBefore: Bool {
-        didSet { defaults.set(pipelineDebugPauseBefore, forKey: Keys.pipelineDebugPauseBefore) }
-    }
-    var pipelineDebugPauseAfter: Bool {
-        didSet { defaults.set(pipelineDebugPauseAfter, forKey: Keys.pipelineDebugPauseAfter) }
+    var pipelineDebugPauseDuring: Bool {
+        didSet { defaults.set(pipelineDebugPauseDuring, forKey: Keys.pipelineDebugPauseDuring) }
     }
 
     // MARK: OpenAI-compatible providers
@@ -212,8 +209,7 @@ final class Settings {
         static let keepIntermediates = "keepIntermediates"
         static let alwaysReviewIssues = "alwaysReviewIssues"
         static let pipelineDebugEnabled = "pipelineDebugEnabled"
-        static let pipelineDebugPauseBefore = "pipelineDebugPauseBefore"
-        static let pipelineDebugPauseAfter = "pipelineDebugPauseAfter"
+        static let pipelineDebugPauseDuring = "pipelineDebugPauseDuring"
         static let providerID = "providerID"
         static let providerBaseURL = "providerBaseURL"
         static let providerModel = "providerModel"
@@ -250,8 +246,7 @@ final class Settings {
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
         alwaysReviewIssues = defaults.object(forKey: Keys.alwaysReviewIssues) as? Bool ?? false
         pipelineDebugEnabled = defaults.object(forKey: Keys.pipelineDebugEnabled) as? Bool ?? false
-        pipelineDebugPauseBefore = defaults.object(forKey: Keys.pipelineDebugPauseBefore) as? Bool ?? false
-        pipelineDebugPauseAfter = defaults.object(forKey: Keys.pipelineDebugPauseAfter) as? Bool ?? false
+        pipelineDebugPauseDuring = defaults.object(forKey: Keys.pipelineDebugPauseDuring) as? Bool ?? false
         let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.openAI.id
         let preset = ProviderPreset.preset(id: storedProvider)
         let providerWasRemoved = !ProviderPreset.all.contains { $0.id == storedProvider }
