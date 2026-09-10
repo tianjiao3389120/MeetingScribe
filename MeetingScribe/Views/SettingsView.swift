@@ -144,16 +144,13 @@ struct SettingsView: View {
                             .help("关闭时仅在检测到问题可能重复、从属或边界不清时暂停确认")
                         Text("仅用于排查转录问题，会持续占用临时目录空间；正常使用建议关闭。")
                             .font(.caption).foregroundStyle(.secondary)
-                        DisclosureGroup("查看内置完整提示词（只读）") {
-                            ScrollView {
-                                Text(PromptBuilder.systemPrompt)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }.frame(height: 150)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        Divider()
+                        Toggle("启用隐藏的数据流调试日志", isOn: $settings.pipelineDebugEnabled)
+                        Toggle("每个节点运行中暂停确认",
+                               isOn: $settings.pipelineDebugPauseAtNodeStart)
+                            .disabled(!settings.pipelineDebugEnabled)
+                        Text("调试信息和中间产物只写入 ~/Library/Application Support/MeetingScribe/Debug，界面不展示大段内容。终端查看：tail -f \"$HOME/Library/Application Support/MeetingScribe/Debug/latest.log\"")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }

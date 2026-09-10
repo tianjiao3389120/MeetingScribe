@@ -21,41 +21,21 @@ struct Analyzer {
     let assets: MeetingAssets
     let settings: Settings
 
-    /// Builds the same text and image selection used by `run`, without invoking a model.
-    /// Keeping this here makes the user-visible preview an exact representation of the request.
-    func requestPreview() -> String {
-        let prepared = prepareRequest()
-        let images = prepared.imageIDs.isEmpty
-            ? "无"
-            : prepared.imageIDs.sorted().map(String.init).joined(separator: "、")
-        return """
-        ===== 系统提示词 =====
-        \(PromptBuilder.systemPrompt)
-
-        ===== 用户提交内容 =====
-        \(prepared.timeline)
-
-        ===== 随请求发送的画面编号 =====
-        \(images)
-        """
-    }
-
     private func prepareRequest() -> (modelAssets: MeetingAssets, imageIDs: Set<Int>, timeline: String) {
-        let selectedAdaptiveIDs = Self.selectAdaptiveOCRCaptures(
-            from: assets.captures, limit: 6)
-        var modelAssets = assets
-        modelAssets.captures = assets.captures.filter {
-            $0.evidenceReason == nil || selectedAdaptiveIDs.contains($0.id)
-        }
         let canSendImages: Bool
         switch settings.backend {
-        case .codexCLI: canSendImages = false
+        case .codexCLI: canSendImages = true
         case .claudeCLI: canSendImages = false
         case .openAICompatible: canSendImages = settings.providerSupportsVision
         }
-        let imageIDs = canSendImages
-            ? PromptBuilder.selectImageCaptures(from: modelAssets.captures, limit: 12)
-            : []
+        let selectedAdaptiveIDs = canSendImages
+            ? Self.selectVisualEvidenceCaptures(from: assets.captures, limit: 6)
+            : Self.selectAdaptiveOCRCaptures(from: assets.captures, limit: 6)
+        var modelAssets = assets
+        modelAssets.captures = canSendImages
+            ? assets.captures.filter { selectedAdaptiveIDs.contains($0.id) }
+            : assets.captures.filter { $0.evidenceReason == nil || selectedAdaptiveIDs.contains($0.id) }
+        let imageIDs = canSendImages ? selectedAdaptiveIDs : []
         let combinedContext = [modelAssets.recognitionScenario.analysisGuidance,
                                modelAssets.workspace?.context ?? "",
                                modelAssets.meetingContext,
@@ -72,33 +52,106 @@ struct Analyzer {
 
     func run(progress: @escaping @Sendable (String) -> Void) async throws -> Result {
         let prepared = prepareRequest()
+        let modelAssets = prepared.modelAssets
         let imageIDs = prepared.imageIDs
         let timeline = prepared.timeline
+        let debug = PipelineDebugRegistry.active
+        var imageFiles: [String] = []
+        var imageURLs: [URL] = []
+        let temporaryImageDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meetingscribe-model-images-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryImageDirectory) }
+        for capture in modelAssets.captures where imageIDs.contains(capture.id) {
+            guard let data = jpegData(from: capture.image, quality: 0.9) else { continue }
+            let time = capture.timecode.replacingOccurrences(of: ":", with: "-")
+            let name = "model-image-\(capture.id)-\(time).jpg"
+            let url: URL?
+            if let debug {
+                url = debug.writeData(name, data)
+            } else {
+                try? FileManager.default.createDirectory(
+                    at: temporaryImageDirectory, withIntermediateDirectories: true)
+                let candidate = temporaryImageDirectory.appendingPathComponent(name)
+                url = (try? data.write(to: candidate, options: .atomic)).map { candidate }
+            }
+            if let url {
+                imageURLs.append(url)
+                imageFiles.append("\(url.path)（\(capture.image.width)x\(capture.image.height)）")
+            }
+        }
+        if let debug {
+            let selectedReasons = Set(assets.captures.filter { imageIDs.contains($0.id) }
+                .compactMap(\.evidenceReason))
+            let lines = assets.captures.filter { $0.evidenceReason != nil }.map { capture in
+                let decision: String
+                if imageIDs.contains(capture.id) {
+                    decision = "发送：\(capture.image.width)x\(capture.image.height)"
+                } else if selectedReasons.contains(capture.evidenceReason ?? "") {
+                    decision = "剔除：同一事件已有更优画面"
+                } else {
+                    decision = "剔除：超过最多 6 个事件或与其他事件重复"
+                }
+                return "#\(capture.id) · \(capture.timecode) · \(capture.evidenceReason ?? "<无原因>") · \(decision)"
+            }
+            debug.imageSelection("最终模型图片：\n" + (lines.isEmpty ? "<空>" : lines.joined(separator: "\n")))
+        }
+        try await debug?.beginNode("模型调用", input: """
+        后端：\(settings.backend.displayName)
+        模型：\(settings.backend == .openAICompatible ? settings.providerModel : "本地 CLI")
+        系统提示词：
+        \(PromptBuilder.systemPrompt)
+
+        用户输入：
+        \(timeline)
+
+        模型图片：
+        \(imageFiles.isEmpty ? "<空>" : imageFiles.joined(separator: "\n"))
+        """)
+        let report: @Sendable (String) -> Void = { message in
+            debug?.progress("模型调用", message)
+            progress(message)
+        }
+        let heartbeat = Task {
+            var waited = 0
+            while !Task.isCancelled {
+                let interval = waited < 30 ? 10 : 30
+                do { try await Task.sleep(for: .seconds(interval)) } catch { return }
+                waited += interval
+                if !Task.isCancelled {
+                    debug?.progress("模型调用", "模型仍在运行，已等待 \(waited / 60):\(String(format: "%02d", waited % 60))")
+                }
+            }
+        }
+        defer { heartbeat.cancel() }
 
         let raw: String
-        switch settings.backend {
-        case .codexCLI:
-            progress("正在通过本机 Codex CLI 生成纪要…")
-            raw = try await runLocalCLI(timeline: timeline)
-        case .claudeCLI:
-            progress("正在通过本机 Claude Code 生成纪要…")
-            raw = try await runLocalCLI(timeline: timeline)
-        case .openAICompatible:
-            let preset = settings.provider
-            progress("正在调用 \(preset.name)（\(settings.providerModel)）生成纪要…")
-            raw = try await runOpenAICompatible(timeline: timeline,
-                                                imageIDs: imageIDs,
-                                                progress: progress)
+        do {
+            switch settings.backend {
+            case .codexCLI:
+                report("正在通过本机 Codex CLI 生成纪要…")
+                raw = try await runLocalCLI(timeline: timeline, imageURLs: imageURLs)
+            case .claudeCLI:
+                report("正在通过本机 Claude Code 生成纪要…")
+                raw = try await runLocalCLI(timeline: timeline, imageURLs: [])
+            case .openAICompatible:
+                let preset = settings.provider
+                report("正在调用 \(preset.name)（\(settings.providerModel)）生成纪要…")
+                raw = try await runOpenAICompatible(timeline: timeline,
+                                                    imageIDs: imageIDs,
+                                                    progress: report)
+            }
+            debug?.endNode("模型调用", output: raw)
+        } catch {
+            debug?.endNode("模型调用", output: "失败：\(error.localizedDescription)")
+            throw error
         }
+        heartbeat.cancel()
 
-        var phases = [GenerationUsage.estimatedPhase(
+        let phases = [GenerationUsage.estimatedPhase(
             name: "主纪要", input: PromptBuilder.systemPrompt + "\n" + timeline, output: raw)]
         if let structured = Self.parseStructured(raw) {
-            let (reviewed, repairUsage) = await repairScreenEvidenceIfNeeded(
-                structured, progress: progress)
-            if let repairUsage { phases.append(repairUsage) }
-            return Result(markdown: StructuredMinutesRenderer.markdown(from: reviewed),
-                          structured: reviewed, usedFallback: false,
+            return Result(markdown: StructuredMinutesRenderer.markdown(from: structured),
+                          structured: structured, usedFallback: false,
                           usage: GenerationUsage(phases: phases, isEstimated: true))
         }
         return Result(markdown: raw, structured: nil, usedFallback: true,
@@ -113,16 +166,15 @@ struct Analyzer {
             $0.evidenceReason != nil && selected.contains($0.id)
         }
         switch settings.backend {
-        case .codexCLI, .claudeCLI:
+        case .codexCLI:
+            return selectVisualEvidenceCaptures(from: assets.captures, limit: 6)
+        case .claudeCLI:
             return Set(adaptive.filter { !$0.recognizedText.isEmpty }.map(\.id))
         case .openAICompatible:
             guard settings.providerSupportsVision else {
                 return Set(adaptive.filter { !$0.recognizedText.isEmpty }.map(\.id))
             }
-            let imageIDs = PromptBuilder.selectImageCaptures(from: assets.captures, limit: 12)
-            return Set(adaptive.filter {
-                imageIDs.contains($0.id) || !$0.recognizedText.isEmpty
-            }.map(\.id))
+            return selectVisualEvidenceCaptures(from: assets.captures, limit: 6)
         }
     }
 
@@ -141,11 +193,33 @@ struct Analyzer {
         }
         var selected: [ScreenCapture] = []
         for capture in ranked {
-            guard !selected.contains(where: { abs($0.time - capture.time) < 8 }) else { continue }
+            guard !selected.contains(where: { abs($0.time - capture.time) <= 8 }) else { continue }
             selected.append(capture)
             if selected.count == limit { break }
         }
         return Set(selected.map(\.id))
+    }
+
+    /// Picks one high-quality frame per transcript-selected event. OCR contributes only to
+    /// ranking; selected evidence reaches a vision backend as pixels, without duplicate OCR.
+    static func selectVisualEvidenceCaptures(from captures: [ScreenCapture],
+                                             limit: Int) -> Set<Int> {
+        guard limit > 0 else { return [] }
+        let candidates = captures.filter { $0.evidenceReason != nil }
+        let grouped = Dictionary(grouping: candidates) {
+            $0.evidenceReason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        let bestPerEvent = grouped.values.compactMap { group -> ScreenCapture? in
+            group.max {
+                let lhs = $0.image.width * $0.image.height + $0.textBlock.count * 100
+                let rhs = $1.image.width * $1.image.height + $1.textBlock.count * 100
+                if lhs != rhs { return lhs < rhs }
+                // Prefer the middle probe when visual/text quality ties.
+                let middle = group.map(\.time).reduce(0, +) / Double(group.count)
+                return abs($0.time - middle) > abs($1.time - middle)
+            }
+        }
+        return Set(bestPerEvent.sorted { $0.time < $1.time }.prefix(limit).map(\.id))
     }
 
     static func screenCitationCount(in minutes: StructuredMinutes?) -> Int {
@@ -158,67 +232,6 @@ struct Analyzer {
         evidence.append(contentsOf: minutes.afterMeeting.flatMap(\.evidence))
         evidence.append(contentsOf: minutes.uncertainties.flatMap(\.evidence))
         return Set(evidence.filter { $0.localizedCaseInsensitiveContains("屏幕") }).count
-    }
-
-    static func shouldRepairScreenEvidence(minutes: StructuredMinutes,
-                                           assets: MeetingAssets,
-                                           settings: Settings) -> Bool {
-        !screenFramesSentToModel(assets: assets, settings: settings).isEmpty
-            && screenCitationCount(in: minutes) == 0
-    }
-
-    /// A cheap second pass used only when adaptive OCR reached the model but
-    /// none of it survived into evidence fields. It cannot make the primary
-    /// analysis fail and never repeats transcription, extraction, or OCR.
-    private func repairScreenEvidenceIfNeeded(
-        _ minutes: StructuredMinutes,
-        progress: @escaping @Sendable (String) -> Void
-    ) async -> (StructuredMinutes, GenerationUsage.Phase?) {
-        guard Self.shouldRepairScreenEvidence(minutes: minutes,
-                                              assets: assets,
-                                              settings: settings) else { return (minutes, nil) }
-        let sentIDs = Self.screenFramesSentToModel(assets: assets, settings: settings)
-        let evidence = assets.captures
-            .filter { sentIDs.contains($0.id) && !$0.recognizedText.isEmpty }
-            .sorted { $0.time < $1.time }
-            .map { capture in
-                let reason = capture.evidenceReason ?? "核对逐字稿疑点"
-                let text = String(capture.textBlock.prefix(1_500))
-                return "【屏幕 \(capture.timecode)，核对原因：\(reason)】\n\(text)"
-            }
-            .joined(separator: "\n\n")
-        guard !evidence.isEmpty,
-              let encoded = try? JSONEncoder().encode(minutes),
-              let minutesJSON = String(data: encoded, encoding: .utf8) else { return (minutes, nil) }
-
-        progress("补充画面已送达但未被引用，正在校验证据…")
-        do {
-            let system = "你负责校验会议纪要中的屏幕证据。只输出完整合法 JSON，不要解释。"
-            let user = """
-                对照补充屏幕OCR，修订下面的结构化纪要：
-                1. 只在OCR确实支持、纠正或补充某条事实时修改该条，并在 evidence 加入 `屏幕 MM:SS`。
-                2. 屏幕与逐字稿冲突时，以屏幕文字为准；可纠正名称、数字、日期、版本、报错和配置项。
-                3. OCR没有提供有效新事实时保持原文，不得为了产生引用而牵强引用或删除不确定项。
-                4. 保留原JSON全部字段和无关内容，不要新增结构外字段。
-
-                初版纪要JSON：
-                \(minutesJSON)
-
-                补充屏幕OCR：
-                \(String(evidence.prefix(14_000)))
-                """
-            let context = (TokenUsageContext.current ?? TokenUsageContext(feature: "画面证据修复"))
-                .replacingFeature("画面证据修复")
-            let raw = try await TokenUsageContext.$current.withValue(context) {
-                try await ModelTextClient(settings: settings).complete(
-                    system: system, user: user, timeout: 300)
-            }
-            return (Self.parseStructured(raw) ?? minutes,
-                    GenerationUsage.estimatedPhase(name: "画面证据修复",
-                                                   input: system + "\n" + user, output: raw))
-        } catch {
-            return (minutes, nil)
-        }
     }
 
     static func parseStructured(_ raw: String) -> StructuredMinutes? {
@@ -301,14 +314,14 @@ struct Analyzer {
     /// The CLI is an agentic tool, not a plain inference endpoint — it can only
     /// take text on stdin. Screen captures therefore reach it as OCR text; the
     /// diagram images are dropped. That is the tradeoff for using this backend.
-    private func runLocalCLI(timeline: String) async throws -> String {
+    private func runLocalCLI(timeline: String, imageURLs: [URL]) async throws -> String {
         let prompt = """
         以下是会议材料，请按上述要求输出结构化 JSON。不要有任何前言、说明或追问。
 
         \(timeline)
         """
         return try await ModelTextClient(settings: settings).complete(
-            system: PromptBuilder.systemPrompt, user: prompt)
+            system: PromptBuilder.systemPrompt, user: prompt, images: imageURLs)
     }
 
     private func jpegData(from image: CGImage, quality: CGFloat = 0.72) -> Data? {

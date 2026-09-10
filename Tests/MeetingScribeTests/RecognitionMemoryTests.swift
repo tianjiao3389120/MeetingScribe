@@ -38,6 +38,16 @@ final class RecognitionMemoryTests: XCTestCase {
         XCTAssertEqual(entry.usageCount, 0)
     }
 
+    func testPromptInterpolatesCorrectionValues() throws {
+        let url = temporaryURL()
+        try RecognitionMemoryStore.save([
+            RecognitionMemoryEntry(mistaken: "无线AI", canonical: "无相AI")
+        ], to: url)
+        let prompt = RecognitionMemoryStore.prompt(workspaceID: nil, from: url)
+        XCTAssertEqual(prompt, "无线AI应识别为无相AI")
+        XCTAssertFalse(prompt.contains("$0"))
+    }
+
     func testEditingMemoryReplacesRecordAndPreservesUsageHistory() throws {
         let url = temporaryURL()
         var original = RecognitionMemoryEntry(

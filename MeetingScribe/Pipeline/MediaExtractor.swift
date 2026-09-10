@@ -210,7 +210,8 @@ struct MediaExtractor {
     /// regular sampler, these are evidence probes and are not dwell-time
     /// filtered: a briefly shown number or diagram may be the important part.
     func extractFrames(at probes: [(time: TimeInterval, reason: String)],
-                       startingID: Int) async throws -> [ScreenCapture] {
+                       startingID: Int,
+                       progress: @Sendable (Double) -> Void = { _ in }) async throws -> [ScreenCapture] {
         let asset = AVURLAsset(url: url)
         guard try await !asset.loadTracks(withMediaType: .video).isEmpty else { return [] }
         let duration = try await asset.load(.duration).seconds
@@ -223,6 +224,7 @@ struct MediaExtractor {
         var captures: [ScreenCapture] = []
         for (offset, probe) in probes.enumerated() {
             try Task.checkCancellation()
+            progress(Double(offset) / Double(max(probes.count, 1)))
             let bounded = min(max(probe.time, 0), max(duration - 0.1, 0))
             let time = CMTime(seconds: bounded, preferredTimescale: 600)
             guard let image = try? await generator.image(at: time).image else { continue }
@@ -233,6 +235,7 @@ struct MediaExtractor {
                 image: image, evidenceReason: probe.reason,
                 fingerprint: PerceptualHash.compute(image)))
         }
+        progress(1)
         return captures
     }
 

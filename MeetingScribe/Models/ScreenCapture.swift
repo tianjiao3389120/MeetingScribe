@@ -44,7 +44,7 @@ struct AdaptiveScreenReviewStats: Codable, Sendable, Equatable {
     var citedScreenEvidence = 0
 
     var summary: String {
-        "计划 \(plannedNodes) · 抽取 \(extractedFrames)/\(requestedProbes) · OCR有效 \(framesWithOCR) · 筛选保留 \(acceptedFrames) · 送入模型 \(framesSentToModel) · 最终引用 \(citedScreenEvidence)"
+        "计划 \(plannedNodes) · 抽取 \(extractedFrames)/\(requestedProbes) · OCR降级文本 \(framesWithOCR) · 筛选保留 \(acceptedFrames) · 送入模型 \(framesSentToModel) · 最终引用 \(citedScreenEvidence)"
     }
 }
 

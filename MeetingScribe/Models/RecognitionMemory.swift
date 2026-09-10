@@ -118,7 +118,7 @@ enum RecognitionMemoryStore {
                        from url: URL = entriesURL) -> String {
         relevant(workspaceID: workspaceID, text: context, from: url).prefix(36).map {
             if $0.mistaken.isEmpty { return $0.canonical }
-            return "($0.mistaken)应识别为($0.canonical)"
+            return "\($0.mistaken)应识别为\($0.canonical)"
         }.joined(separator: "，")
     }
 

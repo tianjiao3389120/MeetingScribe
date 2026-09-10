@@ -155,6 +155,12 @@ final class Settings {
     var tokenWarningThreshold: Int {
         didSet { defaults.set(tokenWarningThreshold, forKey: Keys.tokenWarningThreshold) }
     }
+    var pipelineDebugEnabled: Bool {
+        didSet { defaults.set(pipelineDebugEnabled, forKey: Keys.pipelineDebugEnabled) }
+    }
+    var pipelineDebugPauseAtNodeStart: Bool {
+        didSet { defaults.set(pipelineDebugPauseAtNodeStart, forKey: Keys.pipelineDebugPauseAtNodeStart) }
+    }
 
     // MARK: OpenAI-compatible providers
 
@@ -204,6 +210,8 @@ final class Settings {
         static let keepIntermediates = "keepIntermediates"
         static let alwaysReviewIssues = "alwaysReviewIssues"
         static let tokenWarningThreshold = "tokenWarningThreshold"
+        static let pipelineDebugEnabled = "pipelineDebugEnabled"
+        static let pipelineDebugPauseAtNodeStart = "pipelineDebugPauseAtNodeStart"
         static let providerID = "providerID"
         static let providerBaseURL = "providerBaseURL"
         static let providerModel = "providerModel"
@@ -240,6 +248,9 @@ final class Settings {
         keepIntermediates = defaults.object(forKey: Keys.keepIntermediates) as? Bool ?? false
         alwaysReviewIssues = defaults.object(forKey: Keys.alwaysReviewIssues) as? Bool ?? false
         tokenWarningThreshold = defaults.object(forKey: Keys.tokenWarningThreshold) as? Int ?? 12_000
+        pipelineDebugEnabled = defaults.object(forKey: Keys.pipelineDebugEnabled) as? Bool ?? false
+        pipelineDebugPauseAtNodeStart = defaults.object(
+            forKey: Keys.pipelineDebugPauseAtNodeStart) as? Bool ?? false
         let storedProvider = defaults.string(forKey: Keys.providerID) ?? ProviderPreset.openAI.id
         let preset = ProviderPreset.preset(id: storedProvider)
         let providerWasRemoved = !ProviderPreset.all.contains { $0.id == storedProvider }

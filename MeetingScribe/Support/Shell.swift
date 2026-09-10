@@ -46,6 +46,8 @@ enum Shell {
 
         let process = Process()
         let controller = ProcessController(process)
+        let debug = PipelineDebugRegistry.active
+        debug?.engineStart(tool: executable, arguments: arguments)
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         if let environment {
@@ -81,11 +83,16 @@ enum Shell {
                     if !trimmed.isEmpty { onStderrLine(trimmed) }
                 }
             }
+            if let chunk = String(data: data, encoding: .utf8), !chunk.isEmpty {
+                debug?.engineStderr(tool: executable, text: chunk)
+            }
         }
 
         do {
             try process.run()
         } catch {
+            debug?.engineEnd(tool: executable, exitCode: -1,
+                             stdout: "", stderr: error.localizedDescription)
             throw Failure.launch((executable as NSString).lastPathComponent, error)
         }
 
@@ -127,16 +134,23 @@ enum Shell {
 
         switch controller.stopReason {
         case .cancelled:
+            debug?.engineEnd(tool: executable, exitCode: process.terminationStatus,
+                             stdout: collector.stdoutString, stderr: collector.stderrString)
             throw CancellationError()
         case .timedOut:
+            debug?.engineEnd(tool: executable, exitCode: process.terminationStatus,
+                             stdout: collector.stdoutString, stderr: collector.stderrString)
             throw Failure.timedOut((executable as NSString).lastPathComponent, timeout ?? 0)
         case nil:
             break
         }
 
-        return Result(status: process.terminationStatus,
-                      stdout: collector.stdoutString,
-                      stderr: collector.stderrString)
+        let result = Result(status: process.terminationStatus,
+                            stdout: collector.stdoutString,
+                            stderr: collector.stderrString)
+        debug?.engineEnd(tool: executable, exitCode: result.status,
+                         stdout: result.stdout, stderr: result.stderr)
+        return result
     }
 
     @discardableResult

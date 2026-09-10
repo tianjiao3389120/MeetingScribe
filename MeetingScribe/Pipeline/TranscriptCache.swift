@@ -69,6 +69,14 @@ enum TranscriptCache {
         prune()
     }
 
+    static func metadata(key: String) -> (path: String, createdAt: Date?, bytes: Int64)? {
+        let url = directory.appendingPathComponent("\(key).json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (url.path, attributes?[.creationDate] as? Date,
+                (attributes?[.size] as? NSNumber)?.int64Value ?? 0)
+    }
+
     // MARK: - Housekeeping
 
     /// Transcripts are small (tens of KB), so a generous cap is still trivial
@@ -134,6 +142,14 @@ enum DiarizationCache {
         guard !value.segments.isEmpty,
               let data = try? JSONEncoder().encode(value) else { return }
         try? data.write(to: directory.appendingPathComponent("\(key).json"))
+    }
+
+    static func metadata(key: String) -> (path: String, createdAt: Date?, bytes: Int64)? {
+        let url = directory.appendingPathComponent("\(key).json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (url.path, attributes?[.creationDate] as? Date,
+                (attributes?[.size] as? NSNumber)?.int64Value ?? 0)
     }
 
     static func clear() {

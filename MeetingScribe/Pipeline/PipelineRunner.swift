@@ -8,7 +8,7 @@ final class PipelineRunner {
 
     enum Stage: String, CaseIterable {
         case idle, probing, extractingAudio, transcribing, separatingSpeakers,
-             extractingFrames, readingScreen, reviewingRequest, analyzing, reviewingIssues, done, failed
+             extractingFrames, readingScreen, analyzing, reviewingIssues, done, failed
 
         var label: String {
             switch self {
@@ -19,7 +19,6 @@ final class PipelineRunner {
             case .separatingSpeakers: return "分离说话人"
             case .extractingFrames:   return "提取画面"
             case .readingScreen:      return "识别屏幕文字"
-            case .reviewingRequest:   return "预览提交内容"
             case .analyzing:          return "生成纪要"
             case .reviewingIssues:    return "确认问题边界"
             case .done:               return "完成"
@@ -40,7 +39,6 @@ final class PipelineRunner {
     private(set) var isRunning = false
     private(set) var savedRecordID: UUID?
     private(set) var issueReviewReasons: [String] = []
-    private(set) var requestPreview = ""
     private var pendingReviewRecord: MeetingRecord?
     private var pendingReviewMaterials: [SupportingMaterial] = []
 
@@ -60,23 +58,20 @@ final class PipelineRunner {
     private var forceRetranscribe = false
     private var forceSpeakerSeparation = false
     private var pendingJobID: UUID?
-    private var requestPreviewContinuation: CheckedContinuation<Bool, Never>?
+    private var debugSession: PipelineDebugSession?
     private var processingStartedAt: Date?
-    private var previewStartedAt: Date?
-    private var previewPausedDuration: TimeInterval = 0
     private var sourceDuration: TimeInterval = 0
+    private var usedCachedDiarization = false
 
     var estimatedRemainingText: String? {
         guard let started = processingStartedAt,
               let total = ProcessingTimeHistory.estimatedTotal(for: sourceDuration) else { return nil }
-        let elapsed = Date().timeIntervalSince(started) - previewPausedDuration
+        let elapsed = Date().timeIntervalSince(started)
         let remaining = max(total - elapsed, 0)
         return remaining > 30 ? "根据本机历史，预计还需约 \(Self.durationText(remaining))" : "即将完成"
     }
 
     func cancel() {
-        requestPreviewContinuation?.resume(returning: false)
-        requestPreviewContinuation = nil
         task?.cancel()
         PendingJobStore.clear(id: pendingJobID)
         PendingIssueReviewStore.clear()
@@ -84,15 +79,7 @@ final class PipelineRunner {
         isRunning = false
         stage = .idle
         detail = "已取消"
-    }
-
-    func confirmRequestPreview() {
-        if let previewStartedAt {
-            previewPausedDuration += Date().timeIntervalSince(previewStartedAt)
-            self.previewStartedAt = nil
-        }
-        requestPreviewContinuation?.resume(returning: true)
-        requestPreviewContinuation = nil
+        emitRunSummary(status: "已取消")
     }
 
     func run(url: URL, forceRetranscribe: Bool = false,
@@ -120,9 +107,9 @@ final class PipelineRunner {
         pendingReviewRecord = nil
         issueReviewReasons = []
         processingStartedAt = Date()
-        previewStartedAt = nil
-        previewPausedDuration = 0
         sourceDuration = 0
+        usedCachedDiarization = false
+        configureDebugSession()
         self.forceRetranscribe = forceRetranscribe
         self.forceSpeakerSeparation = forceSpeakerSeparation
         let pendingJob = PendingMeetingJob(
@@ -152,11 +139,17 @@ final class PipelineRunner {
                 self.stage = .idle
                 self.detail = "已取消"
                 PendingJobStore.clear(id: pendingJob.id)
+                self.emitRunSummary(status: "已取消")
             } catch {
                 self.stage = .failed
                 self.error = error.localizedDescription
+                self.emitRunSummary(status: "失败", extra: "错误：\(error.localizedDescription)")
+            }
+            if self.stage != .failed && self.stage != .idle {
+                self.emitRunSummary(status: self.stage == .reviewingIssues ? "等待问题确认" : "成功")
             }
             self.isRunning = false
+            PipelineDebugRegistry.install(nil)
         }
     }
 
@@ -180,8 +173,8 @@ final class PipelineRunner {
         pendingReviewRecord = nil
         issueReviewReasons = []
         processingStartedAt = Date()
-        previewStartedAt = nil
-        previewPausedDuration = 0
+        usedCachedDiarization = false
+        configureDebugSession()
         usedCachedTranscript = true
         let sourcePaths = [package.transcriptURL, package.textURL, package.audioURL]
             .compactMap { $0?.path }
@@ -200,6 +193,11 @@ final class PipelineRunner {
             do {
                 self.stage = .probing
                 self.progress = 1
+                try await self.debugSession?.beginNode("读取外部逐字稿", input: """
+                SRT：\(package.transcriptURL.path)
+                TXT：\(package.textURL?.path ?? "<无>")
+                音频：\(package.audioURL?.path ?? "<无>")
+                """)
                 self.detail = "读取外部逐字稿（\(package.transcript.segments.count) 段）"
                 var related = [package.transcriptURL]
                 if let textURL = package.textURL { related.append(textURL) }
@@ -207,6 +205,20 @@ final class PipelineRunner {
                 let duration = max(package.transcript.duration,
                                    package.metadata.declaredDuration ?? 0)
                 self.sourceDuration = duration
+                if let debug = self.debugSession {
+                    let transcriptText = debug.writeText(
+                        "imported-transcript.txt", package.transcript.timecodedText)
+                    let transcriptJSON = (try? String(
+                        data: JSONEncoder().encode(package.transcript), encoding: .utf8)) ?? "<编码失败>"
+                    let transcriptJSONURL = debug.writeText(
+                        "imported-transcript.json", transcriptJSON)
+                    debug.endNode("读取外部逐字稿", output: """
+                    分段数：\(package.transcript.segments.count)
+                    时长：\(duration) 秒
+                    文本：\(transcriptText?.path ?? "<写入失败>")
+                    JSON：\(transcriptJSONURL?.path ?? "<写入失败>")
+                    """)
+                }
                 let bundle = MeetingAssets(
                     sourceURL: package.transcriptURL,
                     sourceKind: .importedTranscript,
@@ -234,11 +246,17 @@ final class PipelineRunner {
                 self.stage = .idle
                 self.detail = "已取消"
                 PendingJobStore.clear(id: pendingJob.id)
+                self.emitRunSummary(status: "已取消")
             } catch {
                 self.stage = .failed
                 self.error = error.localizedDescription
+                self.emitRunSummary(status: "失败", extra: "错误：\(error.localizedDescription)")
+            }
+            if self.stage != .failed && self.stage != .idle {
+                self.emitRunSummary(status: self.stage == .reviewingIssues ? "等待问题确认" : "成功")
             }
             self.isRunning = false
+            PipelineDebugRegistry.install(nil)
         }
     }
 
@@ -384,10 +402,21 @@ final class PipelineRunner {
 
         stage = .probing
         progress = 0
+        try await debugSession?.beginNode("读取文件", input: """
+        输入文件：\(url.path)
+        识别场景：\(recognitionScenario.displayName)
+        正式项目：\(workspace.map { "\($0.name)（\($0.id)）" } ?? "<无>")
+        会议标签：\(tags.isEmpty ? "<空>" : tags.joined(separator: "、"))
+        """)
         let info = try await extractor.probe()
         sourceDuration = info.duration
         guard info.hasAudio else { throw MediaExtractor.Failure.noAudioTrack }
         detail = "时长 \(TranscriptSegment.humanDuration(info.duration))" + (info.hasVideo ? "，含画面" : "")
+        debugSession?.endNode("读取文件", output: """
+        时长：\(info.duration) 秒
+        包含音频：\(info.hasAudio)
+        包含视频：\(info.hasVideo)
+        """)
 
         // --- transcription and diarization ---------------------------------
         let transcriptKey = TranscriptCache.key(for: url,
@@ -403,11 +432,25 @@ final class PipelineRunner {
 
         var transcript: Transcript?
         if !forceRetranscribe, let transcriptKey, let cached = TranscriptCache.load(key: transcriptKey) {
+            let metadata = TranscriptCache.metadata(key: transcriptKey)
+            debugSession?.cache("语音转录", hit: true,
+                                detail: "缓存键：\(transcriptKey)\n文件：\(metadata?.path ?? "<未知>")\n生成时间：\(metadata?.createdAt.map { ISO8601DateFormatter().string(from: $0) } ?? "<未知>")\n大小：\(metadata?.bytes ?? 0) 字节\n分段数：\(cached.segments.count)\n跳过引擎：Whisper")
+            try await debugSession?.beginNode("语音转录", input: "命中转录缓存：\(transcriptKey)")
             transcript = cached
             stage = .transcribing
             progress = 1
             detail = "复用已缓存的转录结果（\(cached.segments.count) 段）"
             usedCachedTranscript = true
+            let textURL = debugSession?.writeText("transcript-cached.txt", cached.timecodedText)
+            debugSession?.endNode("语音转录", output: """
+            复用缓存：是
+            分段数：\(cached.segments.count)
+            文本：\(textURL?.path ?? "<写入失败>")
+            """)
+        } else {
+            let reason = forceRetranscribe ? "用户要求重新转录"
+                : (transcriptKey == nil ? "无法生成缓存键" : "缓存不存在、损坏或算法版本已变化")
+            debugSession?.cache("语音转录", hit: false, detail: "原因：\(reason)\n缓存键：\(transcriptKey ?? "<无>")")
         }
 
         var diarization: Diarization?
@@ -417,6 +460,14 @@ final class PipelineRunner {
             // enrolment, rename and deletion take effect without re-diarizing.
             cached.names = VoiceProfileStore.match(embeddings: cached.embeddings)
             diarization = cached
+            usedCachedDiarization = true
+            let metadata = DiarizationCache.metadata(key: speakerKey)
+            debugSession?.cache("声纹分离", hit: true,
+                                detail: "缓存键：\(speakerKey)\n文件：\(metadata?.path ?? "<未知>")\n生成时间：\(metadata?.createdAt.map { ISO8601DateFormatter().string(from: $0) } ?? "<未知>")\n大小：\(metadata?.bytes ?? 0) 字节\n说话片段：\(cached.segments.count)\n跳过引擎：声纹模型")
+        } else if wantsSpeakers {
+            let reason = forceRetranscribe || forceSpeakerSeparation ? "用户要求重新计算"
+                : (speakerKey == nil ? "无法生成缓存键" : "缓存不存在、损坏或算法版本已变化")
+            debugSession?.cache("声纹分离", hit: false, detail: "原因：\(reason)\n缓存键：\(speakerKey ?? "<无>")")
         }
 
         // Audio is only needed for work that isn't already cached.
@@ -428,6 +479,7 @@ final class PipelineRunner {
         }
 
         var audioURL: URL?
+        var debugAudioURL: URL?
         if needsAudio {
             usedCachedTranscript = transcript != nil
             stage = .extractingAudio
@@ -435,7 +487,14 @@ final class PipelineRunner {
             detail = "正在提取音轨 0%"
             try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
             let wav = work.appendingPathComponent("audio.wav")
+            try await debugSession?.beginNode("音频提取", input: """
+            输入文件：\(url.path)
+            输出格式：16 kHz / 单声道 / PCM WAV
+            临时输出：\(wav.path)
+            """)
+            let audioDebug = debugSession
             try await extractor.extractAudio(to: wav) { [weak self] fraction in
+                audioDebug?.progressPercent("音频提取", label: "提取进度", fraction: fraction)
                 Task { @MainActor in
                     guard self?.stage == .extractingAudio else { return }
                     self?.progress = fraction
@@ -444,6 +503,9 @@ final class PipelineRunner {
             }
             try Task.checkCancellation()
             audioURL = wav
+            let saved = debugSession?.copyFile(wav, name: "audio.wav")
+            debugAudioURL = saved
+            debugSession?.endNode("音频提取", output: "音频文件：\(saved?.path ?? wav.path)")
         }
 
         if transcript == nil, let audioURL {
@@ -456,7 +518,15 @@ final class PipelineRunner {
             let transcriber = Transcriber(audioURL: audioURL,
                                           language: recognitionScenario.whisperLanguage,
                                           glossary: transcriptionPrompt)
+            try await debugSession?.beginNode("语音转录", input: """
+            音频文件：\(debugAudioURL?.path ?? audioURL.path)
+            语言：\(recognitionScenario.whisperLanguage)
+            初始提示词：\n\(transcriptionPrompt.isEmpty ? "<空>" : transcriptionPrompt)
+            """)
+            let transcriptionDebug = debugSession
             let raw = try await transcriber.run { [weak self] seconds, _ in
+                transcriptionDebug?.transcriptProgress(
+                    "语音转录", seconds: seconds, duration: info.duration)
                 Task { @MainActor in
                     guard let self else { return }
                     self.progress = min(seconds / max(info.duration, 1), 1)
@@ -467,6 +537,17 @@ final class PipelineRunner {
             let fresh = RecognitionMemoryStore.apply(to: raw, workspaceID: workspace?.id)
             if let transcriptKey { TranscriptCache.save(fresh, key: transcriptKey) }
             transcript = fresh
+            if let debug = debugSession {
+                let textURL = debug.writeText("transcript.txt", fresh.timecodedText)
+                let jsonText = (try? String(
+                    data: JSONEncoder().encode(fresh), encoding: .utf8)) ?? "<编码失败>"
+                let jsonURL = debug.writeText("transcript.json", jsonText)
+                debug.endNode("语音转录", output: """
+                分段数：\(fresh.segments.count)
+                文本：\(textURL?.path ?? "<写入失败>")
+                JSON：\(jsonURL?.path ?? "<写入失败>")
+                """)
+            }
         }
 
         // Silent or music-only input yields nothing to summarise; fail here
@@ -478,10 +559,17 @@ final class PipelineRunner {
             progress = 0
             detail = "分析声纹特征…"
             do {
+                try await debugSession?.beginNode("声纹分离", input: """
+                音频文件：\(audioURL.path)
+                预期说话人数：\(speakerCount == 0 ? "自动" : String(speakerCount))
+                """)
+                let diarizationDebug = debugSession
                 let result = try await Diarizer.run(
                     audioURL: audioURL,
                     speakerCount: speakerCount
                 ) { [weak self] fraction in
+                    diarizationDebug?.progressPercent(
+                        "声纹分离", label: "分析进度", fraction: fraction)
                     Task { @MainActor in
                         self?.progress = fraction
                         self?.detail = String(format: "分离说话人 %.0f%%", fraction * 100)
@@ -489,7 +577,12 @@ final class PipelineRunner {
                 }
                 if let speakerKey { DiarizationCache.save(result, key: speakerKey) }
                 diarization = result
+                debugSession?.endNode("声纹分离", output: """
+                说话片段：\(result.segments.count)
+                声纹数量：\(result.embeddings.count)
+                """)
             } catch {
+                debugSession?.endNode("声纹分离", output: "失败：\(error.localizedDescription)")
                 // Speaker labels are an enhancement; losing them should not
                 // cost the user the transcript they already paid for.
                 speakerWarning = "说话人分离失败，纪要将不含说话人信息：\(error.localizedDescription)"
@@ -503,27 +596,41 @@ final class PipelineRunner {
             stage = .extractingFrames
             progress = 0
             let density = settings.frameDensity
+            try await debugSession?.beginNode("提取画面", input: """
+            输入文件：\(url.path)
+            采样密度：\(density.displayName)
+            采样间隔：\(density.interval) 秒
+            最大画面数：\(density.maxFrames)
+            差异阈值：\(density.distinctness)
+            """)
+            let frameDebug = debugSession
             captures = try await extractor.extractFrames(
                 every: density.interval,
                 maxFrames: density.maxFrames,
                 distinctnessThreshold: density.distinctness
             ) { [weak self] value in
+                frameDebug?.progressPercent("提取画面", label: "扫描进度", fraction: value)
                 Task { @MainActor in
                     self?.progress = value
                     self?.detail = "扫描画面变化…"
                 }
             }
             try Task.checkCancellation()
-
-            stage = .readingScreen
-            progress = 0
-            captures = await TextRecognizer.annotate(captures) { [weak self] value in
-                Task { @MainActor in
-                    self?.progress = value
-                    self?.detail = "识别屏幕文字…"
+            if let debug = debugSession {
+                var framePaths: [String] = []
+                for capture in captures {
+                    if let saved = debug.writePNG(
+                        capture.image, name: String(
+                            format: "frame-%04d-%.1fs.png", capture.id, capture.time)) {
+                        framePaths.append("\(saved.path)（\(capture.image.width)x\(capture.image.height)）")
+                    }
                 }
+                debug.endNode("提取画面", output: """
+                保留画面：\(captures.count)
+                文件：\n\(framePaths.isEmpty ? "<空>" : framePaths.joined(separator: "\n"))
+                """)
             }
-            try Task.checkCancellation()
+
             detail = "保留 \(captures.count) 个不同画面"
         }
 
@@ -568,8 +675,19 @@ final class PipelineRunner {
         // learned corrections first, then the user's vocabulary, so a long scenario
         // hint can never push a critical product name out of the 170-character budget.
         return [priorityVocabulary, glossary, materialContext, scenario.transcriptionHint]
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map(cleanWhisperPromptComponent)
+            .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    private static func cleanWhisperPromptComponent(_ raw: String) -> String {
+        raw.components(separatedBy: .newlines).compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+            let content = trimmed.components(separatedBy: " #").first ?? trimmed
+            let cleaned = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleaned.isEmpty ? nil : cleaned
+        }.joined(separator: "，")
     }
 
     private func analyze(_ originalBundle: MeetingAssets) async throws {
@@ -594,21 +712,6 @@ final class PipelineRunner {
             bundle.adaptiveScreenReviewStats = stats
         }
         assets = bundle
-
-        if UserDefaults.standard.bool(forKey: "previewBeforeAnalysis"),
-           !CommandLine.arguments.contains("--regenerate-record") {
-            let analyzer = Analyzer(assets: bundle, settings: Settings.shared)
-            requestPreview = analyzer.requestPreview()
-            stage = .reviewingRequest
-            detail = "确认后才会提交给大模型"
-            previewStartedAt = Date()
-            let shouldContinue = await withCheckedContinuation { continuation in
-                requestPreviewContinuation = continuation
-            }
-            guard shouldContinue else { throw CancellationError() }
-            stage = .analyzing
-            detail = ""
-        }
 
         let analyzer = Analyzer(assets: bundle, settings: Settings.shared)
         let result = try await analyzer.run { [weak self] message in
@@ -641,6 +744,31 @@ final class PipelineRunner {
             stats.citedScreenEvidence = Analyzer.screenCitationCount(in: trackedStructured)
             bundle.adaptiveScreenReviewStats = stats
             assets?.adaptiveScreenReviewStats = stats
+        }
+        if let structured = trackedStructured {
+            let evidenceGroups = structured.issues.map(\.evidence)
+                + structured.requirements.map(\.evidence)
+                + structured.actionItems.map(\.evidence)
+                + structured.agreements.map(\.evidence)
+                + structured.afterMeeting.map(\.evidence)
+                + structured.uncertainties.map(\.evidence)
+            let withoutEvidence = evidenceGroups.filter(\.isEmpty).count
+            let phaseLines = generationUsage.phases.map {
+                "\($0.name)：输入 \($0.inputTokens) · 输出 \($0.outputTokens) · 调用 \($0.calls)"
+            }.joined(separator: "\n")
+            debugSession?.qualitySummary("""
+            结构化 JSON：解析成功
+            问题：\(structured.issues.count)
+            需求：\(structured.requirements.count)
+            待办：\(structured.actionItems.count)
+            不确定项：\(structured.uncertainties.count)
+            屏幕引用：\(Analyzer.screenCitationCount(in: structured))/\(bundle.adaptiveScreenReviewStats?.framesSentToModel ?? 0)
+            无证据条目：\(withoutEvidence)
+            Token 估算分项：
+            \(phaseLines)
+            """)
+        } else {
+            debugSession?.qualitySummary("结构化 JSON：解析失败，已保留模型原始输出")
         }
 
         let resolvedTitle = MeetingTitleResolver.resolve(
@@ -716,6 +844,7 @@ final class PipelineRunner {
         stage = .done
         progress = 1
         detail = "完成"
+        emitRunSummary(status: "成功（问题已确认并保存）")
     }
 
     func finalizeIssueReview(_ issues: [StructuredMinutes.Issue]) {
@@ -747,8 +876,8 @@ final class PipelineRunner {
     }
 
     private func finishTimingSample() {
-        guard let started = processingStartedAt, sourceDuration > 0 else { return }
-        let elapsed = Date().timeIntervalSince(started) - previewPausedDuration
+        guard debugSession == nil, let started = processingStartedAt, sourceDuration > 0 else { return }
+        let elapsed = Date().timeIntervalSince(started)
         ProcessingTimeHistory.record(mediaDuration: sourceDuration,
                                      processingDuration: max(elapsed, 1))
         processingStartedAt = nil
@@ -758,6 +887,20 @@ final class PipelineRunner {
         let minutes = max(Int((seconds / 60).rounded()), 1)
         if minutes < 60 { return "\(minutes) 分钟" }
         return "\(minutes / 60) 小时 \(minutes % 60) 分钟"
+    }
+
+    private func configureDebugSession() {
+        let settings = Settings.shared
+        debugSession = settings.pipelineDebugEnabled
+            ? try? PipelineDebugSession(pausesAtNodeStart: settings.pipelineDebugPauseAtNodeStart)
+            : nil
+        PipelineDebugRegistry.install(debugSession)
+    }
+
+    private func emitRunSummary(status: String, extra: String = "") {
+        let cache = "转录\(usedCachedTranscript ? "命中" : "未命中")、声纹\(usedCachedDiarization ? "命中" : "未命中")"
+        let screen = assets?.adaptiveScreenReviewStats?.summary ?? "未执行"
+        debugSession?.runSummary(status: status, cache: cache, screen: screen, extra: extra)
     }
 
     @discardableResult
@@ -824,10 +967,70 @@ final class PipelineRunner {
 
             detail = "补充抽取 \(requests.count) 个关键节点的画面…"
             let nextID = (bundle.captures.map(\.id).max() ?? -1) + 1
+            let selectedProbes = Array(probes.prefix(18))
+            try await debugSession?.beginNode("补充提取画面", input: selectedProbes.map {
+                "时间：\($0.time) 秒；原因：\($0.reason)"
+            }.joined(separator: "\n"))
+            let adaptiveDebug = debugSession
             let extracted = try await MediaExtractor(url: bundle.sourceURL)
-                .extractFrames(at: Array(probes.prefix(18)), startingID: nextID)
-            let annotated = await TextRecognizer.annotate(extracted) { _ in }
-            let useful = Self.newEvidenceFrames(annotated, comparedWith: bundle.captures)
+                .extractFrames(at: selectedProbes, startingID: nextID) { value in
+                    adaptiveDebug?.progressPercent(
+                        "补充提取画面", label: "扫描进度", fraction: value)
+                }
+            if let debug = debugSession {
+                var adaptivePaths: [String] = []
+                for capture in extracted {
+                    if let url = debug.writePNG(
+                        capture.image, name: "adaptive-frame-\(capture.id).png") {
+                        adaptivePaths.append(url.path)
+                    }
+                }
+                debug.endNode("补充提取画面", output: """
+                抽取画面：\(extracted.count)
+                文件：\n\(adaptivePaths.isEmpty ? "<空>" : adaptivePaths.joined(separator: "\n"))
+                """)
+            }
+            let annotated: [ScreenCapture]
+            if Self.backendSupportsVision(Settings.shared) {
+                annotated = extracted
+            } else {
+                try await debugSession?.beginNode("补充 OCR", input: """
+                原因：当前模型后端不支持图片输入
+                画面数量：\(extracted.count)
+                """)
+                annotated = await TextRecognizer.annotate(extracted) { value in
+                    adaptiveDebug?.progressPercent("补充 OCR", label: "识别进度", fraction: value)
+                }
+                if let debug = debugSession {
+                    let adaptiveOCR = annotated.map {
+                        "===== 画面 \($0.id) =====\n\($0.recognizedText.joined(separator: "\n"))"
+                    }.joined(separator: "\n\n")
+                    let adaptiveOCRURL = debug.writeText("adaptive-ocr.txt", adaptiveOCR)
+                    debug.endNode("补充 OCR", output: "OCR 文件：\(adaptiveOCRURL?.path ?? "<写入失败>")")
+                }
+            }
+            // The regular scan is only a change index and is never sent to a
+            // vision backend. Comparing probes with it would incorrectly drop
+            // the very evidence frames requested by the planner. Deduplicate
+            // only inside this targeted probe set.
+            let useful = Self.distinctEvidenceFrames(annotated)
+            if let debug = debugSession {
+                let acceptedIDs = Set(useful.map(\.id))
+                let lines = annotated.map { capture in
+                    let decision: String
+                    if acceptedIDs.contains(capture.id) {
+                        decision = "保留：定向事件中的有效画面"
+                    } else {
+                        let duplicate = useful.first {
+                            PerceptualHash.distance($0.fingerprint, capture.fingerprint) < 8
+                        }
+                        decision = duplicate.map { "剔除：与画面 #\($0.id) 感知哈希相似" }
+                            ?? "剔除：没有新增像素或 OCR 文本"
+                    }
+                    return "#\(capture.id) · \(capture.timecode) · \(capture.evidenceReason ?? "<无原因>") · \(decision)"
+                }
+                debug.imageSelection("探针内部去重：\n" + lines.joined(separator: "\n"))
+            }
 
             reviewStats.extractedFrames = extracted.count
             reviewStats.framesWithOCR = annotated.filter { !$0.recognizedText.isEmpty }.count
@@ -848,24 +1051,32 @@ final class PipelineRunner {
         }
     }
 
-    /// Keeps only visually distinct probes that add OCR text or genuinely new
-    /// pixels. This prevents three near-identical frames from consuming the
-    /// final image budget.
-    static func newEvidenceFrames(_ candidates: [ScreenCapture],
-                                  comparedWith existing: [ScreenCapture]) -> [ScreenCapture] {
+    static func backendSupportsVision(_ settings: Settings) -> Bool {
+        switch settings.backend {
+        case .codexCLI: return true
+        case .claudeCLI: return false
+        case .openAICompatible: return settings.providerSupportsVision
+        }
+    }
+
+    /// Keeps only visually distinct targeted probes. This prevents a single
+    /// event's before/at/after triplet from consuming the final image budget.
+    static func distinctEvidenceFrames(_ candidates: [ScreenCapture]) -> [ScreenCapture] {
         var accepted: [ScreenCapture] = []
-        let existingText = Set(existing.flatMap(\.recognizedText).map {
-            $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        })
+        var acceptedText = Set<String>()
         for candidate in candidates {
-            let references = existing + accepted
-            let visuallyNew = !references.contains {
+            let visuallyNew = !accepted.contains {
                 PerceptualHash.distance($0.fingerprint, candidate.fingerprint) < 8
             }
             let hasNewText = candidate.recognizedText.contains {
-                !existingText.contains($0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
+                !acceptedText.contains($0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
             }
-            if visuallyNew || hasNewText { accepted.append(candidate) }
+            if visuallyNew || hasNewText {
+                accepted.append(candidate)
+                acceptedText.formUnion(candidate.recognizedText.map {
+                    $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                })
+            }
         }
         return accepted
     }

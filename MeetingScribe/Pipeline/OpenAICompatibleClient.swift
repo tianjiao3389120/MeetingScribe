@@ -42,6 +42,29 @@ struct OpenAICompatibleClient {
         images: [Attachment],
         onProgress: @Sendable (String) -> Void = { _ in }
     ) async throws -> Completion {
+        let debug = PipelineDebugRegistry.active
+        let tool = (try? endpoint().absoluteString) ?? baseURL
+        debug?.engineStart(tool: tool, arguments: [
+            "model=\(model)", "apiStyle=\(String(describing: apiStyle))",
+            "images=\(images.count)", "stream=true"
+        ])
+        do {
+            let result = try await completeDetailedUnlogged(
+                system: system, user: user, images: images, onProgress: onProgress)
+            debug?.engineEnd(tool: tool, exitCode: 0, stdout: result.text, stderr: "")
+            return result
+        } catch {
+            debug?.engineEnd(tool: tool, exitCode: -1, stdout: "", stderr: error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func completeDetailedUnlogged(
+        system: String,
+        user: String,
+        images: [Attachment],
+        onProgress: @Sendable (String) -> Void
+    ) async throws -> Completion {
 
         var content: [[String: Any]] = []
 

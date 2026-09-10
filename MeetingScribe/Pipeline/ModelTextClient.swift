@@ -29,13 +29,13 @@ struct ModelTextClient {
                 baseURL: settings.providerBaseURL,
                 apiKey: key,
                 model: settings.providerModel,
-                supportsVision: false,
+                supportsVision: settings.providerSupportsVision,
                 apiStyle: provider.apiStyle,
                 httpHeaders: provider.httpHeaders))
         }
     }
 
-    func complete(system: String, user: String,
+    func complete(system: String, user: String, images: [URL] = [],
                   timeout: TimeInterval = 900) async throws -> String {
         let startedAt = Date()
         let estimatedInput = TokenEstimator.count(system + "\n" + user)
@@ -52,15 +52,22 @@ struct ModelTextClient {
             var actualOutput: Int?
             switch backend {
             case .codex(let executable):
+                let imageArguments = images.flatMap { ["--image", $0.path] }
                 raw = try await Shell.check(
-                    executable, ToolLocator.codexExecArguments,
+                    executable, Array(ToolLocator.codexExecArguments.dropLast())
+                        + imageArguments + ["-"],
                     stdin: Self.prompt(system: system, user: user), timeout: timeout).stdout
             case .claude(let executable):
                 raw = try await Shell.check(
                     executable, ["-p", "--output-format", "text"],
                     stdin: Self.prompt(system: system, user: user), timeout: timeout).stdout
             case .api(let client):
-                let result = try await client.completeDetailed(system: system, user: user, images: [])
+                let attachments = images.compactMap { url -> OpenAICompatibleClient.Attachment? in
+                    guard let data = try? Data(contentsOf: url) else { return nil }
+                    return .init(caption: "关键屏幕画面《\(url.lastPathComponent)》：", jpeg: data)
+                }
+                let result = try await client.completeDetailed(
+                    system: system, user: user, images: attachments)
                 raw = result.text; actualInput = result.inputTokens; actualOutput = result.outputTokens
             }
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)

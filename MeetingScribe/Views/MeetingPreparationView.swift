@@ -28,7 +28,6 @@ struct MeetingPreparationView: View {
     @State private var showAdvanced = false
     @State private var estimatedTokens: Int?
     @State private var showTokenWarning = false
-    @AppStorage("previewBeforeAnalysis") private var previewBeforeAnalysis = false
 
     init(input: MeetingInput,
          onStart: @escaping (String, RecognitionScenario, MeetingWorkspace?, String, String, String, String, [String], [SupportingMaterial]) -> Void,
@@ -201,10 +200,6 @@ struct MeetingPreparationView: View {
 
                 Section {
                     DisclosureGroup("更多选项", isExpanded: $showAdvanced) {
-                        Toggle("生成纪要前预览提交内容", isOn: $previewBeforeAnalysis)
-                        Text("开启后会在调用大模型前暂停，可检查并复制实际提交的提示词和会议内容。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Divider()
                         VStack(alignment: .leading, spacing: 8) {
                             Text("本次会议材料").font(.callout.weight(.medium))
                             if materials.isEmpty {

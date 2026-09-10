@@ -35,8 +35,6 @@ struct ContentView: View {
                 ResultView(runner: runner, savedPath: $savedPath)
             case .reviewingIssues:
                 IssuePreflightView(runner: runner)
-            case .reviewingRequest:
-                RequestPreviewView(runner: runner)
             default:
                 ProgressPanel(runner: runner)
             }
@@ -742,7 +740,7 @@ private struct ProgressPanel: View {
                     Text(estimate)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } else if runner.stage != .reviewingRequest {
+                } else {
                     Text("完成 2 次处理后，将根据本机历史显示剩余时间")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
@@ -769,36 +767,6 @@ private extension PipelineRunner.Stage {
         default:
             return false
         }
-    }
-}
-
-private struct RequestPreviewView: View {
-    let runner: PipelineRunner
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("提交给大模型前预览").font(.title2.weight(.semibold))
-                Text("以下是即将提交的实际文本；确认前不会调用大模型。")
-                    .foregroundStyle(.secondary)
-            }
-            TextEditor(text: .constant(runner.requestPreview))
-                .font(.system(.callout, design: .monospaced))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay { RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)) }
-            HStack {
-                Button("取消本次处理", role: .cancel) { runner.cancel() }
-                Button("复制完整请求") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(runner.requestPreview, forType: .string)
-                }
-                Spacer()
-                Button("确认并生成纪要") { runner.confirmRequestPreview() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
     }
 }
 

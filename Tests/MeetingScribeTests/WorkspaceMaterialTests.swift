@@ -85,33 +85,6 @@ final class WorkspaceMaterialTests: XCTestCase {
         XCTAssertEqual(Analyzer.screenCitationCount(in: minutes), 2)
     }
 
-    func testScreenEvidenceRepairRunsOnlyAfterUncitedAdaptiveOCRWasSent() {
-        let image = CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
-                            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
-                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                            provider: CGDataProvider(data: Data([0, 0, 0, 255]) as CFData)!,
-                            decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
-        let capture = ScreenCapture(id: 1, time: 10, duration: 1, image: image,
-                                    recognizedText: ["OCS 232台"],
-                                    evidenceReason: "核对主机范围", fingerprint: 0)
-        let assets = MeetingAssets(sourceURL: URL(fileURLWithPath: "/tmp/test.mov"),
-                                   duration: 20, transcript: Transcript(segments: []),
-                                   captures: [capture], hasVideo: true)
-        let minutes = StructuredMinutes(
-            title: "测试会议", nature: "", duration: "", agenda: ["核对"],
-            participantAssessment: [], issues: [], requirements: [],
-            actionItems: [.init(owner: "张三", task: "核对范围", status: "待办",
-                               due: "", evidence: ["[10:00]"])],
-            agreements: [], afterMeeting: [], uncertainties: [])
-
-        XCTAssertTrue(Analyzer.shouldRepairScreenEvidence(
-            minutes: minutes, assets: assets, settings: Settings.shared))
-        var cited = minutes
-        cited.actionItems[0].evidence.append("屏幕 00:10")
-        XCTAssertFalse(Analyzer.shouldRepairScreenEvidence(
-            minutes: cited, assets: assets, settings: Settings.shared))
-    }
-
     func testAdaptiveOCRSelectionFoldsProbeTripletsAndCapsPayload() {
         let image = CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
                             bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
@@ -131,6 +104,50 @@ final class WorkspaceMaterialTests: XCTestCase {
         XCTAssertTrue(selected.contains(5))
         XCTAssertTrue(selected.contains(6))
     }
+
+    func testVisualEvidenceSelectionKeepsOneFramePerEventWithoutRequiringOCR() {
+        let image = CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
+                            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                            provider: CGDataProvider(data: Data([0, 0, 0, 255]) as CFData)!,
+                            decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+        let times = [0.0, 4.0, 8.0, 30.0, 34.0, 60.0]
+        let captures = times.enumerated().map {
+            let reason = $0.offset < 3 ? "事件A" : ($0.offset < 5 ? "事件B" : "事件C")
+            return ScreenCapture(id: $0.offset, time: $0.element, duration: 1, image: image,
+                                 recognizedText: [], evidenceReason: reason,
+                                 fingerprint: UInt64($0.offset))
+        }
+
+        let selected = Analyzer.selectVisualEvidenceCaptures(from: captures, limit: 6)
+
+        XCTAssertEqual(selected.count, 3)
+        XCTAssertTrue(selected.contains(1))
+        XCTAssertTrue(selected.contains(3) || selected.contains(4))
+        XCTAssertTrue(selected.contains(5))
+    }
+
+    @MainActor
+    func testTargetedEvidenceDeduplicatesOnlyWithinTargetedProbeSet() {
+        let image = CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
+                            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                            provider: CGDataProvider(data: Data([0, 0, 0, 255]) as CFData)!,
+                            decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+        let captures = [
+            ScreenCapture(id: 1, time: 10, duration: 1, image: image,
+                          evidenceReason: "事件A", fingerprint: 0),
+            ScreenCapture(id: 2, time: 12, duration: 1, image: image,
+                          evidenceReason: "事件A", fingerprint: 0),
+            ScreenCapture(id: 3, time: 30, duration: 1, image: image,
+                          evidenceReason: "事件B", fingerprint: UInt64.max)
+        ]
+
+        let result = PipelineRunner.distinctEvidenceFrames(captures)
+
+        XCTAssertEqual(result.map(\.id), [1, 3])
+    }
+
     func testModelTrackingIDsAreRecoveredButNeverRemainInTaskText() {
         var value = StructuredMinutes(
             title: "项目例会", nature: "", duration: "", agenda: ["进展"],
@@ -508,6 +525,20 @@ final class WorkspaceMaterialTests: XCTestCase {
         XCTAssertTrue(trimmed.hasPrefix("(无线AI)应识别为(无相AI)"))
         XCTAssertTrue(trimmed.contains("无相AI"))
         XCTAssertLessThanOrEqual(trimmed.count, 170)
+    }
+
+    @MainActor
+    func testWhisperPromptRemovesMarkdownInstructionsAndInlineComments() {
+        let prompt = PipelineRunner.transcriptionPrompt(
+            scenario: .mandarin,
+            priorityVocabulary: "无线AI应识别为无相AI # 领域词表说明\n# 不应发送给模型",
+            glossary: "Agent\n# 使用说明",
+            materials: [])
+
+        XCTAssertTrue(prompt.contains("无线AI应识别为无相AI"))
+        XCTAssertTrue(prompt.contains("Agent"))
+        XCTAssertFalse(prompt.contains("#"))
+        XCTAssertFalse(prompt.contains("领域词表说明"))
     }
 
     func testWorkspaceInsightsAggregatesOpenAndClosedActions() {

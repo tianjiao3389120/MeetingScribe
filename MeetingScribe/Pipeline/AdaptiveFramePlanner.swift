@@ -44,22 +44,42 @@ struct AdaptiveFramePlanner {
     func plan(transcript: Transcript, duration: TimeInterval) async throws -> [Request] {
         let candidates = Self.candidateTimeline(from: transcript)
         guard !candidates.isEmpty else { return [] }
+        let systemPrompt = "你负责为会议录像选择需要补看屏幕的时间点。只输出 JSON，不要解释。"
+        let userPrompt = """
+        阅读逐字稿，找出屏幕画面可能补充关键事实的节点，例如：信息密集的汇报、含糊的“这里/这个”、
+        数字日期版本号、图表架构、演示结果、报错信息或语音识别明显可疑的专有名词。
+        只选择真正值得补看画面的节点，最多 6 个；没有则返回空数组。
+        根据画面可能出现的时机设置 radius：普通指代 2-3 秒，图表讲解 4-6 秒，演示结果 6-8 秒。
+        输出格式：{"requests":[{"seconds":123.4,"reason":"需要核对图表数字","radius":5}]}
+        seconds 必须在 0 到 \(duration) 之间。
+
+        以下只是在本机预筛出的候选片段，覆盖整场会议：
+        \(candidates)
+        """
+        let debug = PipelineDebugRegistry.active
+        try await debug?.beginNode("关键画面规划", input: """
+        系统提示词：\n\(systemPrompt)
+
+        用户输入：\n\(userPrompt)
+        """)
         let context = (TokenUsageContext.current ?? TokenUsageContext(feature: "画面节点规划"))
             .replacingFeature("画面节点规划")
+        let heartbeat = Task {
+            var waited = 0
+            while !Task.isCancelled {
+                let interval = waited < 30 ? 10 : 30
+                do { try await Task.sleep(for: .seconds(interval)) } catch { return }
+                waited += interval
+                if !Task.isCancelled {
+                    debug?.progress("关键画面规划", "模型仍在运行，已等待 \(waited / 60):\(String(format: "%02d", waited % 60))")
+                }
+            }
+        }
+        defer { heartbeat.cancel() }
         let raw = try await TokenUsageContext.$current.withValue(context) {
             try await ModelTextClient(settings: settings).complete(
-            system: "你负责为会议录像选择需要补看屏幕的时间点。只输出 JSON，不要解释。",
-            user: """
-            阅读逐字稿，找出屏幕画面可能补充关键事实的节点，例如：信息密集的汇报、含糊的“这里/这个”、
-            数字日期版本号、图表架构、演示结果、报错信息或语音识别明显可疑的专有名词。
-            只选择真正值得补看画面的节点，最多 6 个；没有则返回空数组。
-            根据画面可能出现的时机设置 radius：普通指代 2-3 秒，图表讲解 4-6 秒，演示结果 6-8 秒。
-            输出格式：{"requests":[{"seconds":123.4,"reason":"需要核对图表数字","radius":5}]}
-            seconds 必须在 0 到 \(duration) 之间。
-
-            以下只是在本机预筛出的候选片段，覆盖整场会议：
-            \(candidates)
-            """,
+            system: systemPrompt,
+            user: userPrompt,
             timeout: 180)
         }
         let planned = Self.parse(raw, duration: duration)
@@ -67,9 +87,12 @@ struct AdaptiveFramePlanner {
         // even when the transcript explicitly says "看这里" during a screen
         // demonstration. Keep a small deterministic safety net so the adaptive
         // path cannot silently become a no-op on exactly those meetings.
-        return planned.isEmpty
+        let result = planned.isEmpty
             ? Self.fallbackRequests(from: transcript, duration: duration)
             : planned
+        let output = (try? String(data: JSONEncoder().encode(result), encoding: .utf8)) ?? raw
+        debug?.endNode("关键画面规划", output: output)
+        return result
     }
 
     static func fallbackRequests(from transcript: Transcript,
