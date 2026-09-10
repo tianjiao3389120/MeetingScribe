@@ -34,11 +34,17 @@ enum MeetingWorkspaceStore {
     static func resolve(id: UUID?, customerName: String?, projectName: String?,
                         from values: [MeetingWorkspace]? = nil) -> MeetingWorkspace? {
         let workspaces = values ?? ((try? load()) ?? [])
-        if let id, let exact = workspaces.first(where: { $0.id == id }) { return exact }
         func normalized(_ value: String?) -> String {
             (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }
         let customer = normalized(customerName), project = normalized(projectName)
+        // Legacy records may contain a customer ID even though their customer/project
+        // names identify a formal project. Never let that stale customer ID win over
+        // the explicit project classification.
+        if let id, let exact = workspaces.first(where: { $0.id == id }),
+           project.isEmpty || exact.isProject {
+            return exact
+        }
         // A project name is only unique inside its customer. Never use a project-only
         // match: identical names under different customers would silently pollute the
         // wrong project's recognition memory, issues, and action ledger.

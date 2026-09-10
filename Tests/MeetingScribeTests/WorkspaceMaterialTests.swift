@@ -332,6 +332,19 @@ final class WorkspaceMaterialTests: XCTestCase {
             from: [other, customer])?.id, customer.id)
     }
 
+    func testWorkspaceResolverRepairsLegacyCustomerIDWhenProjectNameExists() {
+        let customer = MeetingWorkspace(name: "中银香港", kind: .customer)
+        let project = MeetingWorkspace(name: "主机安全", kind: .project,
+                                       customerID: customer.id)
+
+        let resolved = MeetingWorkspaceStore.resolve(
+            id: customer.id, customerName: customer.name, projectName: project.name,
+            from: [customer, project])
+
+        XCTAssertEqual(resolved?.id, project.id)
+        XCTAssertTrue(resolved?.isProject == true)
+    }
+
     func testWorkspaceResolverNeverMatchesProjectOutsideTypedCustomer() {
         let customerA = MeetingWorkspace(name: "客户 A", kind: .customer)
         let customerB = MeetingWorkspace(name: "客户 B", kind: .customer)
