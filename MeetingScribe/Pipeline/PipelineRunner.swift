@@ -729,10 +729,22 @@ final class PipelineRunner {
                     output: "规划 \(planned) 个补充画面节点"), at: 0)
         }
         var trackedStructured = result.structured
+        var associationReviewReasons: [String] = []
         if var structured = trackedStructured {
             let confirmedIssues = bundle.workspace.map {
                 (try? ProjectLedgerStore.load().issues(for: $0.id)) ?? []
             } ?? []
+            do {
+                let association = try await IssueAssociationService(settings: Settings.shared)
+                    .associate(structured, workspaceID: bundle.workspace?.id)
+                structured = association.minutes
+                associationReviewReasons = association.reviewReasons
+                if association.phase.calls > 0 { generationUsage.phases.append(association.phase) }
+            } catch {
+                debugSession?.nodeWarning("问题关联",
+                    detail: "独立关联失败，将使用本地保守匹配：\(error.localizedDescription)")
+                associationReviewReasons = ["问题关联未完成，已使用本地保守匹配"]
+            }
             IssueTracking.prepare(&structured, confirmedIssues: confirmedIssues)
             trackedStructured = structured
         }
@@ -819,7 +831,8 @@ final class PipelineRunner {
         storedRecord.adaptiveScreenReviewStats = bundle.adaptiveScreenReviewStats
         storedRecord.generationUsage = generationUsage
         storedRecord.meetingGroupID = bundle.meetingGroupID ?? storedRecord.id
-        let reviewRisks = trackedStructured.map { IssuePreflight.risks(in: $0.issues) } ?? []
+        let reviewRisks = (trackedStructured.map { IssuePreflight.risks(in: $0.issues) } ?? [])
+            + associationReviewReasons
         let isHeadless = CommandLine.arguments.contains("--regenerate-record")
         if !isHeadless, trackedStructured?.issues.isEmpty == false,
            Settings.shared.alwaysReviewIssues || !reviewRisks.isEmpty {
@@ -915,6 +928,7 @@ final class PipelineRunner {
         PendingJobStore.clear(id: pendingJobID)
         do {
             try ProjectLedgerStore.prepareProposals(for: record)
+            try ProjectLedgerStore.applyRetrievalProfiles(for: record)
         } catch {
             historyWarning = "会议已保存，但项目问题建议生成失败：\(error.localizedDescription)"
         }

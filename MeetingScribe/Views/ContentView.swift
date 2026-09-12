@@ -534,6 +534,14 @@ private struct IssuePreflightView: View {
     @State private var drafts: [Draft]
     private let historicalIssues: [ProjectIssue]
 
+    private var reviewIndices: Set<Int> {
+        IssuePreflight.reviewIndices(in: drafts.map(\.issue), reasons: runner.issueReviewReasons)
+    }
+
+    private var automaticDrafts: [Draft] {
+        drafts.enumerated().filter { !reviewIndices.contains($0.offset) }.map(\.element)
+    }
+
     init(runner: PipelineRunner) {
         self.runner = runner
         _drafts = State(initialValue: (runner.structuredSummary?.issues ?? []).map { Draft(issue: $0) })
@@ -548,7 +556,7 @@ private struct IssuePreflightView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("生成最终纪要前确认问题").font(.title2.weight(.semibold))
-                Text("问题结构确认后才会保存纪要和建立问题关联。可以改名、排除、合并或直接关联历史问题。")
+                Text("只需处理下方存在风险的问题；其余高置信度问题已自动确认。")
                     .font(.callout).foregroundStyle(.secondary)
                 ForEach(runner.issueReviewReasons, id: \.self) {
                     Label($0, systemImage: "exclamationmark.bubble")
@@ -559,58 +567,100 @@ private struct IssuePreflightView: View {
             Divider()
             ScrollView {
                 VStack(spacing: 12) {
-                    ForEach($drafts) { $draft in
-                        VStack(alignment: .leading, spacing: 9) {
-                            HStack {
-                                Toggle("保留为问题", isOn: Binding(
-                                    get: { !draft.excluded },
-                                    set: { draft.excluded = !$0 }))
-                                Spacer()
-                                Menu("合并到…") {
-                                    ForEach(drafts.filter { $0.id != draft.id && !$0.excluded }) { target in
-                                        Button(target.issue.title) { merge(draft.id, into: target.id) }
+                    if !automaticDrafts.isEmpty {
+                        DisclosureGroup("已自动确认 \(automaticDrafts.count) 个问题") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(automaticDrafts) { draft in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                            .padding(.top, 2)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(draft.issue.title)
+                                                .font(.callout.weight(.medium))
+                                                .foregroundStyle(.primary)
+                                            Text(IssuePreflight.automaticDecisionDescription(
+                                                for: draft.issue,
+                                                historicalIssues: historicalIssues))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
-                                }.disabled(draft.excluded || drafts.filter { $0.id != draft.id && !$0.excluded }.isEmpty)
-                                Button("拆分副本") { split(draft.id) }.disabled(draft.excluded)
-                                Button("排除") { draft.excluded = true }.disabled(draft.excluded)
-                            }
-                            TextField("问题标题", text: $draft.issue.title)
-                                .textFieldStyle(.roundedBorder).disabled(draft.excluded)
-                            if !draft.issue.progress.isEmpty {
-                                Text("本次进展：\(draft.issue.progress)")
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                            }
-                            if !historicalIssues.isEmpty && !draft.excluded {
-                                Picker("历史关联", selection: $draft.issue.trackingID) {
-                                    Text("作为新问题").tag(Optional<String>.none)
-                                    ForEach(historicalIssues) { issue in
-                                        Text(issue.title).tag(Optional(issue.id))
-                                    }
-                                }.controlSize(.small)
-                                if let selectedID = draft.issue.trackingID,
-                                   let selected = historicalIssues.first(where: { $0.id == selectedID }) {
-                                    ProjectIssueHistorySummaryView(issue: selected)
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
                         }
                         .padding(12)
-                        .opacity(draft.excluded ? 0.55 : 1)
-                        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 9))
+                        .background(.green.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                    ForEach(Array(drafts.indices), id: \.self) { index in
+                        if reviewIndices.contains(index) {
+                            issueEditor($drafts[index])
+                        }
                     }
                 }.padding(20)
             }
             Divider()
             HStack {
-                Text("保留 \(drafts.filter { !$0.excluded }.count) 个问题")
+                Text("需确认 \(reviewIndices.count) 个 · 自动确认 \(automaticDrafts.count) 个")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("确认并生成最终纪要") {
+                Button("确认风险问题并生成最终纪要") {
                     runner.finalizeIssueReview(drafts.filter { !$0.excluded }.map(\.issue))
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }.padding(16)
         }
+    }
+
+    @ViewBuilder
+    private func issueEditor(_ draft: Binding<Draft>) -> some View {
+        let draftID = draft.wrappedValue.id
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack {
+                                Toggle("保留为问题", isOn: Binding(
+                                    get: { !draft.wrappedValue.excluded },
+                                    set: { draft.wrappedValue.excluded = !$0 }))
+                                Spacer()
+                                Menu("合并到…") {
+                                    ForEach(drafts.filter { $0.id != draftID && !$0.excluded }) { target in
+                                        Button(target.issue.title) { merge(draftID, into: target.id) }
+                                    }
+                                }.disabled(draft.wrappedValue.excluded || drafts.filter { $0.id != draftID && !$0.excluded }.isEmpty)
+                                Button("拆分副本") { split(draftID) }.disabled(draft.wrappedValue.excluded)
+                                Button("排除") { draft.wrappedValue.excluded = true }.disabled(draft.wrappedValue.excluded)
+                            }
+                            TextField("问题标题", text: draft.issue.title)
+                                .textFieldStyle(.roundedBorder).disabled(draft.wrappedValue.excluded)
+                            if !draft.wrappedValue.issue.progress.isEmpty {
+                                Text("本次进展：\(draft.wrappedValue.issue.progress)")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                            }
+                            if !historicalIssues.isEmpty && !draft.wrappedValue.excluded {
+                                Picker("历史关联", selection: Binding(
+                                    get: { draft.wrappedValue.issue.trackingID },
+                                    set: { value in
+                                        var updated = draft.wrappedValue
+                                        IssuePreflight.setHistoricalAssociation(
+                                            value, on: &updated.issue)
+                                        draft.wrappedValue = updated
+                                    })) {
+                                    Text("作为新问题").tag(Optional<String>.none)
+                                    ForEach(historicalIssues) { issue in
+                                        Text(issue.title).tag(Optional(issue.id))
+                                    }
+                                }.controlSize(.small)
+                                if let selectedID = draft.wrappedValue.issue.trackingID,
+                                   let selected = historicalIssues.first(where: { $0.id == selectedID }) {
+                                    ProjectIssueHistorySummaryView(issue: selected)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .opacity(draft.wrappedValue.excluded ? 0.55 : 1)
+                        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 9))
     }
 
     private func merge(_ sourceID: UUID, into targetID: UUID) {
@@ -623,7 +673,8 @@ private struct IssuePreflightView: View {
     private func split(_ sourceID: UUID) {
         guard let source = drafts.firstIndex(where: { $0.id == sourceID }) else { return }
         var issue = drafts[source].issue
-        issue.trackingID = nil
+        IssuePreflight.setHistoricalAssociation(nil, on: &issue)
+        IssuePreflight.clearProposedProfile(in: &issue)
         issue.title += "（拆分）"
         drafts.insert(Draft(issue: issue), at: source + 1)
     }

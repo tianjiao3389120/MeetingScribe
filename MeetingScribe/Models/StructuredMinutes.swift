@@ -19,6 +19,11 @@ struct StructuredMinutes: Codable, Sendable, Equatable {
         /// Stable internal identifier used to carry context across meetings.
         /// It is never rendered into customer-facing minutes.
         var trackingID: String? = nil
+        /// Internal rolling profile proposed by the association stage. It is not rendered.
+        var rollingSummary: String? = nil
+        var proposedAliases: [String]? = nil
+        var proposedSearchTerms: [String]? = nil
+        var proposedNegativeTerms: [String]? = nil
         var title: String
         var status: String
         /// Context that explains how the issue arose. Optional so minutes

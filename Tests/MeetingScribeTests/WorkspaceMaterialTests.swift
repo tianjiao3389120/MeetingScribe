@@ -198,7 +198,8 @@ final class WorkspaceMaterialTests: XCTestCase {
             let minutes = StructuredMinutes(
                 title: "周会", nature: "", duration: "", agenda: ["进展"],
                 participantAssessment: [],
-                issues: [.init(trackingID: "MS-ISSUE-1", title: "供应商引擎异常",
+                issues: [.init(trackingID: "MS-ISSUE-1",
+                               rollingSummary: "滚动档案：\(progress)", title: "供应商引擎异常",
                                status: status, background: "安装组件后异常关闭",
                                rootCause: "等待供应商确认", solution: "分析日志",
                                progress: progress, evidence: ["[10:00]"])],
@@ -218,6 +219,8 @@ final class WorkspaceMaterialTests: XCTestCase {
         XCTAssertEqual(create.kind, .create)
         ledger = try ProjectLedgerStore.acceptIssue(proposalID: create.id, at: url)
         XCTAssertEqual(ledger.issues.first?.background, "安装组件后异常关闭")
+        XCTAssertEqual(ledger.analysis(for: "MS-ISSUE-1")?.summary, "滚动档案：等待日志")
+        XCTAssertEqual(ledger.analysis(for: "MS-ISSUE-1")?.timeline?.count, 1)
 
         ledger = try ProjectLedgerStore.prepareProposals(
             for: record(date: 200, status: "等待中", progress: "完成三轮分析"), at: url)
@@ -226,6 +229,8 @@ final class WorkspaceMaterialTests: XCTestCase {
         ledger = try ProjectLedgerStore.acceptIssue(proposalID: update.id, at: url)
         XCTAssertEqual(ledger.issues.first?.events.count, 2)
         XCTAssertEqual(ledger.issues.first?.events.last?.progress, "完成三轮分析")
+        XCTAssertEqual(ledger.analysis(for: "MS-ISSUE-1")?.summary, "滚动档案：完成三轮分析")
+        XCTAssertEqual(ledger.analysis(for: "MS-ISSUE-1")?.timeline?.count, 2)
     }
 
     func testProjectIssueUpdateKeepsExistingStatusWhenProposalStatusIsBlank() throws {
@@ -378,6 +383,210 @@ final class WorkspaceMaterialTests: XCTestCase {
         minutes.issues[0].trackingID = nil
         IssueTracking.prepare(&minutes, confirmedIssues: [])
         XCTAssertNotEqual(minutes.issues[0].trackingID, confirmed.id)
+    }
+
+    func testIssueCandidateSelectionKeepsAllIssuesBelowThreshold() {
+        let issues = (0..<IssueTracking.unfilteredIssueLimit).map {
+            candidateIssue(index: $0, title: "问题 \($0)")
+        }
+
+        let selection = IssueTracking.candidateSelection(from: issues, evidenceText: "问题 3")
+
+        XCTAssertEqual(selection.detailed.count, IssueTracking.unfilteredIssueLimit)
+        XCTAssertTrue(selection.index.isEmpty)
+        XCTAssertEqual(selection.omittedCount, 0)
+        XCTAssertFalse(selection.filtered)
+    }
+
+    func testIssueCandidateSelectionUsesEvidenceAndKeepsLightweightIndex() {
+        let issues = (0..<30).map {
+            candidateIssue(index: $0, title: $0 == 29 ? "Agent CPU占用异常" : "历史问题 \($0)")
+        }
+
+        let selection = IssueTracking.candidateSelection(
+            from: issues, evidenceText: "今天需要继续排查 Agent CPU占用异常和升级兼容性")
+
+        XCTAssertEqual(selection.detailed.count, IssueTracking.filteredDetailedLimit)
+        XCTAssertEqual(selection.index.count, 30 - IssueTracking.filteredDetailedLimit)
+        XCTAssertEqual(selection.omittedCount, 0)
+        XCTAssertTrue(selection.filtered)
+        XCTAssertTrue(selection.detailed.contains { $0.title == "Agent CPU占用异常" })
+        XCTAssertEqual(selection.reasons["标题/别名命中"], 1)
+    }
+
+    func testIssueCandidateSelectionCapsLightweightIndex() {
+        let issues = (0..<70).map { candidateIssue(index: $0, title: "历史问题 \($0)") }
+
+        let selection = IssueTracking.candidateSelection(from: issues, evidenceText: "无明显命中")
+
+        XCTAssertEqual(selection.detailed.count, IssueTracking.filteredDetailedLimit)
+        XCTAssertEqual(selection.index.count, IssueTracking.lightweightIndexLimit)
+        XCTAssertEqual(selection.omittedCount, 22)
+        XCTAssertTrue(selection.filtered)
+    }
+
+    func testIssueCandidateSelectionUsesCharacterBudgetEvenWithFewIssues() {
+        let longText = String(repeating: "详细背景", count: 120)
+        let issues = (0..<10).map {
+            ProjectIssue(
+                id: "MS-LONG-\($0)", workspaceID: UUID(), title: "长问题 \($0)", aliases: [],
+                background: longText, rootCause: longText, solution: longText, status: "进行中",
+                createdAt: Date(), updatedAt: Date(), sourceMeetingID: UUID(), events: [])
+        }
+
+        let selection = IssueTracking.candidateSelection(from: issues, evidenceText: "长问题")
+
+        XCTAssertTrue(selection.filtered)
+        XCTAssertEqual(selection.detailed.count, IssueTracking.filteredDetailedLimit)
+        XCTAssertEqual(selection.index.count, 2)
+    }
+
+    func testIssueCandidateSelectionToleratesPartialTranscriptMatch() {
+        let issues = (0..<30).map {
+            candidateIssue(index: $0, title: $0 == 0 ? "WebShell白名单批量导入异常" : "无关问题 \($0)")
+        }
+
+        let selection = IssueTracking.candidateSelection(
+            from: issues, evidenceText: "今天说到 WebShell 白名单，批量导入还是失败")
+
+        XCTAssertTrue(selection.detailed.contains { $0.title == "WebShell白名单批量导入异常" })
+        XCTAssertGreaterThanOrEqual(selection.reasons["BM25匹配"] ?? 0, 1)
+    }
+
+    func testClosedIssueCanBeRecalledAsReopenCandidate() {
+        var closed = candidateIssue(index: 1, title: "第三方杀毒软件误报Agent引擎文件")
+        closed.status = "已闭环"
+        let unrelated = (2..<8).map { candidateIssue(index: $0, title: "其他已关闭问题 \($0)") }
+
+        let candidates = IssueTracking.closedReopenCandidates(
+            from: [closed] + unrelated,
+            evidenceText: "Symantec再次对Agent引擎文件报病毒，需要确认是否复发")
+
+        XCTAssertEqual(candidates.first?.issue.id, closed.id)
+        XCTAssertLessThanOrEqual(candidates.count, IssueTracking.closedReopenLimit)
+    }
+
+    func testPostMinutesAssociationUsesConciseIssueInsteadOfUnrelatedMeetingText() {
+        var relevant = candidateIssue(index: 1, title: "第三方杀毒软件误报Agent引擎文件")
+        relevant.status = "已闭环"
+        relevant.background = "Symantec扫描Agent目录DLL和病毒名称字符串后产生误报"
+        var unrelated = candidateIssue(index: 2, title: "Bash告警无法追溯来源IP")
+        unrelated.status = "已闭环"
+        let current = StructuredMinutes.Issue(
+            title: "Symantec对Agent组件包产生病毒告警", status: "待确认",
+            background: "样本包含病毒名称字符串", rootCause: "可能为字符串规则误报",
+            solution: "提交Symantec分析", progress: "样本已提交", evidence: ["[41:24]"])
+
+        let selection = IssueTracking.associationCandidates(
+            for: [current], from: [unrelated, relevant])
+
+        XCTAssertEqual(selection.candidates.first?.id, relevant.id)
+        XCTAssertTrue(selection.rankingLines.first?.contains(relevant.title) == true)
+    }
+
+    func testPostMinutesAssociationRetrievesUsingRollingProfile() {
+        let relevant = candidateIssue(index: 1, title: "终端组件异常")
+        let unrelated = candidateIssue(index: 2, title: "终端组件异常排查")
+        let current = StructuredMinutes.Issue(
+            title: "灾备切换失败", status: "进行中", background: "生产到灾备无法统一切换",
+            rootCause: "待确认", solution: "补充切换能力", progress: "已提出需求", evidence: [])
+
+        let selection = IssueTracking.associationCandidates(
+            for: [current], from: [unrelated, relevant],
+            profilesByIssueID: [relevant.id: "生产环境到灾备环境统一切换能力缺失"])
+
+        XCTAssertEqual(selection.candidates.first?.id, relevant.id)
+    }
+
+    func testPostMinutesAssociationPenalizesNegativeTermConflict() {
+        var conflicted = candidateIssue(index: 1, title: "Agent 管控异常")
+        conflicted.searchTerms = ["终端管控"]
+        conflicted.negativeTerms = ["USB管控"]
+        var relevant = candidateIssue(index: 2, title: "Agent 管控异常")
+        relevant.searchTerms = ["USB管控", "外设策略"]
+        let current = StructuredMinutes.Issue(
+            title: "USB管控策略异常", status: "进行中", rootCause: "",
+            solution: "", progress: "外设策略未生效", evidence: [])
+
+        let selection = IssueTracking.associationCandidates(
+            for: [current], from: [conflicted, relevant])
+
+        XCTAssertEqual(selection.candidates.first?.id, relevant.id)
+    }
+
+    func testIssueAssociationResponseDecodesUpdatedRollingSummary() throws {
+        let raw = #"{"matches":[{"issueIndex":0,"trackingID":null,"reopen":false,"reason":"首次出现","updatedSummary":"首版综合档案","aliases":["SEP"],"searchTerms":["病毒误报"],"negativeTerms":["USB管控"]}]}"#
+        let output = try XCTUnwrap(IssueAssociationService.parse(raw))
+        XCTAssertEqual(output.matches.first?.updatedSummary, "首版综合档案")
+        XCTAssertEqual(output.matches.first?.searchTerms, ["病毒误报"])
+    }
+
+    func testIssueAssociationCandidateContextUsesBoundedRollingProfile() {
+        let issue = candidateIssue(index: 1, title: "内核兼容问题")
+        let context = IssueAssociationService.compactCandidate(
+            issue, rollingProfile: String(repeating: "综合档案内容", count: 100))
+
+        XCTAssertTrue(context.contains("综合档案摘要"))
+        XCTAssertTrue(context.contains("…"))
+        XCTAssertFalse(context.contains("当前背景"))
+        XCTAssertLessThan(context.count, 700)
+    }
+
+    func testRetrievalProfileIsAppliedWithoutAcceptingIssueProposal() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retrieval-profile-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workspaceID = UUID()
+        let issue = candidateIssue(index: 1, title: "杀毒软件误报")
+        var stored = issue
+        stored.workspaceID = workspaceID
+        stored.searchTerms = ["历史稳定词"]
+        stored.negativeTerms = ["历史排除词"]
+        try ProjectLedgerStore.save(ProjectLedger(issues: [stored]), to: url)
+        let proposed = StructuredMinutes.Issue(
+            trackingID: stored.id, rollingSummary: "最新综合档案",
+            proposedAliases: ["SEP"], proposedSearchTerms: ["病毒告警", "样本字符串"],
+            proposedNegativeTerms: ["USB管控"], title: stored.title, status: "进行中",
+            rootCause: "", solution: "", progress: "", evidence: [])
+        let minutes = StructuredMinutes(
+            title: "周会", nature: "", duration: "", agenda: [], participantAssessment: [],
+            issues: [proposed], requirements: [], actionItems: [], agreements: [],
+            afterMeeting: [], uncertainties: [])
+        let record = MeetingRecord(
+            title: "周会", sourcePath: "/tmp/source.mov", duration: 60,
+            backend: "测试", model: "mock", summaryMarkdown: "", structuredSummary: minutes,
+            transcript: Transcript(segments: []), speakerNames: [:], usedSummaryFallback: false,
+            workspaceID: workspaceID)
+
+        let ledger = try ProjectLedgerStore.applyRetrievalProfiles(for: record, at: url)
+
+        XCTAssertEqual(ledger.issues[0].aliases, ["SEP"])
+        XCTAssertEqual(ledger.issues[0].searchTerms, ["历史稳定词", "病毒告警", "样本字符串"])
+        XCTAssertEqual(ledger.issues[0].negativeTerms, ["历史排除词", "USB管控"])
+        XCTAssertEqual(ledger.analysis(for: stored.id)?.summary, "最新综合档案")
+        XCTAssertTrue(ledger.issueProposals.isEmpty)
+    }
+
+    func testClosedIssueIsNotRestoredByLocalFallbackWithoutExplicitReopen() {
+        var closed = candidateIssue(index: 1, title: "Agent组件病毒误报")
+        closed.status = "已闭环"
+        var minutes = StructuredMinutes(
+            title: "周会", nature: "", duration: "", agenda: [], participantAssessment: [],
+            issues: [.init(title: "Agent组件病毒误报", status: "待确认", background: "",
+                           rootCause: "", solution: "", progress: "", evidence: [])],
+            requirements: [], actionItems: [], agreements: [], afterMeeting: [], uncertainties: [])
+
+        IssueTracking.prepare(&minutes, confirmedIssues: [closed])
+
+        XCTAssertNotEqual(minutes.issues[0].trackingID, closed.id)
+    }
+
+    private func candidateIssue(index: Int, title: String) -> ProjectIssue {
+        ProjectIssue(
+            id: "MS-ISSUE-\(index)", workspaceID: UUID(), title: title, aliases: [],
+            background: "项目背景 \(index)", rootCause: "原因 \(index)", solution: "方案 \(index)",
+            status: "进行中", createdAt: Date(timeIntervalSince1970: Double(index)),
+            updatedAt: Date(timeIntervalSince1970: Double(index)), sourceMeetingID: UUID(), events: [])
     }
 
     func testIssueTrackingResolvesNewIssueTitleReferenceForAction() {

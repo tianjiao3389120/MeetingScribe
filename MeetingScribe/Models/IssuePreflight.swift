@@ -1,6 +1,29 @@
 import Foundation
 
 enum IssuePreflight {
+    static func automaticDecisionDescription(
+        for issue: StructuredMinutes.Issue,
+        historicalIssues: [ProjectIssue]
+    ) -> String {
+        guard let trackingID = issue.trackingID,
+              let historical = historicalIssues.first(where: { $0.id == trackingID }) else {
+            return "新建项目问题"
+        }
+        return "合并到历史问题「\(historical.title)」并记录本次进展"
+    }
+
+    static func reviewIndices(in issues: [StructuredMinutes.Issue], reasons: [String]) -> Set<Int> {
+        guard !issues.isEmpty else { return [] }
+        // An empty reason list means the user explicitly enabled "always review".
+        guard !reasons.isEmpty else { return Set(issues.indices) }
+        let matched = Set(issues.indices.filter { index in
+            reasons.contains { $0.contains("“\(issues[index].title)”") }
+        })
+        // Generic failures (for example an unavailable association model) cannot be assigned
+        // safely to one row, so retain the conservative whole-list review.
+        return matched.isEmpty ? Set(issues.indices) : matched
+    }
+
     static func risks(in issues: [StructuredMinutes.Issue]) -> [String] {
         guard issues.count > 1 else { return [] }
         var result: [String] = []
@@ -30,7 +53,22 @@ enum IssuePreflight {
         merged.solution = join(target.solution, source.solution)
         merged.progress = join(target.progress, source.progress)
         merged.evidence = Array(Set(target.evidence + source.evidence)).sorted()
+        clearProposedProfile(in: &merged)
         return merged
+    }
+
+    static func setHistoricalAssociation(_ trackingID: String?,
+                                         on issue: inout StructuredMinutes.Issue) {
+        guard issue.trackingID != trackingID else { return }
+        issue.trackingID = trackingID
+        clearProposedProfile(in: &issue)
+    }
+
+    static func clearProposedProfile(in issue: inout StructuredMinutes.Issue) {
+        issue.rollingSummary = nil
+        issue.proposedAliases = nil
+        issue.proposedSearchTerms = nil
+        issue.proposedNegativeTerms = nil
     }
 
     private static func join(_ lhs: String?, _ rhs: String?) -> String? {

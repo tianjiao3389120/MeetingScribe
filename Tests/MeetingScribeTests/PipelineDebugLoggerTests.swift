@@ -116,6 +116,19 @@ final class PipelineDebugLoggerTests: XCTestCase {
         XCTAssertTrue(log.contains("耗时："))
     }
 
+    func testRunSummaryDeduplicatesEquivalentSuccessStatuses() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = try PipelineDebugSession(root: root, pausesAtNodeStart: false)
+
+        session.runSummary(status: "成功（问题已确认并保存）", cache: "未命中", screen: "发送 3")
+        session.runSummary(status: "成功", cache: "未命中", screen: "发送 3")
+
+        let log = try String(contentsOf: session.logURL, encoding: .utf8)
+        XCTAssertEqual(log.components(separatedBy: "[RUN SUMMARY · 流水线]").count - 1, 1)
+        XCTAssertTrue(log.contains("状态：成功（问题已确认并保存）"))
+    }
+
     func testEngineProgressIsCompactedAndLongStreamsGoToFiles() throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

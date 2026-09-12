@@ -2,6 +2,54 @@ import XCTest
 @testable import MeetingScribe
 
 final class StructuredMinutesTests: XCTestCase {
+    func testIssueReviewScopeShowsOnlyTitlesMentionedByRiskReasons() {
+        let issues = [
+            StructuredMinutes.Issue(title: "自动关联", status: "进行中", rootCause: "", solution: "", progress: "", evidence: []),
+            StructuredMinutes.Issue(title: "闭环复发", status: "等待中", rootCause: "", solution: "", progress: "", evidence: [])
+        ]
+        XCTAssertEqual(IssuePreflight.reviewIndices(
+            in: issues, reasons: ["“闭环复发”将重新打开已闭环问题“历史问题”"]), [1])
+        XCTAssertEqual(IssuePreflight.reviewIndices(in: issues, reasons: []), [0, 1])
+    }
+
+    func testAutomaticIssueDecisionDescriptionDistinguishesNewAndHistoricalIssue() {
+        let historical = ProjectIssue(
+            id: "ISSUE-1", workspaceID: UUID(), title: "历史 Agent 误报问题",
+            aliases: [], background: "", rootCause: "", solution: "", status: "处理中",
+            createdAt: Date(), updatedAt: Date(), sourceMeetingID: UUID(), events: [])
+        var linked = StructuredMinutes.Issue(
+            title: "本次发现 Agent 误报", status: "进行中", rootCause: "",
+            solution: "", progress: "", evidence: [])
+        linked.trackingID = historical.id
+
+        XCTAssertEqual(
+            IssuePreflight.automaticDecisionDescription(for: linked, historicalIssues: [historical]),
+            "合并到历史问题「历史 Agent 误报问题」并记录本次进展")
+        XCTAssertEqual(
+            IssuePreflight.automaticDecisionDescription(
+                for: StructuredMinutes.Issue(
+                    title: "首次出现的问题", status: "进行中", rootCause: "",
+                    solution: "", progress: "", evidence: []),
+                historicalIssues: [historical]),
+            "新建项目问题")
+    }
+
+    func testManualAssociationChangeClearsModelProfileForPreviousTarget() {
+        var issue = StructuredMinutes.Issue(
+            trackingID: "ISSUE-A", rollingSummary: "A 的档案",
+            proposedAliases: ["A"], proposedSearchTerms: ["A关键词"],
+            proposedNegativeTerms: ["B"], title: "本次问题", status: "进行中",
+            rootCause: "", solution: "", progress: "", evidence: [])
+
+        IssuePreflight.setHistoricalAssociation("ISSUE-B", on: &issue)
+
+        XCTAssertEqual(issue.trackingID, "ISSUE-B")
+        XCTAssertNil(issue.rollingSummary)
+        XCTAssertNil(issue.proposedAliases)
+        XCTAssertNil(issue.proposedSearchTerms)
+        XCTAssertNil(issue.proposedNegativeTerms)
+    }
+
     func testTokenEstimatorAndUsageTotals() {
         let phase = GenerationUsage.estimatedPhase(
             name: "主纪要", input: "会议内容 ABCD", output: "会议纪要")

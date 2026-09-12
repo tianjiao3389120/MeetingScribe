@@ -34,6 +34,10 @@ struct ProjectIssue: Codable, Identifiable, Sendable, Equatable {
     var workspaceID: UUID
     var title: String
     var aliases: [String]
+    /// Hidden retrieval profile generated from confirmed history.
+    var searchTerms: [String]? = nil
+    /// Terms that indicate a superficially similar but different issue.
+    var negativeTerms: [String]? = nil
     var background: String
     var rootCause: String
     var solution: String
@@ -82,6 +86,11 @@ struct ProjectIssueProposal: Codable, Identifiable, Sendable, Equatable {
     var status: String
     var previousStatus: String?
     var evidence: [String]
+    /// Latest profile proposed for this issue; nil keeps older ledgers compatible.
+    var rollingSummary: String? = nil
+    var proposedAliases: [String]? = nil
+    var proposedSearchTerms: [String]? = nil
+    var proposedNegativeTerms: [String]? = nil
     var resolution: Resolution = .pending
 }
 

@@ -188,14 +188,25 @@ final class PipelineDebugSession: @unchecked Sendable {
         write(type: "IMAGE SELECTION", node: "关键画面", detail: detail)
     }
 
+    func issueSelection(_ detail: String) {
+        write(type: "ISSUE SELECTION", node: "历史问题候选", detail: detail)
+    }
+
+    func nodeWarning(_ node: String, detail: String) {
+        write(type: "NODE WARNING", node: node, detail: detail)
+    }
+
     func qualitySummary(_ detail: String) {
         write(type: "QUALITY SUMMARY", node: "纪要", detail: detail)
     }
 
     func runSummary(status: String, cache: String, screen: String, extra: String = "") {
         lock.lock()
-        guard lastRunSummaryStatus != status else { lock.unlock(); return }
-        lastRunSummaryStatus = status
+        // The issue confirmation path reports a more specific success before the outer
+        // pipeline reports the generic success. They describe the same completed run.
+        let statusKey = status.hasPrefix("成功") ? "成功" : status
+        guard lastRunSummaryStatus != statusKey else { lock.unlock(); return }
+        lastRunSummaryStatus = statusKey
         let tokens = modelTokensByNode
         let engineCount = engineSequence
         lock.unlock()

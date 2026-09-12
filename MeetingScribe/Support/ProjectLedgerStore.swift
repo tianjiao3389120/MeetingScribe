@@ -78,7 +78,11 @@ enum ProjectLedgerStore {
                     kind: .update, targetIssueID: target.id, title: issue.title,
                     background: issue.background ?? "", rootCause: issue.rootCause,
                     solution: issue.solution, progress: issue.progress, status: issue.status,
-                    previousStatus: target.status, evidence: issue.evidence))
+                    previousStatus: target.status, evidence: issue.evidence,
+                    rollingSummary: issue.rollingSummary,
+                    proposedAliases: issue.proposedAliases,
+                    proposedSearchTerms: issue.proposedSearchTerms,
+                    proposedNegativeTerms: issue.proposedNegativeTerms))
             } else {
                 guard !issue.evidence.isEmpty else { continue }
                 ledger.issueProposals.append(.init(
@@ -88,10 +92,59 @@ enum ProjectLedgerStore {
                     title: issue.title, background: issue.background ?? "",
                     rootCause: issue.rootCause, solution: issue.solution,
                     progress: issue.progress, status: issue.status,
-                    previousStatus: nil, evidence: issue.evidence))
+                    previousStatus: nil, evidence: issue.evidence,
+                    rollingSummary: issue.rollingSummary,
+                    proposedAliases: issue.proposedAliases,
+                    proposedSearchTerms: issue.proposedSearchTerms,
+                    proposedNegativeTerms: issue.proposedNegativeTerms))
             }
         }
         try save(ledger, to: url)
+        return ledger
+    }
+
+    /// Retrieval metadata is system-maintained and has no customer-facing effect, so it is
+    /// applied automatically once the meeting itself has passed issue association/review.
+    @discardableResult
+    static func applyRetrievalProfiles(for record: MeetingRecord,
+                                       at url: URL = fileURL) throws -> ProjectLedger {
+        guard let structured = record.structuredSummary else { return try load(from: url) }
+        var ledger = try load(from: url)
+        var changed = false
+        for proposed in structured.issues {
+            guard let id = proposed.trackingID,
+                  let index = ledger.issues.firstIndex(where: { $0.id == id }) else { continue }
+            if let aliases = proposed.proposedAliases {
+                ledger.issues[index].aliases = mergedTerms(ledger.issues[index].aliases, aliases)
+                changed = true
+            }
+            if let terms = proposed.proposedSearchTerms {
+                ledger.issues[index].searchTerms = mergedTerms(
+                    ledger.issues[index].searchTerms ?? [], terms)
+                changed = true
+            }
+            if let terms = proposed.proposedNegativeTerms {
+                ledger.issues[index].negativeTerms = mergedTerms(
+                    ledger.issues[index].negativeTerms ?? [], terms)
+                changed = true
+            }
+            if let summary = proposed.rollingSummary?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+                let issue = ledger.issues[index]
+                let previous = ledger.analysis(for: id)
+                let analysis = ProjectIssueAnalysis(
+                    issueID: id, workspaceID: issue.workspaceID, summary: summary,
+                    timeline: previous?.timeline ?? [], generatedAt: Date(),
+                    sourceEventIDs: issue.events.map(\.id))
+                if let analysisIndex = ledger.issueAnalyses.firstIndex(where: { $0.issueID == id }) {
+                    ledger.issueAnalyses[analysisIndex] = analysis
+                } else {
+                    ledger.issueAnalyses.append(analysis)
+                }
+                changed = true
+            }
+        }
+        if changed { try save(ledger, to: url) }
         return ledger
     }
 
@@ -192,7 +245,10 @@ enum ProjectLedgerStore {
             proposal.targetIssueID = id
             ledger.issues.append(ProjectIssue(
                 id: id, workspaceID: proposal.workspaceID, title: proposal.title,
-                aliases: [], background: proposal.background, rootCause: proposal.rootCause,
+                aliases: normalizedTerms(proposal.proposedAliases ?? []),
+                searchTerms: normalizedTerms(proposal.proposedSearchTerms ?? []),
+                negativeTerms: normalizedTerms(proposal.proposedNegativeTerms ?? []),
+                background: proposal.background, rootCause: proposal.rootCause,
                 solution: proposal.solution, status: proposal.status,
                 createdAt: proposal.meetingDate, updatedAt: proposal.meetingDate,
                 sourceMeetingID: proposal.meetingID,
@@ -210,6 +266,16 @@ enum ProjectLedgerStore {
                 ledger.issues[index].aliases.append(ledger.issues[index].title)
             }
             ledger.issues[index].title = proposal.title
+            ledger.issues[index].aliases = mergedTerms(
+                ledger.issues[index].aliases, proposal.proposedAliases ?? [])
+            if let terms = proposal.proposedSearchTerms {
+                ledger.issues[index].searchTerms = mergedTerms(
+                    ledger.issues[index].searchTerms ?? [], terms)
+            }
+            if let terms = proposal.proposedNegativeTerms {
+                ledger.issues[index].negativeTerms = mergedTerms(
+                    ledger.issues[index].negativeTerms ?? [], terms)
+            }
             if !proposal.background.isEmpty { ledger.issues[index].background = proposal.background }
             if !proposal.rootCause.isEmpty { ledger.issues[index].rootCause = proposal.rootCause }
             if !proposal.solution.isEmpty { ledger.issues[index].solution = proposal.solution }
@@ -222,6 +288,10 @@ enum ProjectLedgerStore {
         }
         proposal.resolution = .accepted
         ledger.issueProposals[proposalIndex] = proposal
+        if let issueID = proposal.targetIssueID,
+           let issue = ledger.issues.first(where: { $0.id == issueID }) {
+            updateRollingAnalysis(for: issue, proposal: proposal, in: &ledger)
+        }
         try save(ledger, to: url)
         return ledger
     }
@@ -349,6 +419,54 @@ enum ProjectLedgerStore {
                           title: proposal.title, background: proposal.background,
                           rootCause: proposal.rootCause, solution: proposal.solution,
                           progress: proposal.progress, evidence: proposal.evidence)
+    }
+
+    private static func updateRollingAnalysis(for issue: ProjectIssue,
+                                              proposal: ProjectIssueProposal,
+                                              in ledger: inout ProjectLedger) {
+        let proposed = proposal.rollingSummary?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fallback = [proposal.background, proposal.rootCause, proposal.solution, proposal.progress]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }.joined(separator: "；")
+        let summary = proposed.isEmpty ? fallback : proposed
+        guard !summary.isEmpty else { return }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let change = proposal.progress.trimmingCharacters(in: .whitespacesAndNewlines)
+        let item = ProjectIssueAnalysis.TimelineItem(
+            date: formatter.string(from: proposal.meetingDate),
+            meetingTitle: proposal.meetingTitle,
+            change: change.isEmpty ? "本次会议更新了问题状态和处置信息" : change)
+        var timeline = ledger.analysis(for: issue.id)?.timeline ?? []
+        if !timeline.contains(where: {
+            $0.date == item.date && $0.meetingTitle == item.meetingTitle && $0.change == item.change
+        }) { timeline.append(item) }
+        timeline.sort { $0.date == $1.date ? $0.meetingTitle < $1.meetingTitle : $0.date < $1.date }
+        let analysis = ProjectIssueAnalysis(
+            issueID: issue.id, workspaceID: issue.workspaceID,
+            summary: summary, timeline: timeline, generatedAt: Date(),
+            sourceEventIDs: issue.events.map(\.id))
+        if let index = ledger.issueAnalyses.firstIndex(where: { $0.issueID == issue.id }) {
+            ledger.issueAnalyses[index] = analysis
+        } else {
+            ledger.issueAnalyses.append(analysis)
+        }
+    }
+
+    private static func mergedTerms(_ existing: [String], _ proposed: [String]) -> [String] {
+        normalizedTerms(existing + proposed)
+    }
+
+    private static func normalizedTerms(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = cleaned.lowercased()
+            guard cleaned.count >= 2, cleaned.count <= 50, seen.insert(key).inserted else { return nil }
+            return cleaned
+        }.prefix(24).map { $0 }
     }
 
     private static func rebuildIssue(at index: Int, in ledger: inout ProjectLedger) {
