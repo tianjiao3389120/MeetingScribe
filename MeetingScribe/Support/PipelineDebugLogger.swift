@@ -6,6 +6,13 @@ import UniformTypeIdentifiers
 /// Terminal-first diagnostics for the meeting pipeline. When disabled, callers keep a nil
 /// session and pay no formatting, file IO, or polling cost.
 final class PipelineDebugSession: @unchecked Sendable {
+    struct PromptHandle: Sendable { let id: String; let node: String; let sequence: Int }
+    private struct PromptRecord: Codable {
+        let id: String; let node: String; let engine: String; let model: String
+        let purpose: String; let source: String; let inputPath: String
+        var outputPath: String?; let inputTokens: Int; var outputTokens: Int?
+        let startedAt: String; var completedAt: String?; var status: String
+    }
     let directory: URL
     let logURL: URL
     let continueURL: URL
@@ -26,6 +33,8 @@ final class PipelineDebugSession: @unchecked Sendable {
     private var lastTranscriptSecondByNode: [String: Int] = [:]
     private var lastTranscriptLogAtByNode: [String: Date] = [:]
     private var lastRunSummaryStatus: String?
+    private var promptSequence = 0
+    private var promptRecords: [PromptRecord] = []
 
     init(root: URL? = nil, pausesAtNodeStart: Bool) throws {
         let base = root ?? FileManager.default.urls(
@@ -45,6 +54,47 @@ final class PipelineDebugSession: @unchecked Sendable {
         try? FileManager.default.createSymbolicLink(at: latest, withDestinationURL: logURL)
         write(type: "DEBUG SESSION", node: "流水线",
               detail: "日志：\(logURL.path)\n产物目录：\(directory.path)")
+    }
+
+    @discardableResult
+    func promptStart(id: String, node: String, engine: String, model: String,
+                     purpose: String, source: String, system: String, user: String) -> PromptHandle {
+        lock.lock(); promptSequence += 1; let sequence = promptSequence; lock.unlock()
+        let stem = String(format: "%03d-%@", sequence, id.replacingOccurrences(of: "/", with: "-"))
+        let inputURL = directory.appendingPathComponent("prompts", isDirectory: true)
+            .appendingPathComponent("\(stem).input.txt")
+        try? FileManager.default.createDirectory(at: inputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let input = "[SYSTEM]\n\(system.isEmpty ? "<空>" : system)\n\n[USER]\n\(user.isEmpty ? "<空>" : user)\n"
+        try? input.write(to: inputURL, atomically: true, encoding: .utf8)
+        let record = PromptRecord(id: id, node: node, engine: engine, model: model,
+                                   purpose: purpose, source: source, inputPath: inputURL.path,
+                                   outputPath: nil, inputTokens: TokenEstimator.count(system + "\n" + user),
+                                   outputTokens: nil, startedAt: formatter.string(from: Date()),
+                                   completedAt: nil, status: "running")
+        lock.lock(); promptRecords.append(record); writePromptManifestLocked(); lock.unlock()
+        write(type: "PROMPT ROUTE", node: node, detail: "Prompt ID：\(id)\n用途：\(purpose)\n引擎：\(engine)\n模型：\(model)\n来源：\(source)\n输入：\(inputURL.path)\n估算输入 Token：\(record.inputTokens)")
+        return PromptHandle(id: id, node: node, sequence: sequence)
+    }
+
+    func promptEnd(_ handle: PromptHandle, output: String, status: String = "succeeded") {
+        let stem = String(format: "%03d-%@", handle.sequence, handle.id.replacingOccurrences(of: "/", with: "-"))
+        let outputURL = directory.appendingPathComponent("prompts", isDirectory: true)
+            .appendingPathComponent("\(stem).output.txt")
+        try? output.write(to: outputURL, atomically: true, encoding: .utf8)
+        lock.lock()
+        if let index = promptRecords.firstIndex(where: { $0.id == handle.id && $0.inputPath.contains(String(format: "%03d-", handle.sequence)) }) {
+            promptRecords[index].outputPath = outputURL.path
+            promptRecords[index].outputTokens = TokenEstimator.count(output)
+            promptRecords[index].completedAt = formatter.string(from: Date())
+            promptRecords[index].status = status
+        }
+        writePromptManifestLocked(); lock.unlock()
+        write(type: "PROMPT OUTPUT", node: handle.node, detail: "Prompt ID：\(handle.id)\n完整输出：\(outputURL.path)\n估算输出 Token：\(TokenEstimator.count(output))")
+    }
+
+    private func writePromptManifestLocked() {
+        let url = directory.appendingPathComponent("prompt-manifest.json")
+        if let data = try? JSONEncoder.prettyISO8601.encode(promptRecords) { try? data.write(to: url, options: .atomic) }
     }
 
     func beginNode(_ node: String, input: @autoclosure () -> String) async throws {
@@ -309,6 +359,13 @@ final class PipelineDebugSession: @unchecked Sendable {
         guard let handle = try? FileHandle(forWritingTo: logURL) else { return }
         defer { try? handle.close() }
         do { try handle.seekToEnd(); try handle.write(contentsOf: data) } catch { }
+    }
+}
+
+private extension JSONEncoder {
+    static var prettyISO8601: JSONEncoder {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601; return encoder
     }
 }
 

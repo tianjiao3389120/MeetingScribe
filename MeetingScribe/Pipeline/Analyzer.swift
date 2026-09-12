@@ -320,7 +320,10 @@ struct Analyzer {
         \(timeline)
         """
         return try await ModelTextClient(settings: settings).complete(
-            system: PromptBuilder.systemPrompt, user: prompt, images: imageURLs)
+            system: PromptBuilder.systemPrompt, user: prompt, images: imageURLs,
+            promptID: "minutes-generation.v4", node: "纪要生成",
+            purpose: "结合逐字稿与关键画面生成结构化会议纪要",
+            source: "Analyzer.swift")
     }
 
     private func jpegData(from image: CGImage, quality: CGFloat = 0.72) -> Data? {

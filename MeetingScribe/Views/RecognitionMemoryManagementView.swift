@@ -15,6 +15,8 @@ struct RecognitionMemoryManagementView: View {
                     Text("识别记忆").font(.title3.weight(.medium))
                     Text("术语、人名和纠错会自动按项目与使用频率选入转写提示。")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("识别提示：被传入 Whisper 初始提示词的次数；自动纠正：实际在转录结果中完成替换的次数。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("新增纠错…") { showAdd = true }

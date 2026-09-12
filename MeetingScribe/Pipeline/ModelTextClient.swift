@@ -36,7 +36,9 @@ struct ModelTextClient {
     }
 
     func complete(system: String, user: String, images: [URL] = [],
-                  timeout: TimeInterval = 900) async throws -> String {
+                  timeout: TimeInterval = 900, promptID: String? = nil,
+                  node: String = "模型调用", purpose: String = "文本生成",
+                  source: String = "ModelTextClient") async throws -> String {
         let startedAt = Date()
         let estimatedInput = TokenEstimator.count(system + "\n" + user)
         let backendName: String
@@ -46,6 +48,11 @@ struct ModelTextClient {
         case .claude: backendName = "Claude CLI"; modelName = "Claude CLI"
         case .api(let client): backendName = "API"; modelName = client.model
         }
+        let debug = PipelineDebugRegistry.active
+        let promptHandle = promptID.map {
+            debug?.promptStart(id: $0, node: node, engine: backendName, model: modelName,
+                               purpose: purpose, source: source, system: system, user: user)
+        } ?? nil
         do {
             let raw: String
             var actualInput: Int?
@@ -77,12 +84,14 @@ struct ModelTextClient {
                 inputTokens: actualInput ?? estimatedInput,
                 outputTokens: actualOutput ?? TokenEstimator.count(text),
                 isEstimated: actualInput == nil || actualOutput == nil, status: .succeeded)
+            if let promptHandle { debug?.promptEnd(promptHandle, output: text) }
             return text
         } catch {
             TokenUsageLedger.record(
                 startedAt: startedAt, backend: backendName, model: modelName,
                 inputTokens: estimatedInput, outputTokens: 0, isEstimated: true,
                 status: error is CancellationError ? .cancelled : .failed, error: error)
+            if let promptHandle { debug?.promptEnd(promptHandle, output: "失败：\(error.localizedDescription)", status: "failed") }
             throw error
         }
     }

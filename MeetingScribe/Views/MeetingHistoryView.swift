@@ -1113,21 +1113,22 @@ private struct HistoricalSpeakerEditorView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Divider()
-            List(speakerIDs, id: \.self) { speaker in
+            List(groupedSpeakerIDs, id: \.self) { group in
+                let speaker = group.first ?? 0
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("说话人 \(speaker + 1)").font(.caption).foregroundStyle(.secondary)
+                    Text(group.count > 1 ? "\(names[speaker] ?? "未命名")（\(group.count) 个声纹）" : "说话人 \(speaker + 1)")
+                        .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         TextField("姓名", text: Binding(
                             get: { names[speaker] ?? "" },
-                            set: { names[speaker] = $0 }
+                            set: { value in group.forEach { names[$0] = value } }
                         ))
                         Picker("所属方", selection: Binding(
                             get: { roles[speaker]?.affiliation ?? .unknown },
                             set: { value in
                                 var role = roles[speaker] ?? SpeakerRole()
                                 role.affiliation = value
-                                roles = SpeakerRole.applying(
-                                    role, to: speaker, names: names, roles: roles)
+                                for id in group { roles = SpeakerRole.applying(role, to: id, names: names, roles: roles) }
                             }
                         )) {
                             ForEach(SpeakerRole.Affiliation.allCases) { Text($0.label).tag($0) }
@@ -1137,8 +1138,7 @@ private struct HistoricalSpeakerEditorView: View {
                             set: { value in
                                 var role = roles[speaker] ?? SpeakerRole()
                                 role.meetingRole = value
-                                roles = SpeakerRole.applying(
-                                    role, to: speaker, names: names, roles: roles)
+                                for id in group { roles = SpeakerRole.applying(role, to: id, names: names, roles: roles) }
                             }
                         )) {
                             ForEach(SpeakerRole.MeetingRole.allCases) { Text($0.label).tag($0) }
@@ -1157,6 +1157,11 @@ private struct HistoricalSpeakerEditorView: View {
                               && record.sourceKind != MeetingAssets.SourceKind.importedTranscript.rawValue)
             }.padding(14)
         }.frame(width: 720, height: 500)
+    }
+
+    private var groupedSpeakerIDs: [[Int]] {
+        let grouped = Dictionary(grouping: speakerIDs) { names[$0]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "#\($0)" }
+        return grouped.values.sorted { ($0.first ?? 0) < ($1.first ?? 0) }
     }
 
     private func save(regenerate: Bool) {

@@ -517,7 +517,8 @@ final class PipelineRunner {
                 workspaceID: workspace?.id, context: learningContext)
             let transcriber = Transcriber(audioURL: audioURL,
                                           language: recognitionScenario.whisperLanguage,
-                                          glossary: transcriptionPrompt)
+                                          glossary: transcriptionPrompt,
+                                          performance: settings.transcriptionPerformance)
             try await debugSession?.beginNode("语音转录", input: """
             音频文件：\(debugAudioURL?.path ?? audioURL.path)
             语言：\(recognitionScenario.whisperLanguage)

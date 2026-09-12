@@ -235,6 +235,8 @@ struct MeetingPreparationView: View {
                         }
                         Text("默认使用通用会议；仅影响本次生成的内容侧重点。")
                             .font(.caption).foregroundStyle(.secondary)
+                        Text("最终发送给：当前选择的纪要生成模型。")
+                            .font(.caption2).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 6) {
                             Text("本次补充说明（可选）").font(.callout.weight(.medium))
                             TextEditor(text: $meetingContext)
@@ -248,6 +250,8 @@ struct MeetingPreparationView: View {
                                 }
                             Text("仅补充本次会议特有的信息，不会修改项目的长期背景。")
                                 .font(.caption).foregroundStyle(.secondary)
+                            Text("最终作为本次纪要生成模型的上下文输入。")
+                                .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }

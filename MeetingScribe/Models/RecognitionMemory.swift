@@ -117,8 +117,10 @@ enum RecognitionMemoryStore {
     static func prompt(workspaceID: UUID?, context: String = "",
                        from url: URL = entriesURL) -> String {
         relevant(workspaceID: workspaceID, text: context, from: url).prefix(36).map {
-            if $0.mistaken.isEmpty { return $0.canonical }
-            return "\($0.mistaken)应识别为\($0.canonical)"
+            // Whisper's initial prompt is a vocabulary bias, not an instruction
+            // interpreter. Sending the mistaken spelling back to it can reinforce
+            // the very error that local correction is meant to repair.
+            return $0.canonical
         }.joined(separator: "，")
     }
 
@@ -213,7 +215,7 @@ enum RecognitionCandidateExtractor {
         for item in uncertainties {
             if item.uncertaintyKind == .unclearMeaning { continue }
             let quoted = quotedValues(in: item.content)
-            let fallback = item.content.contains("〔音〕") ? [item.content] : []
+            let fallback = markedValues(in: item.content)
             for raw in quoted.isEmpty ? fallback : quoted {
                 let value = raw.replacingOccurrences(of: "〔音〕", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -234,6 +236,15 @@ enum RecognitionCandidateExtractor {
         let factWords = ["年底", "年初", "月初", "月末", "分钟", "小时"]
         if factWords.contains(where: value.contains) { return false }
         if value.contains("的版本") || value.contains("版本的") { return false }
+        // Quoted uncertainty text is often a whole sentence rather than a term.
+        // Keep short names/terms, but reject conversational predicates and
+        // report-style wording so the learning UI does not suggest phrases like
+        // “GIB哪边IBS哪边去做UAT”.
+        let sentenceMarkers = ["哪边", "哪里", "怎么", "如何", "去做", "先做", "需要", "可以", "表示",
+                               "关于", "环境", "方案", "工具", "无法", "不清", "确认", "建议", "后续", "具体"]
+        if sentenceMarkers.contains(where: value.contains) { return false }
+        let chineseCount = value.unicodeScalars.filter { 0x4E00...0x9FFF ~= $0.value }.count
+        if chineseCount >= 4 && value.count > 12 { return false }
         return true
     }
 
@@ -245,6 +256,17 @@ enum RecognitionCandidateExtractor {
             guard match.numberOfRanges > 1,
                   let valueRange = Range(match.range(at: 1), in: text) else { return nil }
             return String(text[valueRange])
+        }
+    }
+
+    private static func markedValues(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"([^，。；！？、\s]{1,20})〔音〕"#) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let valueRange = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 }

@@ -100,7 +100,10 @@ struct IssueAssociationService {
         let raw: String
         do {
             debug?.progress("问题关联", "正在判断本次问题与历史问题的关系…")
-            raw = try await ModelTextClient(settings: settings).complete(system: system, user: user)
+            raw = try await ModelTextClient(settings: settings).complete(
+                system: system, user: user, promptID: "issue-association.v3",
+                node: "问题关联", purpose: "BM25候选问题的语义关联与滚动档案更新",
+                source: "IssueAssociationService.swift")
             debug?.endNode("问题关联", output: raw)
         } catch {
             debug?.endNode("问题关联", output: "失败：\(error.localizedDescription)")

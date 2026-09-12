@@ -5,7 +5,10 @@ struct HongKongMinutesGenerator {
 
     func generateHongKongMinutes(from confirmedMinutes: String) async throws -> String {
         try await ModelTextClient(settings: settings).complete(
-            system: Self.systemPrompt, user: confirmedMinutes)
+            system: Self.systemPrompt, user: confirmedMinutes,
+            promptID: "hong-kong-minutes.v1", node: "香港版本纪要",
+            purpose: "将确认后的纪要本地化为香港繁体商务表达",
+            source: "MeetingEmailGenerator.swift")
     }
 
     static let systemPrompt = """

@@ -130,6 +130,18 @@ enum RecognitionScenario: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+enum TranscriptionPerformance: String, CaseIterable, Identifiable, Codable {
+    case high, balanced, quiet, cpuOnly
+    var id: String { rawValue }
+    var displayName: String {
+        switch self { case .high: return "高性能"; case .balanced: return "平衡（推荐）"; case .quiet: return "安静"; case .cpuOnly: return "极致安静（仅 CPU）" }
+    }
+    var threadFraction: Double {
+        switch self { case .high: return 1.0; case .balanced: return 0.6; case .quiet, .cpuOnly: return 0.3 }
+    }
+    var disablesGPU: Bool { self == .cpuOnly }
+}
+
 @Observable
 final class Settings {
     static let shared = Settings()
@@ -139,6 +151,9 @@ final class Settings {
     }
     var frameDensity: FrameDensity {
         didSet { defaults.set(frameDensity.rawValue, forKey: Keys.frameDensity) }
+    }
+    var transcriptionPerformance: TranscriptionPerformance {
+        didSet { defaults.set(transcriptionPerformance.rawValue, forKey: Keys.transcriptionPerformance) }
     }
     var glossary: String {
         didSet { defaults.set(glossary, forKey: Keys.glossary) }
@@ -205,6 +220,7 @@ final class Settings {
     private enum Keys {
         static let backend = "backend"
         static let frameDensity = "frameDensity"
+        static let transcriptionPerformance = "transcriptionPerformance"
         static let glossary = "glossary"
         static let minutesInstructions = "minutesInstructions"
         static let keepIntermediates = "keepIntermediates"
@@ -242,6 +258,7 @@ final class Settings {
         default: .openAICompatible
         }
         frameDensity = FrameDensity(rawValue: defaults.string(forKey: Keys.frameDensity) ?? "") ?? .normal
+        transcriptionPerformance = TranscriptionPerformance(rawValue: defaults.string(forKey: Keys.transcriptionPerformance) ?? "") ?? .balanced
         glossary = defaults.string(forKey: Keys.glossary) ?? Settings.defaultGlossary
         minutesInstructions = defaults.string(forKey: Keys.minutesInstructions)
             ?? Settings.defaultMinutesInstructions

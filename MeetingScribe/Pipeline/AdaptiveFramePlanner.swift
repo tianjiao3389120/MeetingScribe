@@ -80,7 +80,9 @@ struct AdaptiveFramePlanner {
             try await ModelTextClient(settings: settings).complete(
             system: systemPrompt,
             user: userPrompt,
-            timeout: 180)
+            timeout: 180, promptID: "frame-planning.v1", node: "关键画面规划",
+            purpose: "从本地候选片段规划需要补看的画面时间点",
+            source: "AdaptiveFramePlanner.swift")
         }
         let planned = Self.parse(raw, duration: duration)
         // A model may conservatively return an empty list (or malformed JSON)

@@ -44,7 +44,7 @@ final class RecognitionMemoryTests: XCTestCase {
             RecognitionMemoryEntry(mistaken: "无线AI", canonical: "无相AI")
         ], to: url)
         let prompt = RecognitionMemoryStore.prompt(workspaceID: nil, from: url)
-        XCTAssertEqual(prompt, "无线AI应识别为无相AI")
+        XCTAssertEqual(prompt, "无相AI")
         XCTAssertFalse(prompt.contains("$0"))
     }
 

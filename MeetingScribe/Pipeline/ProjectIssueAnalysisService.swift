@@ -30,8 +30,10 @@ struct ProjectIssueAnalysisService {
     func analyze(issue: ProjectIssue, records: [MeetingRecord]) async throws -> Report {
         let material = Self.sourceMaterial(issue: issue, records: records)
         let raw = try await ModelTextClient(settings: settings).complete(
-            system: Self.systemPrompt,
-            user: material)
+            system: Self.systemPrompt, user: material,
+            promptID: "issue-profile.v2", node: "问题综合分析",
+            purpose: "基于已确认事件生成问题滚动综合档案",
+            source: "ProjectIssueAnalysisService.swift")
         return try Self.parse(raw)
     }
 

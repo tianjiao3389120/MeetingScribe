@@ -67,6 +67,8 @@ struct SettingsView: View {
                     HStack {
                         Text("追加到内置的结构化纪要提示词；JSON 格式和事实校验规则由应用固定维护。")
                             .font(.caption).foregroundStyle(.secondary)
+                        Text("最终发送给：当前“AI 引擎”中选择的纪要生成模型。")
+                            .font(.caption2).foregroundStyle(.secondary)
                         Spacer()
                         Button("恢复默认") {
                             settings.minutesInstructions = Settings.defaultMinutesInstructions
@@ -105,10 +107,12 @@ struct SettingsView: View {
                             Text(glossaryCandidateError).font(.caption).foregroundStyle(.red)
                         }
                     }
-                    DisclosureGroup("兼容旧版手工词表") {
+                    DisclosureGroup("手工词表（兼容设置）") {
                         TextEditor(text: $settings.glossary)
                             .frame(height: 80).font(.system(.caption, design: .monospaced))
-                        Text("旧词表仍参与识别；新内容建议通过“纠正并学习”录入。")
+                        Text("这里的词汇仍会参与识别提示；新增术语和纠错建议优先在“识别记忆”中管理。")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Text("最终发送给：Whisper 语音转录模型（作为初始提示词）。")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
@@ -261,6 +265,11 @@ struct SettingsView: View {
                     }
                 }
                 Text("Whisper 与 VAD 均在本机运行；在线下载中断后可继续。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Picker("转录性能", selection: $settings.transcriptionPerformance) {
+                    ForEach(TranscriptionPerformance.allCases) { Text($0.displayName).tag($0) }
+                }
+                Text("仅调整 Whisper 线程数和系统优先级，不改变模型、VAD、上下文或解码参数；平衡模式更省电但转录更慢。")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(.top, 6)
         } label: {

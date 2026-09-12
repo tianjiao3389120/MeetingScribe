@@ -40,6 +40,7 @@ enum Shell {
         environment: [String: String]? = nil,
         stdin: String? = nil,
         timeout: TimeInterval? = nil,
+        qualityOfService: QualityOfService = .default,
         onStdoutLine: (@Sendable (String) -> Void)? = nil,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Result {
@@ -50,6 +51,7 @@ enum Shell {
         debug?.engineStart(tool: executable, arguments: arguments)
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if qualityOfService != .default { process.qualityOfService = qualityOfService }
         if let environment {
             process.environment = ProcessInfo.processInfo.environment
                 .merging(environment) { _, new in new }
@@ -160,11 +162,12 @@ enum Shell {
         environment: [String: String]? = nil,
         stdin: String? = nil,
         timeout: TimeInterval? = nil,
+        qualityOfService: QualityOfService = .default,
         onStdoutLine: (@Sendable (String) -> Void)? = nil,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Result {
         let result = try await run(executable, arguments, environment: environment,
-                                   stdin: stdin, timeout: timeout,
+                                   stdin: stdin, timeout: timeout, qualityOfService: qualityOfService,
                                    onStdoutLine: onStdoutLine,
                                    onStderrLine: onStderrLine)
         guard result.ok else {

@@ -31,6 +31,8 @@ struct SpeakerNamingView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Text("每行代表一个独立声纹；同名通常是同一人的不同声纹片段，但请播放片段确认。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
@@ -39,37 +41,37 @@ struct SpeakerNamingView: View {
 
             ScrollView {
                 VStack(spacing: 0) {
-                    ForEach(rankedSpeakers, id: \.speaker) { entry in
+                    ForEach(groupedSpeakers, id: \.id) { entry in
                         SpeakerRow(
-                            label: diarization?.labels[entry.speaker] ?? "\(entry.speaker)",
+                            label: entry.name,
                             seconds: entry.seconds,
                             share: entry.share,
-                            recognised: diarization?.names[entry.speaker],
-                            sample: sampleText(for: entry.speaker),
-                            isPlaying: playingSpeaker == entry.speaker,
+                            recognised: entry.speakers.contains { diarization?.names[$0] != nil } ? entry.name : nil,
+                            sample: sampleText(for: entry.speakers.first ?? 0),
+                            isPlaying: playingSpeaker == (entry.speakers.first ?? 0),
                             name: Binding(
-                                get: { names[entry.speaker] ?? "" },
-                                set: { names[entry.speaker] = $0 }
+                                get: { names[entry.speakers.first ?? 0] ?? "" },
+                                set: { value in entry.speakers.forEach { names[$0] = value } }
                             ),
                             affiliation: Binding(
-                                get: { roles[entry.speaker]?.affiliation ?? .unknown },
+                                get: { roles[entry.speakers.first ?? 0]?.affiliation ?? .unknown },
                                 set: { value in
-                                    var role = roles[entry.speaker] ?? SpeakerRole()
-                                    role.affiliation = value
-                                    roles = SpeakerRole.applying(
-                                        role, to: entry.speaker, names: names, roles: roles)
+                                    entry.speakers.forEach { speaker in
+                                        var role = roles[speaker] ?? SpeakerRole(); role.affiliation = value
+                                        roles = SpeakerRole.applying(role, to: speaker, names: names, roles: roles)
+                                    }
                                 }
                             ),
                             meetingRole: Binding(
-                                get: { roles[entry.speaker]?.meetingRole ?? .unknown },
+                                get: { roles[entry.speakers.first ?? 0]?.meetingRole ?? .unknown },
                                 set: { value in
-                                    var role = roles[entry.speaker] ?? SpeakerRole()
-                                    role.meetingRole = value
-                                    roles = SpeakerRole.applying(
-                                        role, to: entry.speaker, names: names, roles: roles)
+                                    entry.speakers.forEach { speaker in
+                                        var role = roles[speaker] ?? SpeakerRole(); role.meetingRole = value
+                                        roles = SpeakerRole.applying(role, to: speaker, names: names, roles: roles)
+                                    }
                                 }
                             ),
-                            onPlay: { play(speaker: entry.speaker) }
+                            onPlay: { play(speaker: entry.speakers.first ?? 0) }
                         )
                         Divider()
                     }
@@ -106,6 +108,35 @@ struct SpeakerNamingView: View {
         return diarization.ranking.map {
             (speaker: $0.speaker, seconds: $0.seconds, share: $0.seconds / max(total, 1))
         }
+    }
+
+    private struct SpeakerGroup: Identifiable {
+        let speakers: [Int]; let name: String; let seconds: TimeInterval; let share: Double
+        var id: String { speakers.map(String.init).joined(separator: ",") }
+    }
+
+    private var groupedSpeakers: [SpeakerGroup] {
+        let groups = Dictionary(grouping: rankedSpeakers) { entry in
+            let name = names[entry.speaker] ?? diarization?.names[entry.speaker] ?? ""
+            return name.isEmpty ? "#\(entry.speaker)" : name
+        }
+        let total = rankedSpeakers.reduce(0) { $0 + $1.seconds }
+        return groups.values.map { entries in
+            let speakers = entries.map(\.speaker).sorted()
+            let name = names[speakers[0]] ?? diarization?.names[speakers[0]]
+                ?? diarization?.labels[speakers[0]] ?? "未知"
+            let seconds = entries.reduce(0) { $0 + $1.seconds }
+            return SpeakerGroup(speakers: speakers, name: name, seconds: seconds, share: seconds / max(total, 1))
+        }.sorted { $0.seconds > $1.seconds }
+    }
+
+    private func displayLabel(for speaker: Int) -> String {
+        guard let diarization, let name = diarization.names[speaker], !name.isEmpty else {
+            return diarization?.labels[speaker] ?? "\(speaker)"
+        }
+        let same = diarization.names.filter { $0.value == name }.map(\.key).sorted()
+        guard same.count > 1, let index = same.firstIndex(of: speaker) else { return name }
+        return "\(name) · 声纹\(index + 1)"
     }
 
     /// Seed already-recognised people so the user confirms rather than retypes.
