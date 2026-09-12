@@ -209,7 +209,10 @@ struct MeetingHistoryView: View {
                 do {
                     let updated = try MeetingHistoryStore.updateSpeakers(
                         id: record.id, names: names, roles: roles)
-                    syncCustomerContacts(workspaceID: record.workspaceID, names: names, roles: roles)
+                    syncCustomerContacts(workspaceID: record.workspaceID,
+                                         customerName: record.customerName,
+                                         projectName: record.projectName,
+                                         names: names, roles: roles)
                     if let index = records.firstIndex(where: { $0.id == updated.id }) {
                         records[index] = updated
                     }
@@ -1086,10 +1089,14 @@ struct MeetingHistoryView: View {
     }
 }
 
-func syncCustomerContacts(workspaceID: UUID?, names: [Int: String], roles: [Int: SpeakerRole]) {
-    guard let workspaceID, var workspaces = try? MeetingWorkspaceStore.load(),
-          let project = workspaces.first(where: { $0.id == workspaceID }),
-          let customerID = project.isCustomer ? project.id : project.customerID,
+func syncCustomerContacts(workspaceID: UUID?, customerName: String? = nil,
+                          projectName: String? = nil, names: [Int: String], roles: [Int: SpeakerRole]) {
+    guard var workspaces = try? MeetingWorkspaceStore.load() else { return }
+    let project = workspaceID.flatMap { id in workspaces.first(where: { $0.id == id }) }
+        ?? workspaces.first { !$0.isCustomer && $0.name == (projectName ?? "") }
+    let customerID = project?.isCustomer == true ? project?.id : project?.customerID
+        ?? workspaces.first { $0.isCustomer && $0.name == (customerName ?? "") }?.id
+    guard let customerID,
           let index = workspaces.firstIndex(where: { $0.id == customerID }) else { return }
     for (speaker, role) in roles where role.affiliation != .ours && role.affiliation != .thirdParty {
         let name = names[speaker]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
