@@ -209,6 +209,7 @@ struct MeetingHistoryView: View {
                 do {
                     let updated = try MeetingHistoryStore.updateSpeakers(
                         id: record.id, names: names, roles: roles)
+                    syncCustomerContacts(workspaceID: record.workspaceID, names: names, roles: roles)
                     if let index = records.firstIndex(where: { $0.id == updated.id }) {
                         records[index] = updated
                     }
@@ -1083,6 +1084,24 @@ struct MeetingHistoryView: View {
             self.error = "导出失败：\(error.localizedDescription)"
         }
     }
+}
+
+private func syncCustomerContacts(workspaceID: UUID?, names: [Int: String], roles: [Int: SpeakerRole]) {
+    guard let workspaceID, var workspaces = try? MeetingWorkspaceStore.load(),
+          let project = workspaces.first(where: { $0.id == workspaceID }),
+          let customerID = project.isCustomer ? project.id : project.customerID,
+          let index = workspaces.firstIndex(where: { $0.id == customerID }) else { return }
+    for (speaker, role) in roles where role.affiliation == .customer {
+        let name = names[speaker]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !name.isEmpty else { continue }
+        let roleName = role.meetingRole.label
+        if let contactIndex = workspaces[index].contacts.firstIndex(where: { $0.name == name }) {
+            if !roleName.isEmpty && roleName != "未确认" { workspaces[index].contacts[contactIndex].role = roleName }
+        } else {
+            workspaces[index].contacts.append(CustomerContact(name: name, role: roleName))
+        }
+    }
+    try? MeetingWorkspaceStore.save(workspaces)
 }
 
 private struct HistoricalSpeakerEditorView: View {

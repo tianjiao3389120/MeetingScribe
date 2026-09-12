@@ -238,6 +238,7 @@ struct SpeakerNamingView: View {
                     canonical: name, kind: .person,
                     workspaceID: assets.workspace?.id, sourceTitle: assets.title))
             }
+            syncCustomerContacts(workspaceID: assets.workspace?.id, names: applied, roles: roles)
             stop()
             onSaved(applied, roles.filter { $0.value.isSpecified })
           } catch {
