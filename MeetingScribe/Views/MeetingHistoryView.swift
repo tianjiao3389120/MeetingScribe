@@ -1091,7 +1091,7 @@ func syncCustomerContacts(workspaceID: UUID?, names: [Int: String], roles: [Int:
           let project = workspaces.first(where: { $0.id == workspaceID }),
           let customerID = project.isCustomer ? project.id : project.customerID,
           let index = workspaces.firstIndex(where: { $0.id == customerID }) else { return }
-    for (speaker, role) in roles where role.affiliation == .customer {
+    for (speaker, role) in roles where role.affiliation != .ours && role.affiliation != .thirdParty {
         let name = names[speaker]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !name.isEmpty else { continue }
         let roleName = role.meetingRole.label
