@@ -118,6 +118,7 @@ struct WorkspaceManagementView: View {
                 }
             }
         }
+        try? MeetingWorkspaceStore.save(workspaces)
     }
 
     private func saveAndClose() {
