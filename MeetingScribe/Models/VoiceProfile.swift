@@ -6,6 +6,7 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
 
     var id: UUID = UUID()
     var name: String
+    var workspaceID: UUID? = nil
     /// Unit-length mean of the samples enrolled so far.
     var embedding: [Float]
     /// A bounded set that preserves different microphones and acoustic
@@ -18,10 +19,12 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
     var referenceClip: String? = nil
 
     init(id: UUID = UUID(), name: String, embedding: [Float], sampleCount: Int = 1,
+         workspaceID: UUID? = nil,
          updatedAt: Date = Date(), note: String = "", referenceClip: String? = nil,
          representativeEmbeddings: [[Float]]? = nil) {
         self.id = id
         self.name = name
+        self.workspaceID = workspaceID
         self.embedding = embedding
         self.representativeEmbeddings = representativeEmbeddings ?? (embedding.isEmpty ? [] : [embedding])
         self.sampleCount = sampleCount
@@ -31,13 +34,14 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, embedding, representativeEmbeddings, sampleCount, updatedAt, note, referenceClip
+        case id, name, workspaceID, embedding, representativeEmbeddings, sampleCount, updatedAt, note, referenceClip
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try values.decode(String.self, forKey: .name)
+        workspaceID = try values.decodeIfPresent(UUID.self, forKey: .workspaceID)
         embedding = try values.decode([Float].self, forKey: .embedding)
         representativeEmbeddings = try values.decodeIfPresent(
             [[Float]].self, forKey: .representativeEmbeddings) ?? (embedding.isEmpty ? [] : [embedding])
@@ -163,6 +167,11 @@ enum VoiceProfileStore {
     /// every name is persisted or none are, avoiding a half-saved meeting.
     static func enroll(samples: [(name: String, embedding: [Float], note: String,
                                   referenceClipURL: URL?)]) throws {
+        try enroll(samples: samples, workspaceID: nil)
+    }
+
+    static func enroll(samples: [(name: String, embedding: [Float], note: String,
+                                  referenceClipURL: URL?)], workspaceID: UUID?) throws {
         var profiles = try loadChecked()
         var newlyCopied: [URL] = []
         var supersededClips: [URL] = []
@@ -175,7 +184,7 @@ enum VoiceProfileStore {
             guard !trimmed.isEmpty else { throw Failure.invalidName }
             guard !sample.embedding.isEmpty else { continue }
 
-            if let index = profiles.firstIndex(where: { $0.name == trimmed }) {
+            if let index = profiles.firstIndex(where: { $0.name == trimmed && $0.workspaceID == workspaceID }) {
                 profiles[index].merge(sample.embedding)
                 if !sample.note.isEmpty { profiles[index].note = sample.note }
                 if let source = sample.referenceClipURL {
@@ -187,6 +196,7 @@ enum VoiceProfileStore {
                 }
             } else {
                 var profile = VoiceProfile(name: trimmed, embedding: sample.embedding,
+                                           workspaceID: workspaceID,
                                            note: sample.note)
                 if let source = sample.referenceClipURL {
                     let stored = try storeReferenceClip(from: source)
@@ -266,8 +276,9 @@ enum VoiceProfileStore {
     /// confidently mislabelled as the other. Multiple clusters may resolve to
     /// the same profile: diarization can split one person when microphone
     /// distance, noise or compression changes during a meeting.
-    static func match(embeddings: [String: [Float]]) -> [Int: String] {
-        match(embeddings: embeddings, profiles: load())
+    static func match(embeddings: [String: [Float]], workspaceID: UUID? = nil) -> [Int: String] {
+        let profiles = load().filter { $0.workspaceID == nil || $0.workspaceID == workspaceID }
+        return match(embeddings: embeddings, profiles: profiles)
     }
 
     static func match(embeddings: [String: [Float]], profiles: [VoiceProfile]) -> [Int: String] {

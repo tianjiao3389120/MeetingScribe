@@ -43,6 +43,23 @@ struct WorkspaceManagementView: View {
                         }
                         TextField("长期背景，例如客户身份、产品和项目目标", text: $workspace.context)
                             .font(.caption)
+                        if workspace.isCustomer {
+                            DisclosureGroup("客户联系人（\(workspace.contacts.count)）") {
+                                ForEach($workspace.contacts) { $contact in
+                                    HStack {
+                                        TextField("姓名", text: $contact.name)
+                                        TextField("角色", text: $contact.role)
+                                        TextField("备注", text: $contact.note)
+                                        Button(role: .destructive) {
+                                            workspace.contacts.removeAll { $0.id == contact.id }
+                                        } label: { Image(systemName: "minus.circle") }
+                                            .buttonStyle(.borderless)
+                                    }
+                                }
+                                Button("添加联系人") { workspace.contacts.append(CustomerContact()) }
+                            }
+                            .font(.caption)
+                        }
                     }.padding(.vertical, 5)
                 }
                 HStack {

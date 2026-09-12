@@ -232,7 +232,7 @@ struct SpeakerNamingView: View {
                 samples.append((name, embedding, "", reference))
                 applied[speaker] = name
             }
-            if !samples.isEmpty { try VoiceProfileStore.enroll(samples: samples) }
+            if !samples.isEmpty { try VoiceProfileStore.enroll(samples: samples, workspaceID: assets.workspace?.id) }
             for (_, name) in entered {
                 try RecognitionMemoryStore.upsert(RecognitionMemoryEntry(
                     canonical: name, kind: .person,

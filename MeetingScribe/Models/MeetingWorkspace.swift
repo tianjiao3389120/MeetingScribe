@@ -22,6 +22,7 @@ struct MeetingWorkspace: Codable, Identifiable, Sendable, Hashable {
     /// Controlled tags offered when preparing a meeting in this project.
     var meetingTypes: [String]? = nil
     var context: String = ""
+    var contacts: [CustomerContact] = []
     /// Legacy per-workspace minutes template selection retained for Codable compatibility.
     /// New meeting preparation resolves the template explicitly for each meeting.
     var defaultTemplateID: String?
@@ -31,6 +32,14 @@ struct MeetingWorkspace: Codable, Identifiable, Sendable, Hashable {
     var isCustomer: Bool { kind == .customer }
     var isProject: Bool { !isCustomer }
     var configuredMeetingTypes: [String] { meetingTypes ?? [] }
+}
+
+struct CustomerContact: Codable, Identifiable, Sendable, Hashable {
+    var id: UUID = UUID()
+    var name: String = ""
+    var role: String = ""
+    var organization: String = ""
+    var note: String = ""
 }
 
 struct SupportingMaterial: Identifiable, Sendable {

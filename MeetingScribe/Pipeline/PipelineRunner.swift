@@ -458,7 +458,7 @@ final class PipelineRunner {
            var cached = DiarizationCache.load(key: speakerKey) {
             // Names are derived state. Re-match on every cache read so profile
             // enrolment, rename and deletion take effect without re-diarizing.
-            cached.names = VoiceProfileStore.match(embeddings: cached.embeddings)
+            cached.names = VoiceProfileStore.match(embeddings: cached.embeddings, workspaceID: workspace?.id)
             diarization = cached
             usedCachedDiarization = true
             let metadata = DiarizationCache.metadata(key: speakerKey)
@@ -565,7 +565,7 @@ final class PipelineRunner {
                 预期说话人数：\(speakerCount == 0 ? "自动" : String(speakerCount))
                 """)
                 let diarizationDebug = debugSession
-                let result = try await Diarizer.run(
+                var result = try await Diarizer.run(
                     audioURL: audioURL,
                     speakerCount: speakerCount
                 ) { [weak self] fraction in
@@ -576,6 +576,7 @@ final class PipelineRunner {
                         self?.detail = String(format: "分离说话人 %.0f%%", fraction * 100)
                     }
                 }
+                result.names = VoiceProfileStore.match(embeddings: result.embeddings, workspaceID: workspace?.id)
                 if let speakerKey { DiarizationCache.save(result, key: speakerKey) }
                 diarization = result
                 debugSession?.endNode("声纹分离", output: """
