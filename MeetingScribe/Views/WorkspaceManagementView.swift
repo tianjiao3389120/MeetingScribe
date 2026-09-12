@@ -79,6 +79,7 @@ struct WorkspaceManagementView: View {
         .frame(width: 620, height: 480)
         .onAppear {
             workspaces = (try? MeetingWorkspaceStore.load()) ?? []
+            mergeHistoricalContacts()
             originalIDs = Set(workspaces.map(\.id))
         }
         .alert("删除这个项目或会议分组？", isPresented: Binding(
@@ -92,6 +93,30 @@ struct WorkspaceManagementView: View {
             }
         } message: {
             Text("保存后，历史会议仍保留已填写的客户、项目名称和会议类型；仅解除项目资料关联。")
+        }
+    }
+
+    private func mergeHistoricalContacts() {
+        guard let records = try? MeetingHistoryStore.loadAll() else { return }
+        for record in records {
+            let project = workspaces.first { $0.id == record.workspaceID }
+                ?? workspaces.first { !$0.isCustomer && $0.name == record.projectName }
+            let customerID = project?.isCustomer == true ? project?.id : project?.customerID
+                ?? workspaces.first { $0.isCustomer && $0.name == record.customerName }?.id
+            guard let customerID, let index = workspaces.firstIndex(where: { $0.id == customerID }) else { continue }
+            for (speaker, name) in record.speakerNames {
+                guard record.speakerRoles?[speaker]?.affiliation != .ours,
+                      record.speakerRoles?[speaker]?.affiliation != .thirdParty,
+                      !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let role = record.speakerRoles?[speaker]?.meetingRole.label ?? "未确认"
+                if let contact = workspaces[index].contacts.firstIndex(where: { $0.name == name }) {
+                    if workspaces[index].contacts[contact].role == "未确认" && role != "未确认" {
+                        workspaces[index].contacts[contact].role = role
+                    }
+                } else {
+                    workspaces[index].contacts.append(CustomerContact(name: name, role: role))
+                }
+            }
         }
     }
 
