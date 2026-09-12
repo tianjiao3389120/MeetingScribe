@@ -1086,7 +1086,7 @@ struct MeetingHistoryView: View {
     }
 }
 
-private func syncCustomerContacts(workspaceID: UUID?, names: [Int: String], roles: [Int: SpeakerRole]) {
+func syncCustomerContacts(workspaceID: UUID?, names: [Int: String], roles: [Int: SpeakerRole]) {
     guard let workspaceID, var workspaces = try? MeetingWorkspaceStore.load(),
           let project = workspaces.first(where: { $0.id == workspaceID }),
           let customerID = project.isCustomer ? project.id : project.customerID,
