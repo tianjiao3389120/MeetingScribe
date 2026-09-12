@@ -97,6 +97,7 @@ struct WorkspaceManagementView: View {
     }
 
     private func mergeHistoricalContacts() {
+        workspaces = (try? MeetingWorkspaceStore.load()) ?? workspaces
         guard let records = try? MeetingHistoryStore.loadAll() else { return }
         for record in records {
             let project = workspaces.first { $0.id == record.workspaceID }
