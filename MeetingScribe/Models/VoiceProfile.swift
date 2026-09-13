@@ -7,6 +7,9 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
     var id: UUID = UUID()
     var name: String
     var workspaceID: UUID? = nil
+    /// Persisted directory ownership keeps a confirmed company profile stable
+    /// when its display name is edited and no history record uses the new name yet.
+    var affiliation: SpeakerRole.Affiliation? = nil
     /// Unit-length mean of the samples enrolled so far.
     var embedding: [Float]
     /// A bounded set that preserves different microphones and acoustic
@@ -20,11 +23,13 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
 
     init(id: UUID = UUID(), name: String, embedding: [Float], sampleCount: Int = 1,
          workspaceID: UUID? = nil,
+         affiliation: SpeakerRole.Affiliation? = nil,
          updatedAt: Date = Date(), note: String = "", referenceClip: String? = nil,
          representativeEmbeddings: [[Float]]? = nil) {
         self.id = id
         self.name = name
         self.workspaceID = workspaceID
+        self.affiliation = affiliation
         self.embedding = embedding
         self.representativeEmbeddings = representativeEmbeddings ?? (embedding.isEmpty ? [] : [embedding])
         self.sampleCount = sampleCount
@@ -34,7 +39,7 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, workspaceID, embedding, representativeEmbeddings, sampleCount, updatedAt, note, referenceClip
+        case id, name, workspaceID, affiliation, embedding, representativeEmbeddings, sampleCount, updatedAt, note, referenceClip
     }
 
     init(from decoder: Decoder) throws {
@@ -42,6 +47,7 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
         id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try values.decode(String.self, forKey: .name)
         workspaceID = try values.decodeIfPresent(UUID.self, forKey: .workspaceID)
+        affiliation = try values.decodeIfPresent(SpeakerRole.Affiliation.self, forKey: .affiliation)
         embedding = try values.decode([Float].self, forKey: .embedding)
         representativeEmbeddings = try values.decodeIfPresent(
             [[Float]].self, forKey: .representativeEmbeddings) ?? (embedding.isEmpty ? [] : [embedding])
@@ -98,6 +104,15 @@ struct VoiceProfile: Codable, Identifiable, Sendable {
 
 /// Enrolled voiceprints, persisted as one JSON file.
 enum VoiceProfileStore {
+
+    struct EnrollmentSample {
+        let name: String
+        let embedding: [Float]
+        let note: String
+        let referenceClipURL: URL?
+        let workspaceID: UUID?
+        let affiliation: SpeakerRole.Affiliation?
+    }
 
     private static let fileURL: URL = {
         Diarizer.supportDirectory.appendingPathComponent("voice-profiles.json")
@@ -167,11 +182,20 @@ enum VoiceProfileStore {
     /// every name is persisted or none are, avoiding a half-saved meeting.
     static func enroll(samples: [(name: String, embedding: [Float], note: String,
                                   referenceClipURL: URL?)]) throws {
-        try enroll(samples: samples, workspaceID: nil)
+        try enroll(samples: samples, workspaceID: nil, affiliation: nil)
     }
 
     static func enroll(samples: [(name: String, embedding: [Float], note: String,
-                                  referenceClipURL: URL?)], workspaceID: UUID?) throws {
+                                  referenceClipURL: URL?)], workspaceID: UUID?,
+                       affiliation: SpeakerRole.Affiliation? = nil) throws {
+        try enroll(samples.map {
+            EnrollmentSample(name: $0.name, embedding: $0.embedding, note: $0.note,
+                             referenceClipURL: $0.referenceClipURL,
+                             workspaceID: workspaceID, affiliation: affiliation)
+        })
+    }
+
+    static func enroll(_ samples: [EnrollmentSample]) throws {
         var profiles = try loadChecked()
         var newlyCopied: [URL] = []
         var supersededClips: [URL] = []
@@ -184,8 +208,11 @@ enum VoiceProfileStore {
             guard !trimmed.isEmpty else { throw Failure.invalidName }
             guard !sample.embedding.isEmpty else { continue }
 
-            if let index = profiles.firstIndex(where: { $0.name == trimmed && $0.workspaceID == workspaceID }) {
+            if let index = profiles.firstIndex(where: {
+                $0.name == trimmed && $0.workspaceID == sample.workspaceID
+            }) {
                 profiles[index].merge(sample.embedding)
+                if let affiliation = sample.affiliation { profiles[index].affiliation = affiliation }
                 if !sample.note.isEmpty { profiles[index].note = sample.note }
                 if let source = sample.referenceClipURL {
                     let oldClip = referenceClipURL(for: profiles[index])
@@ -196,7 +223,8 @@ enum VoiceProfileStore {
                 }
             } else {
                 var profile = VoiceProfile(name: trimmed, embedding: sample.embedding,
-                                           workspaceID: workspaceID,
+                                           workspaceID: sample.workspaceID,
+                                           affiliation: sample.affiliation,
                                            note: sample.note)
                 if let source = sample.referenceClipURL {
                     let stored = try storeReferenceClip(from: source)
@@ -225,16 +253,25 @@ enum VoiceProfileStore {
     }
 
     static func replace(_ profiles: [VoiceProfile]) throws {
+        let previous = try loadChecked()
         var seen = Set<String>()
         var normalized = profiles
         for index in normalized.indices {
             let name = normalized[index].name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { throw Failure.invalidName }
-            guard seen.insert(name).inserted else { throw Failure.duplicateName(name) }
+            let key = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                .lowercased()
+            guard seen.insert(key).inserted else { throw Failure.duplicateName(name) }
             normalized[index].name = name
             normalized[index].updatedAt = Date()
         }
         try save(normalized)
+        let retainedIDs = Set(normalized.map(\.id))
+        for profile in previous where !retainedIDs.contains(profile.id) {
+            if let clip = referenceClipURL(for: profile) {
+                try? FileManager.default.removeItem(at: clip)
+            }
+        }
     }
 
     static func remove(id: UUID) throws {
@@ -277,8 +314,24 @@ enum VoiceProfileStore {
     /// the same profile: diarization can split one person when microphone
     /// distance, noise or compression changes during a meeting.
     static func match(embeddings: [String: [Float]], workspaceID: UUID? = nil) -> [Int: String] {
-        let profiles = load().filter { $0.workspaceID == nil || $0.workspaceID == workspaceID }
+        let workspaces = (try? MeetingWorkspaceStore.load()) ?? []
+        let profiles = scopedProfiles(load(), workspaceID: workspaceID, workspaces: workspaces)
         return match(embeddings: embeddings, profiles: profiles)
+    }
+
+    static func scopedProfiles(_ profiles: [VoiceProfile], workspaceID: UUID?,
+                               workspaces: [MeetingWorkspace]) -> [VoiceProfile] {
+        var permittedScopes = Set<UUID>()
+        if let workspaceID {
+            permittedScopes.insert(workspaceID)
+            if let workspace = workspaces.first(where: { $0.id == workspaceID }),
+               let customerID = workspace.isCustomer ? workspace.id : workspace.customerID {
+                permittedScopes.insert(customerID)
+            }
+        }
+        return profiles.filter {
+            $0.workspaceID == nil || $0.workspaceID.map(permittedScopes.contains) == true
+        }
     }
 
     static func match(embeddings: [String: [Float]], profiles: [VoiceProfile]) -> [Int: String] {

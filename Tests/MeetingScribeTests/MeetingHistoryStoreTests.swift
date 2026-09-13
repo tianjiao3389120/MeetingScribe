@@ -22,6 +22,7 @@ final class MeetingHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(updated.speakerNames[0], "张三")
         XCTAssertEqual(updated.speakerRoles?[0]?.affiliation, .customer)
+        XCTAssertNotNil(updated.speakerMetadataUpdatedAt)
         XCTAssertEqual(updated.summaryMarkdown, record.summaryMarkdown)
         XCTAssertEqual(updated.transcript.timecodedText, record.transcript.timecodedText)
     }

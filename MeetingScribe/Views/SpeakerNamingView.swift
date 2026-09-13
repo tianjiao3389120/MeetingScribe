@@ -214,7 +214,7 @@ struct SpeakerNamingView: View {
         isSaving = true
         Task {
           do {
-            var samples: [(name: String, embedding: [Float], note: String, referenceClipURL: URL?)] = []
+            var samples: [VoiceProfileStore.EnrollmentSample] = []
             var temporaryClips: [URL] = []
             defer { temporaryClips.forEach { try? FileManager.default.removeItem(at: $0) } }
             for (speaker, name) in entered {
@@ -229,10 +229,23 @@ struct SpeakerNamingView: View {
                     temporaryClips.append(clip)
                     reference = clip
                 }
-                samples.append((name, embedding, "", reference))
+                let affiliation = roles[speaker]?.affiliation ?? .unknown
+                let scope: UUID?
+                switch affiliation {
+                case .ours:
+                    scope = nil
+                case .customer:
+                    scope = assets.workspace?.isCustomer == true
+                        ? assets.workspace?.id : assets.workspace?.customerID ?? assets.workspace?.id
+                case .thirdParty, .unknown:
+                    scope = assets.workspace?.id
+                }
+                samples.append(VoiceProfileStore.EnrollmentSample(
+                    name: name, embedding: embedding, note: "", referenceClipURL: reference,
+                    workspaceID: scope, affiliation: affiliation == .unknown ? nil : affiliation))
                 applied[speaker] = name
             }
-            if !samples.isEmpty { try VoiceProfileStore.enroll(samples: samples, workspaceID: assets.workspace?.id) }
+            if !samples.isEmpty { try VoiceProfileStore.enroll(samples) }
             for (_, name) in entered {
                 try RecognitionMemoryStore.upsert(RecognitionMemoryEntry(
                     canonical: name, kind: .person,

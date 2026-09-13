@@ -51,14 +51,20 @@ enum MeetingLibrary {
         records.sorted { lhs, rhs in
             switch sort {
             case .newest:
-                return lhs.createdAt > rhs.createdAt
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+                let title = lhs.title.localizedStandardCompare(rhs.title)
+                if title != .orderedSame { return title == .orderedAscending }
+                return lhs.id.uuidString < rhs.id.uuidString
             case .oldest:
-                return lhs.createdAt < rhs.createdAt
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+                let title = lhs.title.localizedStandardCompare(rhs.title)
+                if title != .orderedSame { return title == .orderedAscending }
+                return lhs.id.uuidString < rhs.id.uuidString
             case .title:
                 let comparison = lhs.title.localizedStandardCompare(rhs.title)
-                return comparison == .orderedSame
-                    ? lhs.createdAt > rhs.createdAt
-                    : comparison == .orderedAscending
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+                return lhs.id.uuidString < rhs.id.uuidString
             }
         }
     }

@@ -132,6 +132,7 @@ enum MeetingHistoryStore {
         var record = try decoder.decode(MeetingRecord.self, from: Data(contentsOf: url))
         record.speakerNames = names
         record.speakerRoles = roles.filter { $0.value.isSpecified }
+        record.speakerMetadataUpdatedAt = Date()
         try save(record, root: root)
         return record
     }

@@ -16,6 +16,10 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
     let transcript: Transcript
     var speakerNames: [Int: String]
     var speakerRoles: [Int: SpeakerRole]?
+    /// When the user last confirmed speaker names or affiliations. This is kept
+    /// separate from the meeting date so correcting an older meeting can still
+    /// become the authoritative directory decision.
+    var speakerMetadataUpdatedAt: Date?
     let usedSummaryFallback: Bool
     /// Optional for backward compatibility with records created before spaces.
     var workspaceID: UUID?
@@ -66,6 +70,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable {
         self.transcript = transcript
         self.speakerNames = speakerNames
         self.speakerRoles = speakerRoles
+        self.speakerMetadataUpdatedAt = speakerRoles.isEmpty ? nil : Date()
         self.usedSummaryFallback = usedSummaryFallback
         self.workspaceID = workspaceID
         self.customerName = customerName

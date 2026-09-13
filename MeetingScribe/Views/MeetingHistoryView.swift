@@ -31,6 +31,8 @@ struct MeetingHistoryView: View {
     @State private var pendingVersionCleanup: MeetingRecord?
     @State private var showsLibrarySidebar = true
     @State private var showsMeetingList = true
+    @State private var expandedClassificationCustomers: Set<String> = []
+    @State private var expandedClassificationProjects: Set<String> = []
 
     init(initialSelection: UUID? = nil,
          onReprocess: @escaping (MeetingRecord) -> Void,
@@ -75,14 +77,17 @@ struct MeetingHistoryView: View {
         }
     }
 
-    /// One visible row per source recording. If the user selects an older
-    /// version from the version menu, that version temporarily represents its
-    /// group without expanding the whole list.
+    /// One stable visible row per source recording. Selection must never change
+    /// the representative record, otherwise clicking an older version changes
+    /// the row's sort date and makes the list jump under the pointer.
     private var displayedRecords: [MeetingRecord] {
         let groups = Dictionary(grouping: filtered, by: versionKey)
         return groups.values.compactMap { versions in
-            if let selected, versions.contains(where: { $0.id == selected.id }) { return selected }
-            return versions.max { versionSortDate($0) < versionSortDate($1) }
+            return versions.max {
+                let lhs = versionSortDate($0), rhs = versionSortDate($1)
+                if lhs != rhs { return lhs < rhs }
+                return $0.id.uuidString < $1.id.uuidString
+            }
         }
     }
 
@@ -242,8 +247,9 @@ struct MeetingHistoryView: View {
         .sheet(isPresented: $showLoadIssues) {
             UnreadableMeetingsView(issues: loadIssues)
         }
-        .onChange(of: Set(displayedRecords.map(\.id))) { _, ids in
-            if selection == nil || !ids.contains(selection!) {
+        .onChange(of: Set(displayedRecords.map(versionKey))) { _, keys in
+            let selectedKey = selected.map(versionKey)
+            if selectedKey == nil || !keys.contains(selectedKey!) {
                 selection = listSections.first?.records.first?.id
             }
         }
@@ -296,54 +302,99 @@ struct MeetingHistoryView: View {
                 }
                 Section("客户") {
                     ForEach(classificationCustomers, id: \.self) { customer in
-                        DisclosureGroup {
-                            ForEach(classificationProjects(customer: customer), id: \.self) { project in
-                                DisclosureGroup {
-                                    let types = classificationTypes(customer: customer, project: project)
-                                    if types.isEmpty {
-                                        Text("尚无会议类型标签")
-                                            .font(.caption).foregroundStyle(.secondary)
-                                            .padding(.leading, 8)
-                                    } else {
-                                        ForEach(types, id: \.self) { type in
-                                            classificationTypeRow(type, customer: customer, project: project)
-                                        }
-                                    }
-                                } label: {
-                                    Button {
-                                        meetingTypeFilter = ""
-                                        customerFilter = customer
-                                        projectFilter = project
-                                        scope = .all
-                                    } label: {
-                                        HStack {
-                                            Label(project, systemImage: "folder")
-                                            Spacer()
-                                            Text("\(classificationCount(customer: customer, project: project))")
-                                                .font(.caption).foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        } label: {
-                            Button {
-                                meetingTypeFilter = ""
-                                customerFilter = customer
-                                projectFilter = ""
-                                scope = .all
-                            } label: {
-                                HStack {
-                                    Label(customer, systemImage: "person.2")
-                                    Spacer()
-                                    Text("\(classificationCount(customer: customer))")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }.buttonStyle(.plain)
-                        }
+                        classificationCustomerRow(customer)
                     }
                 }
             }.listStyle(.sidebar)
+        }
+    }
+
+    private func classificationCustomerRow(_ customer: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                meetingTypeFilter = ""
+                customerFilter = customer
+                projectFilter = ""
+                scope = .all
+                if expandedClassificationCustomers.contains(customer) {
+                    expandedClassificationCustomers.remove(customer)
+                } else {
+                    expandedClassificationCustomers.insert(customer)
+                }
+            } label: {
+                HStack {
+                    Image(systemName: expandedClassificationCustomers.contains(customer)
+                          ? "chevron.down" : "chevron.right")
+                        .font(.caption2).frame(width: 10)
+                    Label(customer, systemImage: "person.2")
+                    Spacer()
+                    Text("\(classificationCount(customer: customer))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(customerFilter == customer
+                            && projectFilter.isEmpty
+                            && meetingTypeFilter.isEmpty
+                            ? Color.accentColor.opacity(0.16) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 5))
+            }.buttonStyle(.plain)
+
+            if expandedClassificationCustomers.contains(customer) {
+                ForEach(classificationProjects(customer: customer), id: \.self) { project in
+                    classificationProjectRow(project, customer: customer)
+                }
+                .padding(.leading, 18)
+            }
+        }
+    }
+
+    private func classificationProjectRow(_ project: String, customer: String) -> some View {
+        let key = "\(customer)\u{1F}\(project)"
+        return VStack(alignment: .leading, spacing: 3) {
+            Button {
+                meetingTypeFilter = ""
+                customerFilter = customer
+                projectFilter = project
+                scope = .all
+                if expandedClassificationProjects.contains(key) {
+                    expandedClassificationProjects.remove(key)
+                } else {
+                    expandedClassificationProjects.insert(key)
+                }
+            } label: {
+                HStack {
+                    Image(systemName: expandedClassificationProjects.contains(key)
+                          ? "chevron.down" : "chevron.right")
+                        .font(.caption2).frame(width: 10)
+                    Label(project, systemImage: "folder")
+                    Spacer()
+                    Text("\(classificationCount(customer: customer, project: project))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(customerFilter == customer
+                            && projectFilter == project
+                            && meetingTypeFilter.isEmpty
+                            ? Color.accentColor.opacity(0.16) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 5))
+            }.buttonStyle(.plain)
+
+            if expandedClassificationProjects.contains(key) {
+                let types = classificationTypes(customer: customer, project: project)
+                if types.isEmpty {
+                    Text("尚无会议类型标签")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.leading, 18)
+                } else {
+                    ForEach(types, id: \.self) { type in
+                        classificationTypeRow(type, customer: customer, project: project)
+                    }.padding(.leading, 18)
+                }
+            }
         }
     }
 
@@ -363,7 +414,11 @@ struct MeetingHistoryView: View {
             .contentShape(Rectangle())
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
-            .background(self.scope == scope ? Color.accentColor.opacity(0.16) : Color.clear,
+            .background(self.scope == scope
+                        && customerFilter.isEmpty
+                        && projectFilter.isEmpty
+                        && meetingTypeFilter.isEmpty
+                        ? Color.accentColor.opacity(0.16) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
@@ -382,6 +437,14 @@ struct MeetingHistoryView: View {
                 Text("\(classificationCount(customer: customer, project: project, type: type))")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(customerFilter == customer
+                        && projectFilter == project
+                        && meetingTypeFilter == type
+                        ? Color.accentColor.opacity(0.16) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 5))
         }.buttonStyle(.plain)
     }
 
@@ -839,7 +902,11 @@ struct MeetingHistoryView: View {
     private func versions(for record: MeetingRecord) -> [MeetingRecord] {
         let key = versionKey(record)
         return records.filter { versionKey($0) == key }
-            .sorted { versionSortDate($0) > versionSortDate($1) }
+            .sorted {
+                let lhs = versionSortDate($0), rhs = versionSortDate($1)
+                if lhs != rhs { return lhs > rhs }
+                return $0.id.uuidString > $1.id.uuidString
+            }
     }
 
     private func versionSortDate(_ record: MeetingRecord) -> Date {
@@ -1098,9 +1165,16 @@ func syncCustomerContacts(workspaceID: UUID?, customerName: String? = nil,
         ?? workspaces.first { $0.isCustomer && $0.name == (customerName ?? "") }?.id
     guard let customerID,
           let index = workspaces.firstIndex(where: { $0.id == customerID }) else { return }
-    for (speaker, role) in roles where role.affiliation != .ours && role.affiliation != .thirdParty {
+    for (speaker, role) in roles {
         let name = names[speaker]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !name.isEmpty else { continue }
+        if role.affiliation == .ours || role.affiliation == .thirdParty {
+            workspaces[index].contacts.removeAll {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }
+            continue
+        }
+        guard role.affiliation == .customer else { continue }
         let roleName = role.meetingRole.label
         if let contactIndex = workspaces[index].contacts.firstIndex(where: { $0.name == name }) {
             if !roleName.isEmpty && roleName != "未确认" { workspaces[index].contacts[contactIndex].role = roleName }

@@ -88,7 +88,7 @@ struct VoiceProfileManagementView: View {
             Button("取消", role: .cancel) { pendingDelete = nil }
             Button("删除", role: .destructive) { removePending() }
         } message: {
-            Text("此操作无法恢复，之后的会议将不再自动识别这个人。")
+            Text("保存并关闭后才会删除；在此之前可点击页面底部的“取消”撤销。")
         }
     }
 
@@ -101,6 +101,11 @@ struct VoiceProfileManagementView: View {
         do {
             let audioPlayer = try AVAudioPlayer(contentsOf: url)
             player = audioPlayer; playingID = profile.id; audioPlayer.play()
+            DispatchQueue.main.asyncAfter(deadline: .now() + audioPlayer.duration) {
+                guard playingID == profile.id, player === audioPlayer else { return }
+                player = nil
+                playingID = nil
+            }
         } catch {
             self.error = "播放失败：\(error.localizedDescription)"
         }
@@ -131,12 +136,10 @@ struct VoiceProfileManagementView: View {
     private func removePending() {
         guard let profile = pendingDelete else { return }
         pendingDelete = nil
-        do {
-            try VoiceProfileStore.remove(id: profile.id)
-            profiles.removeAll { $0.id == profile.id }
-            error = nil
-        } catch {
-            self.error = "删除失败：\(error.localizedDescription)"
+        profiles.removeAll { $0.id == profile.id }
+        if playingID == profile.id {
+            player?.stop(); player = nil; playingID = nil
         }
+        error = nil
     }
 }
