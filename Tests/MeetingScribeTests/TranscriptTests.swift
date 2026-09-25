@@ -1,0 +1,140 @@
+import XCTest
+@testable import MeetingScribe
+
+final class TranscriptTests: XCTestCase {
+    func testEditedTranscriptPreservesTimingAndRejectsChangedLineCount() {
+        let original = Transcript(segments: [
+            TranscriptSegment(id: 0, start: 1, end: 2, text: "旧内容"),
+            TranscriptSegment(id: 1, start: 3, end: 4, text: "第二句"),
+        ])
+        let edited = original.replacingTexts(from: "[00:01] 新内容\n[00:03] 修正版")
+        XCTAssertEqual(edited?.segments.map(\.text), ["新内容", "修正版"])
+        XCTAssertEqual(edited?.segments[0].start, 1)
+        XCTAssertNil(original.replacingTexts(from: "只有一行"))
+    }
+
+    func testParsesMultilineSRTAndSkipsMalformedBlocks() {
+        let transcript = Transcript.parse(srt: """
+        1
+        00:00:01,250 --> 00:00:03,500
+        第一行
+        第二行
+
+        broken
+        block
+
+        2
+        01:02:03.400 --> 01:02:05.000
+        final
+        """)
+
+        XCTAssertEqual(transcript.segments.count, 2)
+        XCTAssertEqual(transcript.segments[0].text, "第一行 第二行")
+        XCTAssertEqual(transcript.segments[0].start, 1.25, accuracy: 0.001)
+        XCTAssertEqual(transcript.segments[1].start, 3723.4, accuracy: 0.001)
+    }
+
+    func testWhisperSRTDecodingRepairsIsolatedInvalidUTF8() {
+        var data = Data("1\n00:00:01,000 --> 00:00:02,000\n星盾".utf8)
+        data.append(0xFF)
+        data.append(contentsOf: Data("AI\n".utf8))
+
+        let decoded = Transcriber.decodeSRT(data)
+        let sanitized = Transcriber.removingLikelyHallucinations(
+            from: Transcript.parse(srt: decoded.text)).transcript
+
+        XCTAssertTrue(decoded.repairedInvalidUTF8)
+        XCTAssertEqual(sanitized.segments.count, 1)
+        XCTAssertEqual(sanitized.segments[0].text, "星盾AI")
+    }
+
+    func testWhisperHallucinationFilterDropsLongLoopsButKeepsNaturalSpeech() {
+        let transcript = Transcript(segments: [
+            TranscriptSegment(id: 0, start: 1, end: 200,
+                              text: String(repeating: "拱", count: 120)),
+            TranscriptSegment(id: 1, start: 201, end: 240,
+                              text: String(repeating: "谢谢大家", count: 20)),
+            TranscriptSegment(id: 2, start: 241, end: 245,
+                              text: "对对对，这个方案可以继续验证。")
+        ])
+
+        let result = Transcriber.removingLikelyHallucinations(from: transcript)
+
+        XCTAssertEqual(result.removed.count, 2)
+        XCTAssertEqual(result.transcript.segments.count, 1)
+        XCTAssertEqual(result.transcript.segments[0].id, 0)
+        XCTAssertTrue(result.transcript.plainText.contains("继续验证"))
+    }
+
+    func testMiaojiiSRTParsesSpeakerWithoutKeepingPrefixInText() {
+        let transcript = Transcript.parse(srt: """
+        1
+        00:00:02,640 --> 00:00:13,840
+        说话人 1: It has conducted a detection test.
+
+        2
+        00:00:14,720 --> 00:00:24,920
+        邓亚琛: Have you tested the detection rate?
+        """)
+
+        XCTAssertEqual(transcript.segments.map(\.speaker), ["说话人 1", "邓亚琛"])
+        XCTAssertEqual(transcript.segments[0].text, "It has conducted a detection test.")
+        XCTAssertTrue(transcript.timecodedText.contains("【邓亚琛】Have you tested"))
+
+        let edited = transcript.replacingTexts(from: transcript.timecodedText)
+        XCTAssertEqual(edited?.segments[0].speaker, "说话人 1")
+        XCTAssertEqual(edited?.segments[0].text, "It has conducted a detection test.")
+    }
+
+    func testMiaojiiTextMetadataParsesDateDurationAndKeywords() {
+        let metadata = ExternalTranscriptMetadata.parseMiaojii("""
+        2026年8月13日 上午 10:07|50分钟 35秒
+
+        关键词:
+        new market、customer price、Malaysia market
+
+        文字记录:
+        """)
+
+        XCTAssertEqual(metadata.declaredDuration, 3035)
+        XCTAssertEqual(metadata.keywords, ["new market", "customer price", "Malaysia market"])
+        let components = Calendar(identifier: .gregorian)
+            .dateComponents([.year, .month, .day, .hour, .minute], from: try! XCTUnwrap(metadata.recordedAt))
+        XCTAssertEqual(components.year, 2026)
+        XCTAssertEqual(components.month, 8)
+        XCTAssertEqual(components.day, 13)
+        XCTAssertEqual(components.hour, 10)
+        XCTAssertEqual(components.minute, 7)
+    }
+
+    func testExternalTranscriptReportsUnreadableCompanionText() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("external-transcript-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let srt = directory.appendingPathComponent("meeting.srt")
+        let text = directory.appendingPathComponent("meeting.txt")
+        try "1\n00:00:00,000 --> 00:00:02,000\n测试\n".write(
+            to: srt, atomically: true, encoding: .utf8)
+        try Data([0xFF, 0xFE, 0x00]).write(to: text)
+
+        XCTAssertThrowsError(try ExternalTranscriptPackage(
+            transcriptURL: srt, textURL: text)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("UTF-8"))
+            }
+    }
+
+    func testLegacyTranscriptDecodesWithoutSpeakerField() throws {
+        let data = #"{"segments":[{"id":0,"start":1,"end":2,"text":"旧记录"}]}"#.data(using: .utf8)!
+        let transcript = try JSONDecoder().decode(Transcript.self, from: data)
+        XCTAssertNil(transcript.segments[0].speaker)
+    }
+
+    func testTimeAndDurationFormatting() {
+        XCTAssertEqual(TranscriptSegment.timecode(-3), "00:00")
+        XCTAssertEqual(TranscriptSegment.timecode(3661), "1:01:01")
+        XCTAssertEqual(TranscriptSegment.humanDuration(45), "45 秒")
+        XCTAssertEqual(TranscriptSegment.humanDuration(125), "2 分 5 秒")
+        XCTAssertEqual(TranscriptSegment.humanDuration(3660), "1 小时 1 分钟")
+    }
+}
